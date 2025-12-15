@@ -1,0 +1,5 @@
+{
+  "name": "BioControl - Gestión Biomédica",
+  "description": "Sistema de control de pacientes, inventario de equipos biomédicos y gestión de asignaciones.",
+  "requestFramePermissions": []
+}
