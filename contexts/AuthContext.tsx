@@ -6,6 +6,7 @@ import { RolUsuario, type Usuario } from '../types';
 
 interface AuthContextType {
   usuario: Usuario | null;
+  isAdmin: boolean;
   loading: boolean;
   error: string | null;
   login: (email: string, password: string) => Promise<void>;
@@ -18,6 +19,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider = ({ children }: { children?: ReactNode }) => {
   const [usuario, setUsuario] = useState<Usuario | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -27,6 +29,7 @@ export const AuthProvider = ({ children }: { children?: ReactNode }) => {
 
       if (!firebaseUser) {
         setUsuario(null);
+        setIsAdmin(false);
         setLoading(false);
         return;
       }
@@ -37,6 +40,7 @@ export const AuthProvider = ({ children }: { children?: ReactNode }) => {
 
         if (!userDocSnap.exists()) {
           setUsuario(null);
+          setIsAdmin(false);
           setError(
             'Tu cuenta existe, pero no tiene rol asignado. Pide al administrador que cree tu documento en Firestore: users/{uid}.',
           );
@@ -50,6 +54,7 @@ export const AuthProvider = ({ children }: { children?: ReactNode }) => {
 
         if (!rol || !isValidRole) {
           setUsuario(null);
+          setIsAdmin(false);
           setError('Tu usuario no tiene un rol válido asignado en Firestore (users/{uid}.rol).');
           setLoading(false);
           return;
@@ -60,9 +65,19 @@ export const AuthProvider = ({ children }: { children?: ReactNode }) => {
           nombre: data.nombre || firebaseUser.email || 'Usuario',
           rol: rol as RolUsuario,
         });
+
+        // Admin flag (lectura opcional). Requiere rules para /admins/{uid}.
+        try {
+          const adminRef = doc(db, 'admins', firebaseUser.uid);
+          const adminSnap = await getDoc(adminRef);
+          setIsAdmin(adminSnap.exists() && adminSnap.data()?.enabled === true);
+        } catch {
+          setIsAdmin(false);
+        }
         setLoading(false);
       } catch (err: any) {
         setUsuario(null);
+        setIsAdmin(false);
         setError(err?.message || 'Error cargando perfil del usuario desde Firestore.');
         setLoading(false);
       }
@@ -89,6 +104,7 @@ export const AuthProvider = ({ children }: { children?: ReactNode }) => {
   const value = useMemo(
     () => ({
       usuario,
+      isAdmin,
       loading,
       error,
       login,
@@ -96,7 +112,7 @@ export const AuthProvider = ({ children }: { children?: ReactNode }) => {
       isAuthenticated: !!usuario,
       hasRole,
     }),
-    [usuario, loading, error],
+    [usuario, isAdmin, loading, error],
   );
 
   return (

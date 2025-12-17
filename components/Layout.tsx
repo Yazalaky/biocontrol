@@ -8,7 +8,7 @@ interface LayoutProps {
 }
 
 const Layout: React.FC<LayoutProps> = ({ children, title }) => {
-  const { usuario, logout, hasRole } = useAuth();
+  const { usuario, logout, hasRole, isAdmin } = useAuth();
   const [isSidebarOpen, setIsSidebarOpen] = React.useState(false);
 
   // Navegación simple usando hash
@@ -74,6 +74,9 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
             path="#/equipos" 
             roles={[RolUsuario.INGENIERO_BIOMEDICO, RolUsuario.AUXILIAR_ADMINISTRATIVA, RolUsuario.GERENCIA]} 
           />
+          {isAdmin && (
+            <NavItem label="Admin" path="#/admin" />
+          )}
         </nav>
 
         <div className="p-4 border-t border-slate-700">

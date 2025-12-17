@@ -19,16 +19,24 @@ function hasRole(role) {
 		}
 
 
-    // --- USERS ---
-    match /users/{uid} {
-      allow read: if isSignedIn() && request.auth.uid == uid;
-      allow create, update, delete: if false;
-    }
+	    // --- USERS ---
+	    match /users/{uid} {
+	      allow read: if isSignedIn() && request.auth.uid == uid;
+	      allow create, update, delete: if false;
+	    }
 
-    // --- PACIENTES ---
-    match /pacientes/{id} {
-      // lectura para cualquier usuario logueado
-      allow read: if isSignedIn();
+	    // --- ADMINS (flag para habilitar pantalla Admin) ---
+	    match /admins/{uid} {
+	      // Solo el propio usuario puede leer su flag
+	      allow read: if isSignedIn() && request.auth.uid == uid;
+	      // Nadie escribe desde el cliente
+	      allow create, update, delete: if false;
+	    }
+
+	    // --- PACIENTES ---
+	    match /pacientes/{id} {
+	      // lectura para cualquier usuario logueado
+	      allow read: if isSignedIn();
       // escritura solo auxiliar
       allow create, update, delete: if isSignedIn() && hasRole("AUXILIAR_ADMINISTRATIVA");
     }

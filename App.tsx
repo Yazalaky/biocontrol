@@ -4,6 +4,7 @@ import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Patients from './pages/Patients';
 import Inventory from './pages/Inventory';
+import Admin from './pages/Admin';
 
 // Simple Router Component
 const Router = () => {
@@ -39,6 +40,8 @@ const Router = () => {
       return <Patients />;
     case '#/equipos':
       return <Inventory />;
+    case '#/admin':
+      return <Admin />;
     case '#/':
     default:
       return <Dashboard />;
