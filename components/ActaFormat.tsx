@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Paciente, EquipoBiomedico, Asignacion } from '../types';
 
 interface ActaFormatProps {
@@ -12,6 +12,10 @@ interface ActaFormatProps {
 
 const ActaFormat: React.FC<ActaFormatProps> = ({ paciente, equipo, asignacion, tipoActa, patientSignature, adminSignature }) => {
   const fecha = new Date(tipoActa === 'ENTREGA' ? asignacion.fechaAsignacion : (asignacion.fechaDevolucion || new Date().toISOString()));
+  const logoCandidates = ['/medicuc-logo.png', '/medicuc-logo.jpg', '/medicuc-logo.svg'] as const;
+  const [logoIndex, setLogoIndex] = useState(0);
+  const [logoFailed, setLogoFailed] = useState(false);
+  const logoSrc = logoCandidates[logoIndex];
 
   return (
     <div className="bg-white text-black p-8 text-xs font-sans max-w-[210mm] mx-auto border border-gray-300 shadow-none print:border-none print:shadow-none">
@@ -19,11 +23,28 @@ const ActaFormat: React.FC<ActaFormatProps> = ({ paciente, equipo, asignacion, t
       {/* HEADER */}
       <div className="border-2 border-black mb-4 flex">
         <div className="w-1/4 border-r-2 border-black p-2 flex items-center justify-center">
-          {/* Placeholder Logo */}
-          <div className="text-center">
-            <h1 className="text-xl font-bold text-orange-600 tracking-tighter">medicuc</h1>
-            <p className="text-[8px] text-gray-500">IPS</p>
-          </div>
+          {/* Logo */}
+          {!logoFailed && logoSrc ? (
+            <img
+              src={logoSrc}
+              alt="Medicuc IPS"
+              className="max-h-12 w-auto object-contain"
+              onError={() => {
+                setLogoIndex((i) => {
+                  const next = i + 1;
+                  if (next < logoCandidates.length) return next;
+                  setLogoFailed(true);
+                  return i;
+                });
+              }}
+            />
+          ) : null}
+          {logoFailed && (
+            <div className="text-center leading-tight">
+              <h1 className="text-xl font-bold text-orange-600 tracking-tighter">medicuc</h1>
+              <p className="text-[8px] text-gray-500">IPS</p>
+            </div>
+          )}
         </div>
         <div className="w-3/4 text-center p-2">
           <h2 className="font-bold text-sm">FORMATO DE ENTREGA Y DEVOLUCION DE EQUIPOS PAD</h2>
