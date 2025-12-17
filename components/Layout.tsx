@@ -55,12 +55,6 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
           <span className="text-[10px] uppercase bg-slate-700 px-2 py-0.5 rounded text-blue-300">
             {usuario?.rol.replace('_', ' ')}
           </span>
-          {import.meta.env.DEV && usuario?.id && (
-            <div className="mt-2 text-[10px] text-slate-400 break-all">
-              <div>UID: {usuario.id}</div>
-              <div>Project: {import.meta.env.VITE_FIREBASE_PROJECT_ID}</div>
-            </div>
-          )}
         </div>
 
         <nav className="flex-1 p-4 overflow-y-auto">
