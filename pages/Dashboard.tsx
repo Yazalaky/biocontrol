@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import Layout from '../components/Layout';
-import { db } from '../services/db';
-import { EstadoEquipo, EstadoPaciente } from '../types';
+import { EstadoAsignacion, EstadoEquipo, EstadoPaciente, type Asignacion, type EquipoBiomedico, type Paciente } from '../types';
 import StatusBadge from '../components/StatusBadge';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
+import { subscribeAsignaciones, subscribeEquipos, subscribePacientes } from '../services/firestoreData';
 
 const Dashboard: React.FC = () => {
   const [stats, setStats] = useState({
@@ -16,33 +16,85 @@ const Dashboard: React.FC = () => {
   });
 
   const [recentAssignments, setRecentAssignments] = useState<any[]>([]);
+  const [firestoreError, setFirestoreError] = useState<string | null>(null);
 
   useEffect(() => {
-    // Cargar datos
-    const pacientes = db.getPacientes();
-    const equipos = db.getEquipos();
-    const asignaciones = db.getAllAsignaciones();
+    let pacientes: Paciente[] = [];
+    let equipos: EquipoBiomedico[] = [];
+    let asignaciones: Asignacion[] = [];
 
-    setStats({
-      pacientesActivos: pacientes.filter(p => p.estado === EstadoPaciente.ACTIVO).length,
-      totalEquipos: equipos.length,
-      equiposDisponibles: equipos.filter(e => e.estado === EstadoEquipo.DISPONIBLE).length,
-      equiposAsignados: equipos.filter(e => e.estado === EstadoEquipo.ASIGNADO).length,
-      equiposMantenimiento: equipos.filter(e => e.estado === EstadoEquipo.MANTENIMIENTO).length,
-      equiposBaja: equipos.filter(e => e.estado === EstadoEquipo.DADO_DE_BAJA).length,
-    });
+    const recompute = () => {
+      const activos = new Set(asignaciones.filter((a) => a.estado === EstadoAsignacion.ACTIVA).map((a) => a.idEquipo));
+      const lastFinalEstadoByEquipo = new Map<string, { date: number; estadoFinal: EstadoEquipo }>();
+      for (const a of asignaciones) {
+        if (a.estado !== EstadoAsignacion.FINALIZADA) continue;
+        if (!a.estadoFinalEquipo) continue;
+        const date = new Date(a.fechaDevolucion || a.fechaAsignacion).getTime();
+        const prev = lastFinalEstadoByEquipo.get(a.idEquipo);
+        if (!prev || date > prev.date) lastFinalEstadoByEquipo.set(a.idEquipo, { date, estadoFinal: a.estadoFinalEquipo as EstadoEquipo });
+      }
 
-    // Enriquecer asignaciones para mostrar nombres
-    const enriched = asignaciones.slice(-5).reverse().map(a => {
-      const p = pacientes.find(pat => pat.id === a.idPaciente);
-      const e = equipos.find(eq => eq.id === a.idEquipo);
-      return {
-        ...a,
-        nombrePaciente: p ? p.nombreCompleto : 'Desconocido', // Actualizado a nombreCompleto
-        nombreEquipo: e ? e.nombre : 'Desconocido'
+      const effectiveEstado = (equipo: EquipoBiomedico): EstadoEquipo => {
+        if (activos.has(equipo.id)) return EstadoEquipo.ASIGNADO;
+        const last = lastFinalEstadoByEquipo.get(equipo.id);
+        return last?.estadoFinal || equipo.estado;
       };
+
+      const estados = equipos.map(effectiveEstado);
+      setStats({
+        pacientesActivos: pacientes.filter((p) => p.estado === EstadoPaciente.ACTIVO).length,
+        totalEquipos: equipos.length,
+        equiposDisponibles: estados.filter((s) => s === EstadoEquipo.DISPONIBLE).length,
+        equiposAsignados: estados.filter((s) => s === EstadoEquipo.ASIGNADO).length,
+        equiposMantenimiento: estados.filter((s) => s === EstadoEquipo.MANTENIMIENTO).length,
+        equiposBaja: estados.filter((s) => s === EstadoEquipo.DADO_DE_BAJA).length,
+      });
+
+      // Últimas 5 asignaciones (por fechaAsignacion ISO)
+      const sorted = [...asignaciones].sort(
+        (a, b) => new Date(b.fechaAsignacion).getTime() - new Date(a.fechaAsignacion).getTime(),
+      );
+      const enriched = sorted.slice(0, 5).map((a) => {
+        const p = pacientes.find((pat) => pat.id === a.idPaciente);
+        const e = equipos.find((eq) => eq.id === a.idEquipo);
+        return {
+          ...a,
+          nombrePaciente: p ? p.nombreCompleto : 'Desconocido',
+          nombreEquipo: e ? e.nombre : 'Desconocido',
+        };
+      });
+      setRecentAssignments(enriched);
+    };
+
+    setFirestoreError(null);
+
+    const unsubPacientes = subscribePacientes((p) => {
+      pacientes = p;
+      recompute();
+    }, (e) => {
+      console.error('Firestore subscribePacientes error:', e);
+      setFirestoreError(`No tienes permisos para leer "pacientes" en Firestore. Detalle: ${e.message}`);
     });
-    setRecentAssignments(enriched);
+    const unsubEquipos = subscribeEquipos((e) => {
+      equipos = e;
+      recompute();
+    }, (e) => {
+      console.error('Firestore subscribeEquipos error:', e);
+      setFirestoreError(`No tienes permisos para leer "equipos" en Firestore. Detalle: ${e.message}`);
+    });
+    const unsubAsignaciones = subscribeAsignaciones((a) => {
+      asignaciones = a;
+      recompute();
+    }, (e) => {
+      console.error('Firestore subscribeAsignaciones error:', e);
+      setFirestoreError(`No tienes permisos para leer "asignaciones" en Firestore. Detalle: ${e.message}`);
+    });
+
+    return () => {
+      unsubPacientes();
+      unsubEquipos();
+      unsubAsignaciones();
+    };
   }, []);
 
   const dataChart = [
@@ -65,6 +117,11 @@ const Dashboard: React.FC = () => {
 
   return (
     <Layout title="Dashboard Gerencial">
+      {firestoreError && (
+        <div className="mb-4 bg-red-50 border border-red-200 text-red-800 rounded p-3 text-sm">
+          {firestoreError}
+        </div>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
         <StatCard title="Pacientes Activos" value={stats.pacientesActivos} color="border-green-500" />
         <StatCard title="Total Equipos" value={stats.totalEquipos} color="border-blue-500" />

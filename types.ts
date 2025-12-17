@@ -94,6 +94,8 @@ export interface Asignacion {
   estado: EstadoAsignacion;
   observacionesEntrega: string;
   observacionesDevolucion?: string;
+  // Estado final del equipo registrado al devolver (cuando estado = FINALIZADA)
+  estadoFinalEquipo?: EstadoEquipo;
   usuarioAsigna: string; 
 }
 

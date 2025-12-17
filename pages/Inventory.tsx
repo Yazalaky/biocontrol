@@ -1,13 +1,16 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import Layout from '../components/Layout';
-import { db } from '../services/db';
-import { EquipoBiomedico, EstadoEquipo, RolUsuario, TipoPropiedad, Asignacion } from '../types';
+import { EquipoBiomedico, EstadoAsignacion, EstadoEquipo, RolUsuario, TipoPropiedad, type Asignacion, type Paciente } from '../types';
 import { useAuth } from '../contexts/AuthContext';
 import StatusBadge from '../components/StatusBadge';
+import { saveEquipo, subscribeAsignaciones, subscribeEquipos, subscribePacientes } from '../services/firestoreData';
 
 const Inventory: React.FC = () => {
   const { hasRole } = useAuth();
   const [equipos, setEquipos] = useState<EquipoBiomedico[]>([]);
+  const [pacientes, setPacientes] = useState<Paciente[]>([]);
+  const [asignaciones, setAsignaciones] = useState<Asignacion[]>([]);
+  const [firestoreError, setFirestoreError] = useState<string | null>(null);
   
   // Search State
   const [searchTerm, setSearchTerm] = useState('');
@@ -28,22 +31,60 @@ const Inventory: React.FC = () => {
   // Stats para contadores
   const [assignmentCounts, setAssignmentCounts] = useState<{[key: string]: number}>({});
 
-  const [refresh, setRefresh] = useState(0);
+  useEffect(() => {
+    setFirestoreError(null);
+
+    const unsubEquipos = subscribeEquipos(setEquipos, (e) => {
+      console.error('Firestore subscribeEquipos error:', e);
+      setFirestoreError(`No tienes permisos para leer "equipos" en Firestore. Detalle: ${e.message}`);
+    });
+    const unsubPacientes = subscribePacientes(setPacientes, (e) => {
+      console.error('Firestore subscribePacientes error:', e);
+      setFirestoreError(`No tienes permisos para leer "pacientes" en Firestore. Detalle: ${e.message}`);
+    });
+    const unsubAsignaciones = subscribeAsignaciones(setAsignaciones, (e) => {
+      console.error('Firestore subscribeAsignaciones error:', e);
+      setFirestoreError(`No tienes permisos para leer "asignaciones" en Firestore. Detalle: ${e.message}`);
+    });
+
+    return () => {
+      unsubEquipos();
+      unsubPacientes();
+      unsubAsignaciones();
+    };
+  }, []);
 
   useEffect(() => {
-    const loadedEquipos = db.getEquipos();
-    setEquipos(loadedEquipos);
-
-    // Calcular contadores de uso
-    const counts: {[key: string]: number} = {};
-    loadedEquipos.forEach(e => {
-        counts[e.id] = db.getHistorialEquipo(e.id).length;
-    });
+    const counts: { [key: string]: number } = {};
+    for (const a of asignaciones) {
+      const equipoId = a.idEquipo;
+      counts[equipoId] = (counts[equipoId] || 0) + 1;
+    }
     setAssignmentCounts(counts);
-
-  }, [isModalOpen, isHistoryOpen, refresh]);
+  }, [asignaciones]);
 
   const canEdit = hasRole([RolUsuario.INGENIERO_BIOMEDICO]);
+  const pacientesById = useMemo(() => new Map(pacientes.map((p) => [p.id, p])), [pacientes]);
+  const activeAsignacionByEquipo = useMemo(() => {
+    const map = new Map<string, Asignacion>();
+    for (const a of asignaciones) {
+      if (a.estado === EstadoAsignacion.ACTIVA) map.set(a.idEquipo, a);
+    }
+    return map;
+  }, [asignaciones]);
+  const lastFinalEstadoByEquipo = useMemo(() => {
+    const map = new Map<string, { date: number; estadoFinal: EstadoEquipo }>();
+    for (const a of asignaciones) {
+      if (a.estado !== EstadoAsignacion.FINALIZADA) continue;
+      if (!a.estadoFinalEquipo) continue;
+      const date = new Date(a.fechaDevolucion || a.fechaAsignacion).getTime();
+      const prev = map.get(a.idEquipo);
+      if (!prev || date > prev.date) {
+        map.set(a.idEquipo, { date, estadoFinal: a.estadoFinalEquipo as EstadoEquipo });
+      }
+    }
+    return map;
+  }, [asignaciones]);
 
   // Filtro de Equipos (Buscador)
   const filteredEquipos = equipos.filter(e => {
@@ -57,8 +98,10 @@ const Inventory: React.FC = () => {
     );
   });
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canEdit) return;
+
     const newEquipo: EquipoBiomedico = {
       id: formData.id || '',
       codigoInventario: formData.codigoInventario || '', // Si es nuevo, db lo ignora y genera uno.
@@ -73,12 +116,12 @@ const Inventory: React.FC = () => {
       datosPropietario: formData.tipoPropiedad === TipoPropiedad.EXTERNO ? formData.datosPropietario : undefined
     };
     try {
-      db.saveEquipo(newEquipo);
+      await saveEquipo(newEquipo);
       setIsModalOpen(false);
       setFormData({ tipoPropiedad: TipoPropiedad.PROPIO });
-      setRefresh(prev => prev + 1);
     } catch (err: any) {
-      alert(err.message);
+      console.error('Error guardando equipo:', err);
+      alert(`${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo guardar el equipo.'}`);
     }
   };
 
@@ -89,16 +132,19 @@ const Inventory: React.FC = () => {
   };
 
   const openHistory = (equipo: EquipoBiomedico) => {
-    const historial = db.getHistorialEquipo(equipo.id);
-    // Enriquecer con nombres de pacientes
-    const enriched = historial.map(h => {
-        const paciente = db.getPacienteById(h.idPaciente);
-        return {
-            ...h,
-            nombrePaciente: paciente ? paciente.nombreCompleto : 'Paciente Eliminado',
-            docPaciente: paciente ? paciente.numeroDocumento : 'N/A'
-        };
+    const historial = asignaciones
+      .filter((a) => a.idEquipo === equipo.id)
+      .sort((a, b) => new Date(b.fechaAsignacion).getTime() - new Date(a.fechaAsignacion).getTime());
+
+    const enriched = historial.map((h) => {
+      const paciente = pacientesById.get(h.idPaciente);
+      return {
+        ...h,
+        nombrePaciente: paciente ? paciente.nombreCompleto : 'Paciente Eliminado',
+        docPaciente: paciente ? paciente.numeroDocumento : 'N/A',
+      };
     });
+
     setHistoryEquipo({ equipo, data: enriched });
     setIsHistoryOpen(true);
   };
@@ -156,11 +202,13 @@ const Inventory: React.FC = () => {
   };
 
   const handleImportCSV = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!canEdit) return;
     const file = e.target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
     reader.onload = (event) => {
+      (async () => {
       const text = event.target?.result as string;
       if (!text) return;
 
@@ -171,9 +219,9 @@ const Inventory: React.FC = () => {
       let errorCount = 0;
       let errorMessages: string[] = [];
 
-      dataLines.forEach((line, index) => {
+      for (const [index, line] of dataLines.entries()) {
         const columns = line.split(','); 
-        if (columns.length < 4) return; // Mínimo serie, nombre, marca, modelo
+        if (columns.length < 4) continue; // Mínimo serie, nombre, marca, modelo
 
         // Índices ajustados al remover CodigoInventario
         const tipoPropiedad = columns[4]?.trim().toUpperCase() === 'EXTERNO' ? TipoPropiedad.EXTERNO : TipoPropiedad.PROPIO;
@@ -200,27 +248,32 @@ const Inventory: React.FC = () => {
           if (!importedEquipo.numeroSerie || !importedEquipo.nombre) {
              throw new Error(`Fila ${index + 2}: Falta serie o nombre`);
           }
-          db.saveEquipo(importedEquipo);
+          await saveEquipo(importedEquipo);
           successCount++;
         } catch (err: any) {
           errorCount++;
           errorMessages.push(`Fila ${index + 2} (${importedEquipo.nombre}): ${err.message}`);
         }
-      });
+      }
 
       let message = `Proceso completado.\n\nImportados exitosamente: ${successCount}\nFallidos: ${errorCount}`;
       if (errorCount > 0) {
         message += `\n\nErrores:\n${errorMessages.slice(0, 5).join('\n')}${errorMessages.length > 5 ? '\n...' : ''}`;
       }
       alert(message);
-      setRefresh(prev => prev + 1);
       if (fileInputRef.current) fileInputRef.current.value = ''; 
+      })().catch((err) => alert(err?.message || 'Error importando CSV'));
     };
     reader.readAsText(file);
   };
 
   return (
     <Layout title="Inventario Biomédico">
+      {firestoreError && (
+        <div className="mb-4 bg-red-50 border border-red-200 text-red-800 rounded p-3 text-sm">
+          {firestoreError}
+        </div>
+      )}
       <div className="mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <input 
           type="text" 
@@ -267,12 +320,18 @@ const Inventory: React.FC = () => {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {filteredEquipos.map(equipo => (
+          (() => {
+            const active = activeAsignacionByEquipo.get(equipo.id);
+            const lastFinal = lastFinalEstadoByEquipo.get(equipo.id);
+            const status = active ? EstadoEquipo.ASIGNADO : (lastFinal?.estadoFinal || equipo.estado);
+            const ubicacion = active ? pacientesById.get(active.idPaciente)?.nombreCompleto || equipo.ubicacionActual : equipo.ubicacionActual;
+            return (
           <div key={equipo.id} className="bg-white rounded-lg shadow border border-gray-200 p-5 hover:shadow-md transition-shadow relative">
             <div className="flex justify-between items-start mb-2">
               <span className="text-xs font-mono bg-gray-100 px-2 py-1 rounded text-gray-600 border border-gray-200">
                 {equipo.codigoInventario}
               </span>
-              <StatusBadge status={equipo.estado} />
+              <StatusBadge status={status} />
             </div>
             <h3 className="text-lg font-bold text-gray-900">{equipo.nombre}</h3>
             <div className="flex flex-col text-sm text-gray-600 mb-1">
@@ -293,7 +352,7 @@ const Inventory: React.FC = () => {
             </div>
 
             <div className="mt-4 pt-4 border-t border-gray-100 text-sm space-y-1">
-              <p><span className="font-semibold text-gray-500">Ubicación:</span> {equipo.ubicacionActual}</p>
+              <p><span className="font-semibold text-gray-500">Ubicación:</span> {ubicacion}</p>
               <p className="truncate"><span className="font-semibold text-gray-500">Obs:</span> {equipo.observaciones}</p>
               {equipo.tipoPropiedad === TipoPropiedad.EXTERNO && equipo.datosPropietario && (
                  <p className="text-xs text-orange-700 mt-2 bg-orange-50 p-1 rounded">
@@ -324,6 +383,8 @@ const Inventory: React.FC = () => {
               </button>
             )}
           </div>
+            );
+          })()
         ))}
         {filteredEquipos.length === 0 && (
           <div className="col-span-full py-12 text-center text-gray-500">

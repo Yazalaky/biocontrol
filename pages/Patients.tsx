@@ -1,18 +1,20 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import Layout from '../components/Layout';
-import { db } from '../services/db';
 import { Paciente, EstadoPaciente, Asignacion, EquipoBiomedico, EstadoEquipo, EstadoAsignacion, RolUsuario, EPS } from '../types';
 import { useAuth } from '../contexts/AuthContext';
 import StatusBadge from '../components/StatusBadge';
 import ActaFormat from '../components/ActaFormat';
 import SignaturePad from '../components/SignaturePad';
+import { asignarEquipo, devolverEquipo, savePaciente, subscribeAsignaciones, subscribeEquipos, subscribePacientes, validarSalidaPaciente } from '../services/firestoreData';
 
 const Patients: React.FC = () => {
   const { usuario } = useAuth();
   const [pacientes, setPacientes] = useState<Paciente[]>([]);
+  const [equipos, setEquipos] = useState<EquipoBiomedico[]>([]);
+  const [allAsignaciones, setAllAsignaciones] = useState<Asignacion[]>([]);
   const [selectedPaciente, setSelectedPaciente] = useState<Paciente | null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'create' | 'details'>('list');
-  const [refresh, setRefresh] = useState(0);
+  const [firestoreError, setFirestoreError] = useState<string | null>(null);
 
   // Search State
   const [searchTerm, setSearchTerm] = useState('');
@@ -27,7 +29,6 @@ const Patients: React.FC = () => {
 
   // Assignment State
   const [asignaciones, setAsignaciones] = useState<Asignacion[]>([]);
-  const [equiposDisponibles, setEquiposDisponibles] = useState<EquipoBiomedico[]>([]);
   const [equipoSeleccionado, setEquipoSeleccionado] = useState('');
   const [obsAsignacion, setObsAsignacion] = useState('');
   
@@ -48,21 +49,71 @@ const Patients: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    setPacientes(db.getPacientes());
-    setEquiposDisponibles(db.getEquipos().filter(e => e.estado === EstadoEquipo.DISPONIBLE));
-  }, [refresh, viewMode]);
+    setFirestoreError(null);
+
+    const unsubPacientes = subscribePacientes(setPacientes, (e) => {
+      console.error('Firestore subscribePacientes error:', e);
+      setFirestoreError(`No tienes permisos para leer "pacientes" en Firestore. Detalle: ${e.message}`);
+    });
+    const unsubEquipos = subscribeEquipos(setEquipos, (e) => {
+      console.error('Firestore subscribeEquipos error:', e);
+      setFirestoreError(`No tienes permisos para leer "equipos" en Firestore. Detalle: ${e.message}`);
+    });
+    const unsubAsignaciones = subscribeAsignaciones(setAllAsignaciones, (e) => {
+      console.error('Firestore subscribeAsignaciones error:', e);
+      setFirestoreError(`No tienes permisos para leer "asignaciones" en Firestore. Detalle: ${e.message}`);
+    });
+
+    return () => {
+      unsubPacientes();
+      unsubEquipos();
+      unsubAsignaciones();
+    };
+  }, []);
+
+  const pacientesById = useMemo(() => new Map(pacientes.map((p) => [p.id, p])), [pacientes]);
+  const equiposById = useMemo(() => new Map(equipos.map((e) => [e.id, e])), [equipos]);
+  const activeAsignacionByEquipo = useMemo(() => {
+    const map = new Map<string, Asignacion>();
+    for (const a of allAsignaciones) {
+      if (a.estado === EstadoAsignacion.ACTIVA) map.set(a.idEquipo, a);
+    }
+    return map;
+  }, [allAsignaciones]);
+  const lastFinalEstadoByEquipo = useMemo(() => {
+    const map = new Map<string, { date: number; estadoFinal: EstadoEquipo }>();
+    for (const a of allAsignaciones) {
+      if (a.estado !== EstadoAsignacion.FINALIZADA) continue;
+      if (!a.estadoFinalEquipo) continue;
+      const date = new Date(a.fechaDevolucion || a.fechaAsignacion).getTime();
+      const prev = map.get(a.idEquipo);
+      if (!prev || date > prev.date) {
+        map.set(a.idEquipo, { date, estadoFinal: a.estadoFinalEquipo as EstadoEquipo });
+      }
+    }
+    return map;
+  }, [allAsignaciones]);
+
+  const equiposDisponibles = useMemo(() => {
+    return equipos.filter((e) => {
+      const active = activeAsignacionByEquipo.has(e.id);
+      if (active) return false;
+      const lastFinal = lastFinalEstadoByEquipo.get(e.id);
+      const effective = lastFinal?.estadoFinal || e.estado;
+      return effective === EstadoEquipo.DISPONIBLE;
+    });
+  }, [equipos, activeAsignacionByEquipo, lastFinalEstadoByEquipo]);
 
   useEffect(() => {
     if (selectedPaciente) {
-      const asigs = db.getAsignacionesPorPaciente(selectedPaciente.id);
-      const equipos = db.getEquipos();
+      const asigs = allAsignaciones.filter((a) => a.idPaciente === selectedPaciente.id);
       const enriched = asigs.map(a => ({
         ...a,
-        nombreEquipo: equipos.find(e => e.id === a.idEquipo)?.nombre || 'Equipo'
+        nombreEquipo: equiposById.get(a.idEquipo)?.nombre || 'Equipo'
       }));
       setAsignaciones(enriched as any);
     }
-  }, [selectedPaciente, refresh]);
+  }, [selectedPaciente, allAsignaciones, equiposById]);
 
   // Filtro de Pacientes (Buscador)
   const filteredPacientes = pacientes.filter(p => {
@@ -75,7 +126,7 @@ const Patients: React.FC = () => {
     );
   });
 
-  const handleSavePaciente = (e: React.FormEvent) => {
+  const handleSavePaciente = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canManage) return;
 
@@ -102,7 +153,7 @@ const Patients: React.FC = () => {
     };
 
     try {
-      db.savePaciente(newPaciente);
+      await savePaciente(newPaciente);
       // Si estábamos editando, actualizamos el seleccionado
       if (formData.id && selectedPaciente && selectedPaciente.id === formData.id) {
           setSelectedPaciente(newPaciente);
@@ -110,9 +161,9 @@ const Patients: React.FC = () => {
       } else {
           setViewMode('list');
       }
-      setRefresh(prev => prev + 1);
     } catch (err: any) {
-      alert(err.message); // Mostrar error de duplicado o sistema
+      console.error('Error guardando paciente:', err);
+      alert(`${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo guardar el paciente.'}`); // Mostrar error de duplicado o sistema
     }
   };
 
@@ -174,11 +225,13 @@ const Patients: React.FC = () => {
 
   // Función para importar CSV
   const handleImportCSV = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!canManage) return;
     const file = e.target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
     reader.onload = (event) => {
+      (async () => {
       const text = event.target?.result as string;
       if (!text) return;
 
@@ -190,9 +243,9 @@ const Patients: React.FC = () => {
       let errorCount = 0;
       let errorMessages: string[] = [];
 
-      dataLines.forEach((line, index) => {
+      for (const [index, line] of dataLines.entries()) {
         const columns = line.split(','); 
-        if (columns.length < 5) return; 
+        if (columns.length < 5) continue; 
 
         // Actualizado para nuevos campos
         const importedPaciente: Paciente = {
@@ -219,66 +272,80 @@ const Patients: React.FC = () => {
           if (!importedPaciente.numeroDocumento || !importedPaciente.nombreCompleto) {
             throw new Error(`Fila ${index + 2}: Falta documento o nombre`);
           }
-          db.savePaciente(importedPaciente);
+          await savePaciente(importedPaciente);
           successCount++;
         } catch (err: any) {
           errorCount++;
           errorMessages.push(`Fila ${index + 2} (${importedPaciente.nombreCompleto}): ${err.message}`);
         }
-      });
+      }
 
       let message = `Proceso completado.\n\nImportados exitosamente: ${successCount}\nFallidos: ${errorCount}`;
       if (errorCount > 0) {
         message += `\n\nErrores:\n${errorMessages.slice(0, 5).join('\n')}${errorMessages.length > 5 ? '\n...' : ''}`;
       }
       alert(message);
-      setRefresh(prev => prev + 1);
       if (fileInputRef.current) fileInputRef.current.value = ''; 
+      })().catch((err) => alert(err?.message || 'Error importando CSV'));
     };
     reader.readAsText(file);
   };
 
-  const handleAsignar = () => {
+  const handleAsignar = async () => {
     if (!selectedPaciente || !equipoSeleccionado || !canManage) return;
     try {
-      const nuevaAsignacion = db.asignarEquipo(selectedPaciente.id, equipoSeleccionado, obsAsignacion, usuario?.nombre || 'Admin');
+      const nuevaAsignacion = await asignarEquipo({
+        idPaciente: selectedPaciente.id,
+        idEquipo: equipoSeleccionado,
+        observacionesEntrega: obsAsignacion,
+        usuarioAsigna: usuario?.nombre || 'Admin',
+      });
       alert(`Asignación exitosa.\n\nACTA DE ENTREGA N° ${nuevaAsignacion.consecutivo}\nPaciente: ${selectedPaciente.nombreCompleto}`);
       setObsAsignacion('');
       setEquipoSeleccionado('');
-      setRefresh(prev => prev + 1);
     } catch (err: any) {
-      alert(err.message);
+      console.error('Error asignando equipo:', err);
+      alert(`${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo asignar el equipo.'}`);
     }
   };
 
-  const handleDevolucion = () => {
+  const handleDevolucion = async () => {
     if (!asignacionADevolver || !canManage) return;
     try {
-      db.devolverEquipo(asignacionADevolver.id, obsDevolucion, estadoDevolucion);
+      await devolverEquipo({
+        idAsignacion: asignacionADevolver.id,
+        observacionesDevolucion: obsDevolucion,
+        estadoFinalEquipo: estadoDevolucion,
+      });
       alert('Equipo devuelto. Acta de devolución generada y almacenada en historial.');
       setAsignacionADevolver(null);
       setObsDevolucion('');
-      setRefresh(prev => prev + 1);
     } catch (err: any) {
-      alert(err.message);
+      console.error('Error registrando devolución:', err);
+      alert(`${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo registrar la devolución.'}`);
     }
   };
 
-  const handleSalidaPaciente = () => {
+  const handleSalidaPaciente = async () => {
     if (!selectedPaciente || !canManage) return;
-    const success = db.validarSalidaPaciente(selectedPaciente.id);
+    let success = false;
+    try {
+      success = await validarSalidaPaciente(selectedPaciente.id);
+    } catch (err: any) {
+      console.error('Error registrando salida:', err);
+      alert(`${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo registrar la salida.'}`);
+      return;
+    }
     if (!success) {
       alert("No se puede dar salida: El paciente tiene equipos asignados pendientes de devolución.");
     } else {
       alert("Salida registrada exitosamente.");
       setViewMode('list');
-      setRefresh(prev => prev + 1);
     }
   };
 
   const handleVerActa = (asig: Asignacion, tipo: 'ENTREGA' | 'DEVOLUCION') => {
-    const equipos = db.getEquipos();
-    const equipo = equipos.find(e => e.id === asig.idEquipo);
+    const equipo = equiposById.get(asig.idEquipo);
     
     if (equipo) {
       setActaData({ asig, equipo, tipo });
@@ -726,6 +793,11 @@ const Patients: React.FC = () => {
   // Lista por defecto
   return (
     <Layout title="Gestión de Pacientes">
+      {firestoreError && (
+        <div className="mb-4 bg-red-50 border border-red-200 text-red-800 rounded p-3 text-sm">
+          {firestoreError}
+        </div>
+      )}
       <div className="mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <input 
           type="text" 

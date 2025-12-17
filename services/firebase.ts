@@ -1,4 +1,4 @@
-import { initializeApp } from 'firebase/app';
+import { getApp, getApps, initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
@@ -48,7 +48,7 @@ function assertFirebaseConfig() {
 
 assertFirebaseConfig();
 
-export const firebaseApp = initializeApp(firebaseConfig);
+export const firebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
 export const auth = getAuth(firebaseApp);
 export const db = getFirestore(firebaseApp);
 export const storage = getStorage(firebaseApp);
@@ -61,4 +61,3 @@ export async function getFirebaseAnalytics() {
   const { getAnalytics } = await import('firebase/analytics');
   return getAnalytics(firebaseApp);
 }
-
