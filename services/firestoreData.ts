@@ -1,6 +1,7 @@
 import {
   addDoc,
   collection,
+  deleteField,
   doc,
   getDocs,
   limit,
@@ -218,4 +219,17 @@ export async function validarSalidaPaciente(idPaciente: string): Promise<boolean
     }) as any,
   );
   return true;
+}
+
+export async function guardarFirmaPaciente(params: {
+  idAsignacion: string;
+  tipoActa: 'ENTREGA' | 'DEVOLUCION';
+  dataUrl: string | null;
+}) {
+  const { idAsignacion, tipoActa, dataUrl } = params;
+  const ref = doc(asignacionesCol, idAsignacion);
+  const fieldName = tipoActa === 'ENTREGA' ? 'firmaPacienteEntrega' : 'firmaPacienteDevolucion';
+  await updateDoc(ref, {
+    [fieldName]: dataUrl ? dataUrl : deleteField(),
+  } as any);
 }

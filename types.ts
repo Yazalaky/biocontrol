@@ -96,6 +96,9 @@ export interface Asignacion {
   observacionesDevolucion?: string;
   // Estado final del equipo registrado al devolver (cuando estado = FINALIZADA)
   estadoFinalEquipo?: EstadoEquipo;
+  // Firmas (DataURL base64) guardadas en Firestore
+  firmaPacienteEntrega?: string;
+  firmaPacienteDevolucion?: string;
   usuarioAsigna: string; 
 }
 

@@ -14,20 +14,44 @@
       
       /* Estilos para impresión del Acta */
       @media print {
-        body * {
-          visibility: hidden;
-        }
-        #acta-print-container, #acta-print-container * {
-          visibility: visible;
-        }
-        #acta-print-container {
-          position: absolute;
-          left: 0;
-          top: 0;
-          width: 100%;
+        @page {
+          size: A4 portrait;
           margin: 0;
-          padding: 0;
-          background: white;
+        }
+        html, body {
+          margin: 0 !important;
+          padding: 0 !important;
+          background: white !important;
+          -webkit-print-color-adjust: exact;
+          print-color-adjust: exact;
+        }
+        /* Solo imprimimos el acta cuando el body tiene esta clase (se agrega justo antes de imprimir) */
+        body.printing-acta * {
+          visibility: hidden !important;
+        }
+        body.printing-acta #acta-print-root,
+        body.printing-acta #acta-print-root * {
+          visibility: visible !important;
+        }
+        body.printing-acta #acta-print-root {
+          position: fixed !important;
+          inset: 0 !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          background: white !important;
+          transform: none !important;
+          box-shadow: none !important;
+          display: flex !important;
+          justify-content: center !important;
+          align-items: flex-start !important;
+        }
+        body.printing-acta #acta-print-root * {
+          transform: none !important;
+        }
+        body.printing-acta #acta-print-root .acta-page {
+          margin: 0 !important;
+          border: none !important;
+          box-shadow: none !important;
         }
         /* Ocultar elementos de UI durante impresión */
         .no-print {

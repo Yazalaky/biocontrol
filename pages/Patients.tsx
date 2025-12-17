@@ -1,11 +1,20 @@
-import React, { useMemo, useState, useEffect, useRef } from 'react';
+import React, { useMemo, useState, useEffect, useRef, useLayoutEffect } from 'react';
 import Layout from '../components/Layout';
 import { Paciente, EstadoPaciente, Asignacion, EquipoBiomedico, EstadoEquipo, EstadoAsignacion, RolUsuario, EPS } from '../types';
 import { useAuth } from '../contexts/AuthContext';
 import StatusBadge from '../components/StatusBadge';
 import ActaFormat from '../components/ActaFormat';
 import SignaturePad from '../components/SignaturePad';
-import { asignarEquipo, devolverEquipo, savePaciente, subscribeAsignaciones, subscribeEquipos, subscribePacientes, validarSalidaPaciente } from '../services/firestoreData';
+import {
+  asignarEquipo,
+  devolverEquipo,
+  guardarFirmaPaciente,
+  savePaciente,
+  subscribeAsignaciones,
+  subscribeEquipos,
+  subscribePacientes,
+  validarSalidaPaciente,
+} from '../services/firestoreData';
 
 const Patients: React.FC = () => {
   const { usuario } = useAuth();
@@ -41,6 +50,10 @@ const Patients: React.FC = () => {
   const [actaData, setActaData] = useState<{asig: Asignacion, equipo: EquipoBiomedico, tipo: 'ENTREGA' | 'DEVOLUCION'} | null>(null);
   const [patientSignature, setPatientSignature] = useState<string | null>(null);
   const [adminSignature, setAdminSignature] = useState<string | null>(null);
+  const [savingPatientSig, setSavingPatientSig] = useState(false);
+  const actaViewportRef = useRef<HTMLDivElement>(null);
+  const actaMeasureRef = useRef<HTMLDivElement>(null);
+  const [actaPreviewScale, setActaPreviewScale] = useState(1);
 
   // Load Admin Signature from LocalStorage on mount
   useEffect(() => {
@@ -114,6 +127,42 @@ const Patients: React.FC = () => {
       setAsignaciones(enriched as any);
     }
   }, [selectedPaciente, allAsignaciones, equiposById]);
+
+  // Auto-escalado para que el acta completa quepa en la vista previa (sin recortes ni scroll horizontal).
+  useLayoutEffect(() => {
+    if (!actaData) return;
+
+    const viewport = actaViewportRef.current;
+    const measure = actaMeasureRef.current;
+    if (!viewport || !measure) return;
+
+    const computeScale = () => {
+      const rect = viewport.getBoundingClientRect();
+      const style = getComputedStyle(viewport);
+      const paddingX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      const paddingY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+
+      const availableW = Math.max(0, rect.width - paddingX);
+      const availableH = Math.max(0, rect.height - paddingY);
+
+      const pageW = measure.offsetWidth;
+      const pageH = measure.offsetHeight;
+
+      if (!availableW || !availableH || !pageW || !pageH) return;
+
+      // No agrandamos (máx 1). Solo reducimos si hace falta.
+      const scale = Math.min(availableW / pageW, availableH / pageH, 1);
+      setActaPreviewScale(Number(scale.toFixed(4)));
+    };
+
+    computeScale();
+
+    const ro = new ResizeObserver(() => computeScale());
+    ro.observe(viewport);
+    ro.observe(measure);
+
+    return () => ro.disconnect();
+  }, [actaData]);
 
   // Filtro de Pacientes (Buscador)
   const filteredPacientes = pacientes.filter(p => {
@@ -349,8 +398,29 @@ const Patients: React.FC = () => {
     
     if (equipo) {
       setActaData({ asig, equipo, tipo });
-      setPatientSignature(null); // Reset signature for new acta
+      const savedSig = tipo === 'ENTREGA' ? asig.firmaPacienteEntrega : asig.firmaPacienteDevolucion;
+      setPatientSignature(savedSig || null);
       // Admin sig is kept from localstorage
+    }
+  };
+
+  const handleGuardarFirmaPaciente = async () => {
+    if (!canManage) return;
+    if (!actaData) return;
+
+    setSavingPatientSig(true);
+    try {
+      await guardarFirmaPaciente({
+        idAsignacion: actaData.asig.id,
+        tipoActa: actaData.tipo,
+        dataUrl: patientSignature,
+      });
+      alert('Firma del paciente/familiar guardada correctamente.');
+    } catch (err: any) {
+      console.error('Error guardando firma paciente:', err);
+      alert(`${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo guardar la firma del paciente/familiar.'}`);
+    } finally {
+      setSavingPatientSig(false);
     }
   };
 
@@ -368,7 +438,36 @@ const Patients: React.FC = () => {
   };
 
   const handlePrint = () => {
+    const actaEl = document.querySelector('#acta-print-container .acta-page') as HTMLElement | null;
+    if (!actaEl) {
+      window.print();
+      return;
+    }
+
+    // Creamos un contenedor dedicado para impresión (fuera del modal/flex), para evitar offsets/escala en el PDF.
+    const existing = document.getElementById('acta-print-root');
+    existing?.remove();
+
+    const printRoot = document.createElement('div');
+    printRoot.id = 'acta-print-root';
+    printRoot.appendChild(actaEl.cloneNode(true));
+    document.body.appendChild(printRoot);
+    document.body.classList.add('printing-acta');
+
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      document.body.classList.remove('printing-acta');
+      printRoot.remove();
+      window.removeEventListener('afterprint', cleanup);
+    };
+
+    window.addEventListener('afterprint', cleanup);
     window.print();
+
+    // Fallback (hay navegadores que no disparan afterprint al guardar como PDF)
+    setTimeout(cleanup, 2000);
   };
 
   // --- RENDERS ---
@@ -731,10 +830,68 @@ const Patients: React.FC = () => {
                         {/* Firma Paciente */}
                         <div className="mb-6">
                             <label className="block text-sm font-medium text-gray-600 mb-2">Firma Paciente/Familiar</label>
-                            <div className="bg-white">
-                                <SignaturePad onEnd={setPatientSignature} />
-                            </div>
-                            <p className="text-xs text-gray-400 mt-1">El paciente puede firmar usando el mouse o el dedo en pantallas táctiles.</p>
+                            {(() => {
+                              const savedSig =
+                                actaData.tipo === 'ENTREGA'
+                                  ? actaData.asig.firmaPacienteEntrega
+                                  : actaData.asig.firmaPacienteDevolucion;
+                              const locked = !!savedSig;
+
+                              return (
+                                <>
+                                  <div className="bg-white">
+                                    {locked ? (
+                                      <div className="border border-gray-300 rounded bg-white p-2">
+                                        <img
+                                          src={savedSig}
+                                          alt="Firma guardada del paciente/familiar"
+                                          className="w-full h-40 object-contain"
+                                        />
+                                      </div>
+                                    ) : (
+                                      <SignaturePad onEnd={setPatientSignature} />
+                                    )}
+                                  </div>
+
+                                  <p className="text-xs text-gray-400 mt-1">
+                                    {locked
+                                      ? 'Esta acta ya tiene firma registrada. Por control, la firma no se puede modificar.'
+                                      : 'El paciente puede firmar usando el mouse o el dedo en pantallas táctiles.'}
+                                  </p>
+
+                                  {!locked && (
+                                    <>
+                                      <div className="mt-3 flex gap-2">
+                                        <button
+                                          type="button"
+                                          onClick={handleGuardarFirmaPaciente}
+                                          disabled={savingPatientSig || !patientSignature}
+                                          className="flex-1 bg-blue-600 text-white px-3 py-2 rounded text-sm disabled:opacity-60"
+                                          title={
+                                            !patientSignature
+                                              ? 'Firme primero para habilitar el guardado'
+                                              : 'Guardar la firma en Firestore para esta acta'
+                                          }
+                                        >
+                                          {savingPatientSig ? 'Guardando...' : 'Guardar firma'}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => setPatientSignature(null)}
+                                          className="px-3 py-2 rounded text-sm border border-gray-300 text-gray-700 hover:bg-white"
+                                        >
+                                          Limpiar
+                                        </button>
+                                      </div>
+                                      <p className="text-[11px] text-gray-500 mt-2">
+                                        La firma se guarda en Firestore dentro de la asignación (
+                                        {actaData.tipo === 'ENTREGA' ? 'firmaPacienteEntrega' : 'firmaPacienteDevolucion'}).
+                                      </p>
+                                    </>
+                                  )}
+                                </>
+                              );
+                            })()}
                         </div>
 
                         {/* Firma Admin */}
@@ -770,16 +927,26 @@ const Patients: React.FC = () => {
                     </div>
 
                     {/* Vista Previa del Acta */}
-                    <div className="flex-1 overflow-y-auto p-8 bg-gray-200 flex justify-center">
-                        <div id="acta-print-container" className="bg-white shadow-lg origin-top scale-95 md:scale-100 transition-transform">
-                            <ActaFormat 
-                                paciente={selectedPaciente}
-                                equipo={actaData.equipo}
-                                asignacion={actaData.asig}
-                                tipoActa={actaData.tipo}
-                                patientSignature={patientSignature}
-                                adminSignature={adminSignature}
-                            />
+                    <div className="flex-1 overflow-hidden bg-gray-200">
+                        <div
+                          ref={actaViewportRef}
+                          className="w-full h-full p-4 flex justify-center items-start overflow-hidden"
+                        >
+                          <div
+                            className="transition-transform"
+                            style={{ transform: `scale(${actaPreviewScale})`, transformOrigin: 'top center' }}
+                          >
+                            <div id="acta-print-container" ref={actaMeasureRef} className="bg-white shadow-lg">
+                              <ActaFormat 
+                                  paciente={selectedPaciente}
+                                  equipo={actaData.equipo}
+                                  asignacion={actaData.asig}
+                                  tipoActa={actaData.tipo}
+                                  patientSignature={patientSignature}
+                                  adminSignature={adminSignature}
+                              />
+                            </div>
+                          </div>
                         </div>
                     </div>
                 </div>
