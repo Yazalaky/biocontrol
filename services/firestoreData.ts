@@ -102,6 +102,50 @@ export function subscribeAsignaciones(onData: (asignaciones: Asignacion[]) => vo
   );
 }
 
+export function subscribeEntregasByMonth(
+  startIsoInclusive: string,
+  endIsoExclusive: string,
+  onData: (asignaciones: Asignacion[]) => void,
+  onError?: (e: Error) => void,
+) {
+  const q = query(
+    asignacionesCol,
+    where('fechaAsignacion', '>=', startIsoInclusive),
+    where('fechaAsignacion', '<', endIsoExclusive),
+    orderBy('fechaAsignacion', 'asc'),
+  );
+  return onSnapshot(
+    q,
+    (snap) => {
+      const asignaciones = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Asignacion, 'id'>) }));
+      onData(asignaciones);
+    },
+    (err) => onError?.(err as unknown as Error),
+  );
+}
+
+export function subscribeDevolucionesByMonth(
+  startIsoInclusive: string,
+  endIsoExclusive: string,
+  onData: (asignaciones: Asignacion[]) => void,
+  onError?: (e: Error) => void,
+) {
+  const q = query(
+    asignacionesCol,
+    where('fechaDevolucion', '>=', startIsoInclusive),
+    where('fechaDevolucion', '<', endIsoExclusive),
+    orderBy('fechaDevolucion', 'asc'),
+  );
+  return onSnapshot(
+    q,
+    (snap) => {
+      const asignaciones = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Asignacion, 'id'>) }));
+      onData(asignaciones);
+    },
+    (err) => onError?.(err as unknown as Error),
+  );
+}
+
 export async function savePaciente(paciente: Paciente) {
   assertRoleString(paciente.estado, Object.values(EstadoPaciente), 'estado');
 

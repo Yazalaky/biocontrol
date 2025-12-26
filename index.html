@@ -53,6 +53,22 @@
           border: none !important;
           box-shadow: none !important;
         }
+
+        /* Impresión de Informes */
+        body.printing-reports * {
+          visibility: hidden !important;
+        }
+        body.printing-reports #reports-print-root,
+        body.printing-reports #reports-print-root * {
+          visibility: visible !important;
+        }
+        body.printing-reports #reports-print-root {
+          position: fixed !important;
+          inset: 0 !important;
+          margin: 0 !important;
+          padding: 24px !important;
+          background: white !important;
+        }
         /* Ocultar elementos de UI durante impresión */
         .no-print {
           display: none !important;

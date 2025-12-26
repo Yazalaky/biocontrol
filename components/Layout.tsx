@@ -74,6 +74,11 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
             path="#/equipos" 
             roles={[RolUsuario.INGENIERO_BIOMEDICO, RolUsuario.AUXILIAR_ADMINISTRATIVA, RolUsuario.GERENCIA]} 
           />
+          <NavItem
+            label="Informes"
+            path="#/informes"
+            roles={[RolUsuario.INGENIERO_BIOMEDICO, RolUsuario.AUXILIAR_ADMINISTRATIVA, RolUsuario.GERENCIA]}
+          />
           {isAdmin && (
             <NavItem label="Admin" path="#/admin" />
           )}
