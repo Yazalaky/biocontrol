@@ -75,7 +75,7 @@ const SignaturePad: React.FC<Props> = ({ onEnd }) => {
   };
 
   return (
-    <div className="border border-gray-300 rounded bg-white relative">
+    <div className="force-light border border-gray-300 rounded bg-white relative">
       <canvas
         ref={canvasRef}
         className="block touch-none cursor-crosshair"

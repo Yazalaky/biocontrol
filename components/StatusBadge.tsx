@@ -28,7 +28,7 @@ const StatusBadge: React.FC<Props> = ({ status }) => {
   }
 
   return (
-    <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${colorClass}`}>
+    <span className={`px-2.5 py-1 inline-flex text-xs leading-4 font-semibold rounded-full border border-black/5 ${colorClass}`}>
       {status.replace(/_/g, ' ')}
     </span>
   );

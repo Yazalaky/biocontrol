@@ -1,11 +1,59 @@
 import React, { ReactNode } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import ThemeToggle from './ThemeToggle';
 import { RolUsuario } from '../types';
 
 interface LayoutProps {
   children: ReactNode;
   title: string;
 }
+
+function getInitials(name?: string | null) {
+  const n = (name || '').trim();
+  if (!n) return 'U';
+  const parts = n.split(/\s+/).filter(Boolean);
+  const first = parts[0]?.[0] || 'U';
+  const last = (parts.length > 1 ? parts[parts.length - 1]?.[0] : '') || '';
+  return (first + last).toUpperCase();
+}
+
+const Icons = {
+  dashboard: (
+    <svg className="app-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M3 12h8V3H3v9Z" />
+      <path d="M13 21h8V12h-8v9Z" />
+      <path d="M13 3h8v7h-8V3Z" />
+      <path d="M3 14h8v7H3v-7Z" />
+    </svg>
+  ),
+  patients: (
+    <svg className="app-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+    </svg>
+  ),
+  inventory: (
+    <svg className="app-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M21 16V8a2 2 0 0 0-1-1.73L13 2.27a2 2 0 0 0-2 0L4 6.27A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4a2 2 0 0 0 1-1.73Z" />
+      <path d="M3.3 7l8.7 5 8.7-5" />
+      <path d="M12 22V12" />
+    </svg>
+  ),
+  reports: (
+    <svg className="app-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M3 3v18h18" />
+      <path d="M7 14l4-4 3 3 6-6" />
+    </svg>
+  ),
+  admin: (
+    <svg className="app-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M12 3l8 4v6c0 5-3.5 9-8 9s-8-4-8-9V7l8-4Z" />
+      <path d="M9 12l2 2 4-4" />
+    </svg>
+  ),
+};
 
 const Layout: React.FC<LayoutProps> = ({ children, title }) => {
   const { usuario, logout, hasRole, isAdmin } = useAuth();
@@ -23,19 +71,21 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
     return (
       <button
         onClick={() => navigate(path)}
-        className={`w-full text-left px-4 py-3 rounded-md mb-1 transition-colors ${
-          isActive 
-            ? 'bg-blue-600 text-white' 
-            : 'text-gray-300 hover:bg-slate-700 hover:text-white'
-        }`}
+        className="app-nav-item mb-1"
+        data-active={isActive ? 'true' : 'false'}
       >
-        {label}
+        {path === '#/' ? Icons.dashboard : null}
+        {path === '#/pacientes' ? Icons.patients : null}
+        {path === '#/equipos' ? Icons.inventory : null}
+        {path === '#/informes' ? Icons.reports : null}
+        {path === '#/admin' ? Icons.admin : null}
+        <span className="text-sm font-medium">{label}</span>
       </button>
     );
   };
 
   return (
-    <div className="flex h-screen bg-gray-100 overflow-hidden">
+    <div className="app-shell flex h-screen overflow-hidden">
       {/* Sidebar Mobile Overlay */}
       {isSidebarOpen && (
         <div 
@@ -46,21 +96,30 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
 
       {/* Sidebar */}
       <aside className={`
-        fixed md:relative z-30 w-64 h-full bg-slate-800 text-white flex flex-col transition-transform duration-300 ease-in-out
+        app-sidebar fixed md:relative z-30 w-72 h-full flex flex-col transition-transform duration-300 ease-in-out
         ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
       `}>
-        <div className="p-6 border-b border-slate-700">
-          <h1 className="text-xl font-bold tracking-wider">BioControl</h1>
-          <p className="text-xs text-slate-400 mt-1">{usuario?.nombre}</p>
-          <span className="text-[10px] uppercase bg-slate-700 px-2 py-0.5 rounded text-blue-300">
-            {usuario?.rol.replace('_', ' ')}
+        <div className="p-6 border-b border-slate-700/50">
+          <div className="flex items-center gap-3">
+            <div className="h-10 w-10 rounded-xl bg-blue-600/15 flex items-center justify-center text-blue-200 border border-blue-500/30">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M19.428 15.428a2 2 0 0 0-1.022-.547l-2.384-.477a6 6 0 0 0-3.86.517l-.318.158a6 6 0 0 1-3.86.517L6.05 15.21a2 2 0 0 0-1.806.547M8 4h8l-1 1v5.172a2 2 0 0 0 .586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 0 0 9 10.172V5L8 4z" />
+              </svg>
+            </div>
+            <div>
+              <h1 className="text-xl font-bold tracking-wide">BioControl</h1>
+              <p className="text-xs sidebar-muted mt-0.5">{usuario?.nombre}</p>
+            </div>
+          </div>
+          <span className="mt-3 inline-flex text-[10px] uppercase px-3 py-1 rounded-full border border-white/10 bg-white/5 text-white/80">
+            {usuario?.rol.replace(/_/g, ' ')}
           </span>
         </div>
 
         <nav className="flex-1 p-4 overflow-y-auto">
           <NavItem label="Dashboard" path="#/" />
           
-          <div className="mt-4 mb-2 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+          <div className="mt-5 mb-2 px-4 text-xs font-semibold sidebar-muted uppercase tracking-wider">
             Gestión
           </div>
           {/* SE AGREGÓ EL ROL DE INGENIERO BIOMEDICO A PACIENTES */}
@@ -84,10 +143,10 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
           )}
         </nav>
 
-        <div className="p-4 border-t border-slate-700">
+        <div className="p-4 border-t border-slate-700/50">
           <button 
             onClick={logout}
-            className="w-full flex items-center justify-center px-4 py-2 text-sm text-red-300 hover:bg-slate-700 hover:text-red-200 rounded-md transition-colors"
+            className="w-full flex items-center justify-center px-4 py-2 text-sm text-red-300 hover:bg-white/5 hover:text-red-200 rounded-full transition-colors"
           >
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
@@ -100,20 +159,34 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
       {/* Main Content */}
       <div className="flex-1 flex flex-col h-full overflow-hidden">
         {/* Header Mobile */}
-        <header className="bg-white shadow-sm md:hidden flex items-center justify-between p-4">
+        <header className="app-topbar md:hidden flex items-center justify-between p-4 border-b border-gray-200">
           <button onClick={() => setIsSidebarOpen(true)} className="text-gray-600">
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
             </svg>
           </button>
           <h1 className="text-lg font-semibold text-gray-800">{title}</h1>
-          <div className="w-6"></div> {/* Spacer */}
+          <div className="flex items-center gap-2">
+            <ThemeToggle compact />
+            <div className="h-9 w-9 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs shadow">
+              {getInitials(usuario?.nombre)}
+            </div>
+          </div>
         </header>
 
         {/* Desktop Header & Content */}
         <main className="flex-1 overflow-auto p-4 md:p-8">
           <div className="hidden md:flex justify-between items-center mb-8">
-            <h2 className="text-2xl font-bold text-gray-800">{title}</h2>
+            <div>
+              <h2 className="text-2xl font-bold text-gray-800">{title}</h2>
+              <p className="text-sm text-gray-500 mt-1">BioControl · Gestión biomédica</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <ThemeToggle />
+              <div className="h-10 w-10 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-sm shadow">
+                {getInitials(usuario?.nombre)}
+              </div>
+            </div>
           </div>
           {children}
         </main>

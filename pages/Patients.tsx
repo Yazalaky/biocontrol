@@ -197,6 +197,13 @@ const Patients: React.FC = () => {
     );
   });
 
+  const initials = (fullName: string) => {
+    const parts = (fullName || '').trim().split(/\s+/).filter(Boolean);
+    const first = parts[0]?.[0] || 'P';
+    const last = (parts.length > 1 ? parts[parts.length - 1]?.[0] : '') || '';
+    return (first + last).toUpperCase();
+  };
+
   const handleSavePaciente = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canManage) return;
@@ -1118,13 +1125,20 @@ const Patients: React.FC = () => {
         </div>
       )}
       <div className="mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <input 
-          type="text" 
-          placeholder="Buscar por nombre, EPS o documento..." 
-          className="border p-2 rounded w-full md:w-80 shadow-sm"
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-        />
+        <div className="w-full md:max-w-xl">
+          <div className="md-search">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="11" cy="11" r="7" />
+              <path d="M21 21l-4.3-4.3" />
+            </svg>
+            <input
+              type="text"
+              placeholder="Buscar por nombre, EPS o documento..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </div>
+        </div>
         
         {canManage && (
           <div className="flex gap-2">
@@ -1137,14 +1151,14 @@ const Patients: React.FC = () => {
             />
             <button 
               onClick={() => fileInputRef.current?.click()}
-              className="bg-indigo-600 text-white px-4 py-2 rounded shadow hover:bg-indigo-700 flex items-center text-sm"
+              className="md-btn md-btn-tonal"
             >
               <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>
               Importar CSV
             </button>
             <button 
               onClick={handleDownloadTemplate}
-              className="bg-green-600 text-white px-4 py-2 rounded shadow hover:bg-green-700 flex items-center text-sm"
+              className="md-btn md-btn-outlined"
               title="Descargar formato CSV para llenado masivo"
             >
               <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
@@ -1152,7 +1166,7 @@ const Patients: React.FC = () => {
             </button>
             <button 
               onClick={() => { setFormData({}); setViewMode('create'); }}
-              className="bg-blue-600 text-white px-4 py-2 rounded shadow hover:bg-blue-700 flex items-center text-sm"
+              className="md-btn md-btn-filled"
             >
               <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
               Nuevo Paciente
@@ -1161,7 +1175,7 @@ const Patients: React.FC = () => {
         )}
       </div>
 
-      <div className="bg-white rounded-lg shadow overflow-hidden">
+      <div className="md-card overflow-hidden">
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">
             <tr>
@@ -1180,11 +1194,21 @@ const Patients: React.FC = () => {
                   {String(p.consecutivo).padStart(3, '0')}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap">
-                  <div className="font-medium text-gray-900">{p.nombreCompleto}</div>
-                  <div className="text-sm text-gray-500">{p.tipoDocumento} {p.numeroDocumento}</div>
+                  <div className="flex items-center gap-3">
+                    <div
+                      className="h-9 w-9 rounded-full flex items-center justify-center font-bold text-xs"
+                      style={{ background: 'rgba(37,99,235,0.12)', color: 'var(--md-primary)' }}
+                    >
+                      {initials(p.nombreCompleto)}
+                    </div>
+                    <div>
+                      <div className="font-semibold text-gray-900">{p.nombreCompleto}</div>
+                      <div className="text-sm text-gray-500">{p.tipoDocumento} {p.numeroDocumento}</div>
+                    </div>
+                  </div>
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                  <div className="font-semibold text-blue-800">{p.eps}</div>
+                  <div className="font-semibold text-blue-700">{p.eps}</div>
                   <div className="text-xs">{p.tipoServicio} ({p.horasPrestadas})</div>
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap">
@@ -1196,7 +1220,7 @@ const Patients: React.FC = () => {
                 <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                   <button 
                     onClick={() => { setSelectedPaciente(p); setViewMode('details'); }}
-                    className="text-blue-600 hover:text-blue-900"
+                    className="text-blue-600 hover:text-blue-900 font-semibold"
                   >
                     {canManage ? 'Gestionar' : 'Ver Detalles'}
                   </button>

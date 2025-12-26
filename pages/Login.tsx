@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import ThemeToggle from '../components/ThemeToggle';
 
 const Login: React.FC = () => {
   const { login, loading: authLoading, error: authError } = useAuth();
@@ -26,8 +27,11 @@ const Login: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-900 to-slate-800 flex items-center justify-center p-4">
-      <div className="bg-white rounded-xl shadow-2xl p-8 max-w-md w-full">
+    <div className="min-h-screen flex items-center justify-center p-4" style={{ background: 'var(--md-bg)' }}>
+      <div className="bg-white rounded-xl shadow-2xl p-8 max-w-md w-full border border-gray-200">
+        <div className="flex justify-end mb-2">
+          <ThemeToggle compact />
+        </div>
         <div className="text-center mb-8">
           <div className="mx-auto h-12 w-12 bg-blue-100 rounded-full flex items-center justify-center mb-4">
             <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">

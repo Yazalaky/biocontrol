@@ -1,0 +1,251 @@
+:root {
+  /* Brand */
+  --md-primary: #2563eb;
+  --md-on-primary: #ffffff;
+  --md-primary-container: rgba(37, 99, 235, 0.12);
+
+  /* Surfaces */
+  --md-bg: #f6f7fb;
+  --md-surface: #ffffff;
+  --md-surface-2: #f3f4f6;
+  --md-surface-variant: #eef2ff;
+
+  /* Text */
+  --md-text: #0f172a;
+  --md-text-2: #334155;
+  --md-text-3: #64748b;
+
+  /* Outline & elevation */
+  --md-outline: rgba(15, 23, 42, 0.12);
+  --md-outline-2: rgba(15, 23, 42, 0.18);
+  --md-shadow-1: 0 1px 2px rgba(2, 6, 23, 0.06), 0 8px 24px rgba(2, 6, 23, 0.06);
+  --md-shadow-2: 0 6px 18px rgba(2, 6, 23, 0.12);
+
+  /* Radius */
+  --md-radius-sm: 12px;
+  --md-radius-md: 16px;
+  --md-radius-lg: 24px;
+
+  /* Sidebar */
+  --md-sidebar-bg: #0b1220;
+  --md-sidebar-surface: rgba(255, 255, 255, 0.06);
+  --md-sidebar-text: rgba(255, 255, 255, 0.92);
+  --md-sidebar-muted: rgba(255, 255, 255, 0.6);
+  --md-sidebar-active: rgba(37, 99, 235, 0.22);
+  --md-sidebar-active-text: #ffffff;
+}
+
+html[data-theme='dark'] {
+  --md-bg: #0b1220;
+  --md-surface: #0f172a;
+  --md-surface-2: #0b1220;
+  --md-surface-variant: #111c33;
+
+  --md-text: #e5e7eb;
+  --md-text-2: #cbd5e1;
+  --md-text-3: #94a3b8;
+
+  --md-outline: rgba(148, 163, 184, 0.2);
+  --md-outline-2: rgba(148, 163, 184, 0.28);
+  --md-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5), 0 12px 28px rgba(0, 0, 0, 0.35);
+  --md-shadow-2: 0 18px 36px rgba(0, 0, 0, 0.45);
+}
+
+/* Base */
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--md-bg) !important;
+  color: var(--md-text);
+}
+
+/* Utility: icon button (MD3-ish) */
+.md-icon-btn {
+  height: 40px;
+  width: 40px;
+  border-radius: 9999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--md-outline);
+  background: var(--md-surface);
+  color: var(--md-text-2);
+  box-shadow: var(--md-shadow-1);
+  transition: transform 120ms ease, background 120ms ease, box-shadow 120ms ease;
+}
+.md-icon-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--md-shadow-2);
+}
+
+/* App shell */
+.app-shell {
+  background: var(--md-bg);
+  color: var(--md-text);
+}
+
+.app-topbar {
+  background: var(--md-bg);
+}
+
+/* Sidebar & nav */
+.app-sidebar {
+  background: var(--md-sidebar-bg);
+  color: var(--md-sidebar-text);
+}
+.app-sidebar .sidebar-muted {
+  color: var(--md-sidebar-muted);
+}
+.app-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 9999px;
+  transition: background 120ms ease, transform 120ms ease, color 120ms ease;
+  color: var(--md-sidebar-muted);
+}
+.app-nav-item:hover {
+  background: var(--md-sidebar-surface);
+  color: var(--md-sidebar-text);
+}
+.app-nav-item[data-active='true'] {
+  background: var(--md-sidebar-active);
+  color: var(--md-sidebar-active-text);
+}
+.app-nav-icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+/* Card surface */
+.md-card {
+  background: var(--md-surface);
+  border: 1px solid var(--md-outline);
+  border-radius: var(--md-radius-md);
+  box-shadow: var(--md-shadow-1);
+}
+
+/* Buttons (MD3-ish) */
+.md-btn {
+  height: 44px;
+  padding: 0 16px;
+  border-radius: 9999px;
+  font-weight: 700;
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  transition: transform 120ms ease, background 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+  user-select: none;
+  white-space: nowrap;
+}
+.md-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.md-btn-filled {
+  background: var(--md-primary);
+  color: var(--md-on-primary);
+  box-shadow: var(--md-shadow-1);
+}
+.md-btn-filled:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--md-shadow-2);
+}
+.md-btn-tonal {
+  background: var(--md-primary-container);
+  color: var(--md-primary);
+  border: 1px solid rgba(37, 99, 235, 0.2);
+}
+.md-btn-tonal:hover {
+  background: rgba(37, 99, 235, 0.16);
+}
+.md-btn-outlined {
+  background: transparent;
+  color: var(--md-text-2);
+  border: 1px solid var(--md-outline);
+}
+.md-btn-outlined:hover {
+  background: rgba(148, 163, 184, 0.08);
+}
+
+/* Search pill */
+.md-search {
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  border-radius: 9999px;
+  border: 1px solid var(--md-outline);
+  background: var(--md-surface);
+  box-shadow: var(--md-shadow-1);
+}
+.md-search input {
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  height: 44px;
+  width: 100%;
+}
+.md-search svg {
+  color: var(--md-text-3);
+}
+
+/* Form fields (aplican aunque uses tailwind en inputs) */
+input,
+select,
+textarea {
+  border-radius: 12px;
+  border-color: var(--md-outline-2);
+}
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.22);
+  border-color: rgba(37, 99, 235, 0.45);
+}
+
+/* Dark-mode remap de clases Tailwind comunes (para no reescribir toda la app hoy) */
+html[data-theme='dark'] .bg-white:not(.force-light) {
+  background-color: var(--md-surface) !important;
+}
+html[data-theme='dark'] .bg-gray-50:not(.force-light) {
+  background-color: var(--md-surface-variant) !important;
+}
+html[data-theme='dark'] .bg-gray-100:not(.force-light),
+html[data-theme='dark'] .bg-gray-200:not(.force-light) {
+  background-color: var(--md-surface-2) !important;
+}
+html[data-theme='dark'] .text-gray-900,
+html[data-theme='dark'] .text-gray-800 {
+  color: var(--md-text) !important;
+}
+html[data-theme='dark'] .text-gray-700,
+html[data-theme='dark'] .text-gray-600 {
+  color: var(--md-text-2) !important;
+}
+html[data-theme='dark'] .text-gray-500,
+html[data-theme='dark'] .text-gray-400 {
+  color: var(--md-text-3) !important;
+}
+html[data-theme='dark'] .border-gray-200,
+html[data-theme='dark'] .border-gray-300,
+html[data-theme='dark'] .border-slate-700 {
+  border-color: var(--md-outline) !important;
+}
+
+/* Elementos que SIEMPRE deben verse claros (actas / firma) */
+.force-light {
+  background: #ffffff !important;
+  color: #000000 !important;
+}

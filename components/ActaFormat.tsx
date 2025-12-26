@@ -18,7 +18,7 @@ const ActaFormat: React.FC<ActaFormatProps> = ({ paciente, equipo, asignacion, t
   const logoSrc = logoCandidates[logoIndex];
 
   return (
-    <div className="acta-page bg-white text-black p-8 text-xs font-sans w-[210mm] min-h-[297mm] mx-auto border border-gray-300 shadow-none print:border-none print:shadow-none">
+    <div className="acta-page force-light bg-white text-black p-8 text-xs font-sans w-[210mm] min-h-[297mm] mx-auto border border-gray-300 shadow-none print:border-none print:shadow-none">
       
       {/* HEADER */}
       <div className="border-2 border-black mb-4 flex">

@@ -296,13 +296,20 @@ const Inventory: React.FC = () => {
         </div>
       )}
       <div className="mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <input 
-          type="text" 
-          placeholder="Buscar por código, serie o nombre..." 
-          className="border p-2 rounded w-full md:w-96 shadow-sm"
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-        />
+        <div className="w-full md:max-w-xl">
+          <div className="md-search">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="11" cy="11" r="7" />
+              <path d="M21 21l-4.3-4.3" />
+            </svg>
+            <input
+              type="text"
+              placeholder="Buscar por código, serie o nombre..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </div>
+        </div>
 
         {canEdit && (
           <div className="flex gap-2">
@@ -315,14 +322,14 @@ const Inventory: React.FC = () => {
             />
             <button 
               onClick={() => fileInputRef.current?.click()}
-              className="bg-indigo-600 text-white px-4 py-2 rounded shadow hover:bg-indigo-700 flex items-center text-sm"
+              className="md-btn md-btn-tonal"
             >
               <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>
               Importar
             </button>
             <button 
               onClick={handleDownloadTemplate}
-              className="bg-green-600 text-white px-4 py-2 rounded shadow hover:bg-green-700 flex items-center text-sm"
+              className="md-btn md-btn-outlined"
               title="Descargar plantilla CSV (Sin columna de Código)"
             >
                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
@@ -330,7 +337,7 @@ const Inventory: React.FC = () => {
             </button>
             <button 
               onClick={() => { setFormData({ tipoPropiedad: TipoPropiedad.PROPIO, fechaIngreso: new Date().toISOString() }); setIsModalOpen(true); }}
-              className="bg-blue-600 text-white px-4 py-2 rounded shadow hover:bg-blue-700 flex items-center text-sm"
+              className="md-btn md-btn-filled"
             >
               <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
               Nuevo Equipo
@@ -347,7 +354,7 @@ const Inventory: React.FC = () => {
             const status = active ? EstadoEquipo.ASIGNADO : (lastFinal?.estadoFinal || equipo.estado);
             const ubicacion = active ? pacientesById.get(active.idPaciente)?.nombreCompleto || equipo.ubicacionActual : equipo.ubicacionActual;
             return (
-          <div key={equipo.id} className="bg-white rounded-lg shadow border border-gray-200 p-5 hover:shadow-md transition-shadow relative">
+          <div key={equipo.id} className="md-card p-5 hover:shadow-[var(--md-shadow-2)] transition-shadow relative">
             <div className="flex justify-between items-start mb-2">
               <span className="text-xs font-mono bg-gray-100 px-2 py-1 rounded text-gray-600 border border-gray-200">
                 {equipo.codigoInventario}
@@ -375,6 +382,11 @@ const Inventory: React.FC = () => {
             <div className="mt-4 pt-4 border-t border-gray-100 text-sm space-y-1">
               <p><span className="font-semibold text-gray-500">Ubicación:</span> {ubicacion}</p>
               <p className="truncate"><span className="font-semibold text-gray-500">Obs:</span> {equipo.observaciones}</p>
+              {equipo.fechaIngreso && (
+                <p className="text-xs text-gray-500 mt-2">
+                  <span className="font-semibold">Ingreso:</span> {new Date(equipo.fechaIngreso).toLocaleDateString('es-CO')}
+                </p>
+              )}
               {equipo.tipoPropiedad === TipoPropiedad.EXTERNO && equipo.datosPropietario && (
                  <p className="text-xs text-orange-700 mt-2 bg-orange-50 p-1 rounded">
                    <strong>Propietario:</strong> {equipo.datosPropietario.nombre}
@@ -398,7 +410,7 @@ const Inventory: React.FC = () => {
             {canEdit && (
               <button 
                 onClick={() => openEdit(equipo)}
-                className="mt-4 w-full py-1.5 text-sm text-indigo-600 border border-indigo-200 rounded hover:bg-indigo-50"
+                className="mt-4 w-full md-btn md-btn-outlined"
               >
                 Editar / Cambiar Estado
               </button>
