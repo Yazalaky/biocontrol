@@ -21,7 +21,8 @@ const Inventory: React.FC = () => {
   // Modal Edit/Create State
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [formData, setFormData] = useState<Partial<EquipoBiomedico>>({
-    tipoPropiedad: TipoPropiedad.PROPIO
+    tipoPropiedad: TipoPropiedad.PROPIO,
+    fechaIngreso: new Date().toISOString(),
   });
 
   // Modal History State
@@ -110,6 +111,7 @@ const Inventory: React.FC = () => {
       marca: formData.marca || '',
       modelo: formData.modelo || '',
       estado: formData.estado || EstadoEquipo.DISPONIBLE,
+      fechaIngreso: formData.fechaIngreso ? formData.fechaIngreso : new Date().toISOString(),
       observaciones: formData.observaciones || '',
       ubicacionActual: formData.ubicacionActual || 'Bodega',
       tipoPropiedad: formData.tipoPropiedad || TipoPropiedad.PROPIO,
@@ -118,16 +120,26 @@ const Inventory: React.FC = () => {
     try {
       await saveEquipo(newEquipo);
       setIsModalOpen(false);
-      setFormData({ tipoPropiedad: TipoPropiedad.PROPIO });
+      setFormData({ tipoPropiedad: TipoPropiedad.PROPIO, fechaIngreso: new Date().toISOString() });
     } catch (err: any) {
       console.error('Error guardando equipo:', err);
       alert(`${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo guardar el equipo.'}`);
     }
   };
 
+  const isoToDateInput = (iso?: string) => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '';
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  };
+
   const openEdit = (equipo: EquipoBiomedico) => {
     if (!canEdit) return;
-    setFormData(equipo);
+    setFormData({ ...equipo, fechaIngreso: equipo.fechaIngreso || new Date().toISOString() });
     setIsModalOpen(true);
   };
 
@@ -174,7 +186,8 @@ const Inventory: React.FC = () => {
       "Observaciones",
       "Propietario_Nombre",
       "Propietario_NIT",
-      "Propietario_Telefono"
+      "Propietario_Telefono",
+      "FechaIngreso (YYYY-MM-DD)"
     ];
 
     const exampleRow = [
@@ -185,7 +198,8 @@ const Inventory: React.FC = () => {
       "PROPIO",
       "Bodega",
       "Equipo nuevo",
-      "", "", ""
+      "", "", "",
+      "2020-01-15"
     ];
 
     const csvContent = "data:text/csv;charset=utf-8," 
@@ -225,6 +239,12 @@ const Inventory: React.FC = () => {
 
         // Índices ajustados al remover CodigoInventario
         const tipoPropiedad = columns[4]?.trim().toUpperCase() === 'EXTERNO' ? TipoPropiedad.EXTERNO : TipoPropiedad.PROPIO;
+        const fechaIngresoStr = columns[10]?.trim();
+        const fechaIngresoIso = (() => {
+          if (!fechaIngresoStr) return new Date().toISOString();
+          const d = new Date(`${fechaIngresoStr}T12:00:00`);
+          return Number.isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
+        })();
 
         const importedEquipo: EquipoBiomedico = {
           id: '', 
@@ -234,6 +254,7 @@ const Inventory: React.FC = () => {
           marca: columns[2]?.trim() || '',
           modelo: columns[3]?.trim() || '',
           tipoPropiedad: tipoPropiedad,
+          fechaIngreso: fechaIngresoIso,
           ubicacionActual: columns[5]?.trim() || 'Bodega',
           observaciones: columns[6]?.trim() || '',
           estado: EstadoEquipo.DISPONIBLE,
@@ -308,7 +329,7 @@ const Inventory: React.FC = () => {
                Plantilla
             </button>
             <button 
-              onClick={() => { setFormData({ tipoPropiedad: TipoPropiedad.PROPIO }); setIsModalOpen(true); }}
+              onClick={() => { setFormData({ tipoPropiedad: TipoPropiedad.PROPIO, fechaIngreso: new Date().toISOString() }); setIsModalOpen(true); }}
               className="bg-blue-600 text-white px-4 py-2 rounded shadow hover:bg-blue-700 flex items-center text-sm"
             >
               <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
@@ -431,6 +452,37 @@ const Inventory: React.FC = () => {
                 <div>
                     <label className="block text-sm font-medium">Modelo</label>
                     <input className="w-full border p-2 rounded" value={formData.modelo || ''} onChange={e => setFormData({...formData, modelo: e.target.value})} required />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium">Fecha de Ingreso</label>
+                  <input
+                    type="date"
+                    className="w-full border p-2 rounded"
+                    value={isoToDateInput(formData.fechaIngreso)}
+                    onChange={(e) => {
+                      const dateStr = e.target.value;
+                      const d = new Date(`${dateStr}T12:00:00`);
+                      setFormData({
+                        ...formData,
+                        fechaIngreso: Number.isNaN(d.getTime()) ? undefined : d.toISOString(),
+                      });
+                    }}
+                    required
+                  />
+                  <p className="text-xs text-gray-500 mt-1">Registra el año/fecha real de ingreso al inventario.</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium">Ubicación Inicial</label>
+                  <input
+                    className="w-full border p-2 rounded"
+                    value={formData.ubicacionActual || ''}
+                    onChange={(e) => setFormData({ ...formData, ubicacionActual: e.target.value })}
+                    placeholder="Ej: Bodega"
+                  />
+                  <p className="text-xs text-gray-400 mt-1">Si está vacío, se guardará como “Bodega”.</p>
                 </div>
               </div>
 

@@ -73,6 +73,8 @@ export interface EquipoBiomedico {
   marca: string;
   modelo: string;
   estado: EstadoEquipo;
+  // Fecha de ingreso del equipo al inventario (ISO string).
+  fechaIngreso?: string;
   ubicacionActual?: string; 
   observaciones: string;
   tipoPropiedad: TipoPropiedad;
