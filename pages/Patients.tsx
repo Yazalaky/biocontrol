@@ -39,7 +39,16 @@ const Patients: React.FC = () => {
   // Assignment State
   const [asignaciones, setAsignaciones] = useState<Asignacion[]>([]);
   const [equipoSeleccionado, setEquipoSeleccionado] = useState('');
+  const [equipoQuery, setEquipoQuery] = useState('');
+  const [equipoPickerOpen, setEquipoPickerOpen] = useState(false);
   const [obsAsignacion, setObsAsignacion] = useState('');
+  const [fechaAsignacion, setFechaAsignacion] = useState<string>(() => {
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  });
   
   // Return State
   const [asignacionADevolver, setAsignacionADevolver] = useState<Asignacion | null>(null);
@@ -116,6 +125,19 @@ const Patients: React.FC = () => {
       return effective === EstadoEquipo.DISPONIBLE;
     });
   }, [equipos, activeAsignacionByEquipo, lastFinalEstadoByEquipo]);
+
+  const equiposDisponiblesFiltrados = useMemo(() => {
+    const q = equipoQuery.trim().toLowerCase();
+    if (!q) return [];
+    const matches = equiposDisponibles.filter((e) => {
+      return (
+        (e.codigoInventario || '').toLowerCase().includes(q) ||
+        (e.numeroSerie || '').toLowerCase().includes(q) ||
+        (e.nombre || '').toLowerCase().includes(q)
+      );
+    });
+    return matches.slice(0, 20);
+  }, [equipoQuery, equiposDisponibles]);
 
   useEffect(() => {
     if (selectedPaciente) {
@@ -342,16 +364,39 @@ const Patients: React.FC = () => {
 
   const handleAsignar = async () => {
     if (!selectedPaciente || !equipoSeleccionado || !canManage) return;
+    if (!fechaAsignacion) {
+      alert('Selecciona la fecha de asignación antes de continuar.');
+      return;
+    }
     try {
+      const isoFromDate = (dateStr: string) => {
+        // Usamos mediodía local para evitar problemas de zona horaria al convertir a ISO.
+        // Ej: "2025-01-01T12:00:00" -> ISO UTC, mantiene el mismo día para reportes mensuales.
+        const d = new Date(`${dateStr}T12:00:00`);
+        return Number.isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
+      };
+
+      const equipo = equiposById.get(equipoSeleccionado);
       const nuevaAsignacion = await asignarEquipo({
         idPaciente: selectedPaciente.id,
         idEquipo: equipoSeleccionado,
         observacionesEntrega: obsAsignacion,
         usuarioAsigna: usuario?.nombre || 'Admin',
+        fechaAsignacionIso: isoFromDate(fechaAsignacion),
       });
-      alert(`Asignación exitosa.\n\nACTA DE ENTREGA N° ${nuevaAsignacion.consecutivo}\nPaciente: ${selectedPaciente.nombreCompleto}`);
+      alert(
+        `Asignación exitosa.\n\nACTA DE ENTREGA N° ${nuevaAsignacion.consecutivo}\nPaciente: ${selectedPaciente.nombreCompleto}`,
+      );
       setObsAsignacion('');
       setEquipoSeleccionado('');
+      setEquipoQuery('');
+      setEquipoPickerOpen(false);
+
+      // Abrir automáticamente la vista previa del acta para firmar (flujo "Asignar y Firmar").
+      if (equipo) {
+        setActaData({ asig: nuevaAsignacion, equipo, tipo: 'ENTREGA' });
+        setPatientSignature(null);
+      }
     } catch (err: any) {
       console.error('Error asignando equipo:', err);
       alert(`${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo asignar el equipo.'}`);
@@ -663,30 +708,137 @@ const Patients: React.FC = () => {
             {selectedPaciente.estado === EstadoPaciente.ACTIVO && canManage && (
               <div className="bg-white p-6 rounded-lg shadow">
                 <h3 className="text-md font-bold mb-4">Nueva Asignación de Equipo</h3>
-                <div className="flex flex-col md:flex-row gap-4">
-                  <select 
-                    className="border p-2 rounded flex-1" 
-                    value={equipoSeleccionado} 
-                    onChange={e => setEquipoSeleccionado(e.target.value)}
-                  >
-                    <option value="">-- Seleccionar Equipo Disponible --</option>
-                    {equiposDisponibles.map(e => (
-                      <option key={e.id} value={e.id}>{e.nombre} ({e.codigoInventario}) - {e.marca}</option>
-                    ))}
-                  </select>
-                  <input 
-                    placeholder="Observaciones iniciales..." 
-                    className="border p-2 rounded flex-1"
-                    value={obsAsignacion}
-                    onChange={e => setObsAsignacion(e.target.value)}
-                  />
-                  <button 
-                    onClick={handleAsignar}
-                    disabled={!equipoSeleccionado}
-                    className="bg-blue-600 text-white px-4 py-2 rounded disabled:opacity-50"
-                  >
-                    Asignar y Firmar
-                  </button>
+                <div className="flex flex-col gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="md:col-span-1">
+                      <label className="block text-sm font-medium text-gray-700">Fecha de asignación</label>
+                      <input
+                        type="date"
+                        className="mt-1 w-full border p-2 rounded"
+                        value={fechaAsignacion}
+                        onChange={(e) => setFechaAsignacion(e.target.value)}
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        Útil para registrar entregas antiguas.
+                      </p>
+                    </div>
+
+                    <div className="md:col-span-2">
+                      <label className="block text-sm font-medium text-gray-700">Buscar equipo (MBG o serie)</label>
+                      <div className="relative">
+                        <input
+                          className="mt-1 w-full border p-2 rounded"
+                          placeholder="Ej: MBG-015 o 250103654"
+                          value={equipoQuery}
+                          onChange={(e) => {
+                            setEquipoQuery(e.target.value);
+                            setEquipoPickerOpen(true);
+                            setEquipoSeleccionado('');
+                          }}
+                          onFocus={() => setEquipoPickerOpen(true)}
+                          onKeyDown={(e) => {
+                            if (e.key !== 'Enter') return;
+                            const q = equipoQuery.trim().toLowerCase();
+                            if (!q) return;
+                            const matches = equiposDisponibles.filter((eq) => {
+                              return (
+                                (eq.codigoInventario || '').toLowerCase() === q ||
+                                (eq.numeroSerie || '').toLowerCase() === q
+                              );
+                            });
+                            if (matches.length === 1) {
+                              const chosen = matches[0];
+                              setEquipoSeleccionado(chosen.id);
+                              setEquipoQuery(
+                                `${chosen.codigoInventario || ''} • ${chosen.numeroSerie || ''} • ${chosen.nombre}`,
+                              );
+                              setEquipoPickerOpen(false);
+                            }
+                          }}
+                        />
+
+                        {equipoPickerOpen && equipoQuery.trim() && (
+                          <div className="absolute z-10 mt-1 w-full bg-white border rounded shadow max-h-64 overflow-y-auto">
+                            {equiposDisponiblesFiltrados.length === 0 ? (
+                              <div className="p-3 text-sm text-gray-500">
+                                No hay equipos disponibles que coincidan.
+                              </div>
+                            ) : (
+                              <ul className="divide-y">
+                                {equiposDisponiblesFiltrados.map((eq) => (
+                                  <li key={eq.id}>
+                                    <button
+                                      type="button"
+                                      className="w-full text-left p-3 hover:bg-gray-50"
+                                      onClick={() => {
+                                        setEquipoSeleccionado(eq.id);
+                                        setEquipoQuery(
+                                          `${eq.codigoInventario || ''} • ${eq.numeroSerie || ''} • ${eq.nombre}`,
+                                        );
+                                        setEquipoPickerOpen(false);
+                                      }}
+                                    >
+                                      <div className="text-sm font-semibold text-gray-900">
+                                        {eq.nombre}{' '}
+                                        <span className="font-mono text-xs text-gray-600">
+                                          {eq.codigoInventario}
+                                        </span>
+                                      </div>
+                                      <div className="text-xs text-gray-600">
+                                        Serie: <span className="font-mono">{eq.numeroSerie}</span> • {eq.marca}{' '}
+                                        {eq.modelo ? `• ${eq.modelo}` : ''}
+                                      </div>
+                                    </button>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {equipoSeleccionado && (
+                        <div className="mt-2 text-xs text-green-700 bg-green-50 border border-green-200 rounded p-2 flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            Equipo seleccionado:{' '}
+                            <span className="font-semibold">
+                              {equiposById.get(equipoSeleccionado)?.codigoInventario}
+                            </span>{' '}
+                            <span className="text-gray-600">
+                              ({equiposById.get(equipoSeleccionado)?.numeroSerie})
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            className="text-gray-700 hover:underline"
+                            onClick={() => {
+                              setEquipoSeleccionado('');
+                              setEquipoQuery('');
+                              setEquipoPickerOpen(false);
+                            }}
+                          >
+                            Limpiar
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col md:flex-row gap-4">
+                    <input
+                      placeholder="Observaciones iniciales..."
+                      className="border p-2 rounded flex-1"
+                      value={obsAsignacion}
+                      onChange={(e) => setObsAsignacion(e.target.value)}
+                    />
+                    <button
+                      onClick={handleAsignar}
+                      disabled={!equipoSeleccionado || !fechaAsignacion}
+                      className="bg-blue-600 text-white px-4 py-2 rounded disabled:opacity-50"
+                    >
+                      Asignar y Firmar
+                    </button>
+                  </div>
                 </div>
               </div>
             )}

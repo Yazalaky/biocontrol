@@ -195,8 +195,9 @@ export async function asignarEquipo(params: {
   idEquipo: string;
   observacionesEntrega: string;
   usuarioAsigna: string;
+  fechaAsignacionIso?: string;
 }): Promise<Asignacion> {
-  const { idPaciente, idEquipo, observacionesEntrega, usuarioAsigna } = params;
+  const { idPaciente, idEquipo, observacionesEntrega, usuarioAsigna, fechaAsignacionIso } = params;
 
   const activeEquipoQ = query(
     asignacionesCol,
@@ -209,12 +210,13 @@ export async function asignarEquipo(params: {
 
   const consecutivo = await getNextNumber('asignaciones');
   const nowIso = new Date().toISOString();
+  const fechaAsignacion = fechaAsignacionIso || nowIso;
 
   const asignacion: Omit<Asignacion, 'id'> = {
     consecutivo,
     idPaciente,
     idEquipo,
-    fechaAsignacion: nowIso,
+    fechaAsignacion,
     estado: EstadoAsignacion.ACTIVA,
     observacionesEntrega,
     usuarioAsigna,
