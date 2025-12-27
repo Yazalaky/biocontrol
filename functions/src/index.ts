@@ -337,9 +337,12 @@ export const createInternalActa = onCall(async (request) => {
   };
 
   const ciudad =
-    typeof data.ciudad === "string" ? data.ciudad.trim() : "S/D";
-  const sede = typeof data.sede === "string" ? data.sede.trim() : "S/D";
-  const area = typeof data.area === "string" ? data.area.trim() : "S/D";
+    typeof data.ciudad === "string" ? data.ciudad.trim() : "";
+  const sede = typeof data.sede === "string" ? data.sede.trim() : "";
+  const area =
+    typeof data.area === "string" && data.area.trim() ?
+      data.area.trim() :
+      "Biomedica";
   const cargoRecibe = assertNonEmptyString(data.cargoRecibe, "cargoRecibe");
   const observaciones =
     typeof data.observaciones === "string" ? data.observaciones.trim() : "";

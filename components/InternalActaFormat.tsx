@@ -51,13 +51,13 @@ const InternalActaFormat: React.FC<InternalActaFormatProps> = ({ acta }) => {
           <div className="col-span-2 border-r border-black p-1 font-semibold bg-white">Acta No.</div>
           <div className="col-span-1 border-r border-black p-1 bg-[#00b050] text-black text-center font-bold">{String(acta.consecutivo || 0)}</div>
           <div className="col-span-2 border-r border-black p-1 font-semibold bg-white">Ciudad</div>
-          <div className="col-span-2 p-1 bg-[#00b050] text-black font-semibold">{acta.ciudad || 'S/D'}</div>
+          <div className="col-span-2 p-1 bg-[#00b050] text-black font-semibold">{acta.ciudad || ''}</div>
         </div>
         <div className="grid grid-cols-12 border-b border-black text-[10px]">
           <div className="col-span-2 border-r border-black p-1 font-semibold bg-white">Sede</div>
-          <div className="col-span-4 border-r border-black p-1 bg-[#00b050] text-black font-semibold">{acta.sede || 'S/D'}</div>
+          <div className="col-span-4 border-r border-black p-1 bg-[#00b050] text-black font-semibold">{acta.sede || ''}</div>
           <div className="col-span-2 border-r border-black p-1 font-semibold bg-white">Area</div>
-          <div className="col-span-4 p-1 bg-[#00b050] text-black font-semibold">{acta.area || 'S/D'}</div>
+          <div className="col-span-4 p-1 bg-[#00b050] text-black font-semibold">{acta.area || 'Biomedica'}</div>
         </div>
         <div className="grid grid-cols-12 text-[10px]">
           <div className="col-span-6 border-r border-black p-1 font-semibold bg-white">
@@ -68,7 +68,7 @@ const InternalActaFormat: React.FC<InternalActaFormatProps> = ({ acta }) => {
           </div>
           <div className="col-span-1 border-r border-black p-1 font-semibold bg-white text-center">Cargo</div>
           <div className="col-span-2 p-1 bg-[#00b050] text-black font-semibold leading-tight break-words">
-            {acta.cargoRecibe || ''}
+            {acta.cargoRecibe || 'Auxiliar Administrativa'}
           </div>
         </div>
       </div>
@@ -190,7 +190,7 @@ const InternalActaFormat: React.FC<InternalActaFormatProps> = ({ acta }) => {
           <div className="border-t border-black mt-1 pt-1 text-[9px]">
             <div className="font-semibold">Firma de quien recibe</div>
             <div>Nombre: {acta.recibeNombre || ''}</div>
-            <div>Cargo: {acta.cargoRecibe || 'AUXILIAR ADMINISTRATIVA'}</div>
+            <div>Cargo: {acta.cargoRecibe || 'Auxiliar Administrativa'}</div>
           </div>
         </div>
       </div>

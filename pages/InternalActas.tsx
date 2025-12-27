@@ -50,10 +50,10 @@ const InternalActas: React.FC = () => {
   const [createOpen, setCreateOpen] = useState(false);
   const [createSaving, setCreateSaving] = useState(false);
   const [createFecha, setCreateFecha] = useState<string>(todayInput());
-  const [createCiudad, setCreateCiudad] = useState<string>('SABANA DE TORRES');
-  const [createSede, setCreateSede] = useState<string>('SALUD FAMILIA');
-  const [createArea, setCreateArea] = useState<string>('BIOMEDICA');
-  const [createCargoRecibe, setCreateCargoRecibe] = useState<string>('AUXILIAR ADMINISTRATIVA');
+  const [createCiudad, setCreateCiudad] = useState<string>('');
+  const [createSede, setCreateSede] = useState<string>('');
+  const [createArea] = useState<string>('Biomedica');
+  const [createCargoRecibe] = useState<string>('Auxiliar Administrativa');
   const [createRecibeUid, setCreateRecibeUid] = useState<string>('');
   const [createRecibeEmail, setCreateRecibeEmail] = useState<string>('');
   const [createObs, setCreateObs] = useState<string>('');
@@ -221,7 +221,6 @@ const InternalActas: React.FC = () => {
     createCiudad,
     createSede,
     createArea,
-    createCargoRecibe,
     createObs,
     createRecibeEmail,
     createRecibeUid,
@@ -244,27 +243,41 @@ const InternalActas: React.FC = () => {
     if (!viewport || !measure) return;
 
     const computeScale = () => {
-      const rect = viewport.getBoundingClientRect();
-      const style = getComputedStyle(viewport);
-      const paddingX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
-      const paddingY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      const container = document.getElementById('internal-acta-print-container');
+      const rect = (container || viewport).getBoundingClientRect();
 
-      const availableW = Math.max(0, rect.width - paddingX);
-      const availableH = Math.max(0, rect.height - paddingY);
+      // Margen de seguridad para evitar overflow por redondeos, bordes y zoom del navegador.
+      const safe = 12;
+      const availableW = Math.max(0, rect.width - safe);
+      const availableH = Math.max(0, rect.height - safe);
 
-      const pageW = measure.offsetWidth;
-      const pageH = measure.offsetHeight;
+      const pageEl = measure.querySelector('.acta-page') as HTMLElement | null;
+      const pageW = pageEl?.offsetWidth || measure.offsetWidth;
+      const pageH = pageEl?.offsetHeight || measure.offsetHeight;
       if (!availableW || !availableH || !pageW || !pageH) return;
 
       const scale = Math.min(availableW / pageW, availableH / pageH, 1);
       setActaPreviewScale(Number(scale.toFixed(4)));
+
+      // Asegura que la vista previa quede arriba (evita quedarse "a la mitad" si había scroll previo).
+      if (container && 'scrollTop' in container) {
+        (container as HTMLElement).scrollTop = 0;
+        (container as HTMLElement).scrollLeft = 0;
+      }
     };
 
     computeScale();
     const ro = new ResizeObserver(() => computeScale());
     ro.observe(viewport);
     ro.observe(measure);
-    return () => ro.disconnect();
+
+    const vv = window.visualViewport;
+    if (vv) vv.addEventListener('resize', computeScale);
+
+    return () => {
+      ro.disconnect();
+      if (vv) vv.removeEventListener('resize', computeScale);
+    };
   }, [openActa, openActaDraft]);
 
   const closeDetails = () => {
@@ -305,10 +318,8 @@ const InternalActas: React.FC = () => {
 
   const resetCreate = () => {
     setCreateFecha(todayInput());
-    setCreateCiudad('SABANA DE TORRES');
-    setCreateSede('SALUD FAMILIA');
-    setCreateArea('BIOMEDICA');
-    setCreateCargoRecibe('AUXILIAR ADMINISTRATIVA');
+    setCreateCiudad('');
+    setCreateSede('');
     setCreateRecibeUid('');
     setCreateRecibeEmail('');
     setCreateObs('');
@@ -537,7 +548,7 @@ const InternalActas: React.FC = () => {
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700">Area</label>
-                      <input className="w-full border p-2.5 rounded-md" value={createArea} onChange={(e) => setCreateArea(e.target.value)} />
+                      <input className="w-full border p-2.5 rounded-md bg-gray-50" value={createArea} disabled />
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-3">
@@ -552,7 +563,7 @@ const InternalActas: React.FC = () => {
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700">Cargo (quien recibe)</label>
-                    <input className="w-full border p-2.5 rounded-md" value={createCargoRecibe} onChange={(e) => setCreateCargoRecibe(e.target.value)} />
+                    <input className="w-full border p-2.5 rounded-md bg-gray-50" value={createCargoRecibe} disabled />
                   </div>
 
                   <div>
@@ -641,7 +652,7 @@ const InternalActas: React.FC = () => {
               <div className="bg-gray-100 p-4 overflow-hidden" ref={actaViewportRef}>
                 <div
                   id="internal-acta-print-container"
-                  className="w-full h-full flex items-center justify-center overflow-auto"
+                  className="w-full h-full flex items-start justify-center overflow-hidden"
                 >
                   <div style={{ transform: `scale(${actaPreviewScale})`, transformOrigin: 'top center' }}>
                     <div ref={actaMeasureRef}>
@@ -724,7 +735,7 @@ const InternalActas: React.FC = () => {
               <div className="bg-gray-100 p-4 overflow-hidden" ref={actaViewportRef}>
                 <div
                   id="internal-acta-print-container"
-                  className="w-full h-full flex items-center justify-center overflow-auto"
+                  className="w-full h-full flex items-start justify-center overflow-hidden"
                 >
                   <div style={{ transform: `scale(${actaPreviewScale})`, transformOrigin: 'top center' }}>
                     <div ref={actaMeasureRef}>
