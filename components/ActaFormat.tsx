@@ -67,8 +67,7 @@ const ActaFormat: React.FC<ActaFormatProps> = ({ paciente, equipo, asignacion, t
           <div className="w-[10%] border-r border-black p-1 font-semibold bg-gray-100">Sede</div>
           <div className="w-[15%] border-r border-black p-1">Cúcuta</div>
           <div className="w-[10%] border-r border-black p-1 font-semibold bg-gray-100">Eps</div>
-          <div className="w-[15%] border-r border-black p-1">{paciente.eps}</div>
-          <div className="w-[5%] border-r border-black p-1 font-semibold bg-gray-100">DX</div>
+          <div className="w-[20%] p-1">{paciente.eps}</div>
         </div>
         {/* Fila 2 */}
         <div className="flex border-b border-black">
@@ -83,6 +82,13 @@ const ActaFormat: React.FC<ActaFormatProps> = ({ paciente, equipo, asignacion, t
             <div className="w-[50%] border-r border-black p-1">{paciente.direccion}</div>
             <div className="w-[15%] border-r border-black p-1 font-semibold bg-gray-100">Teléfono</div>
             <div className="w-[20%] p-1">{paciente.telefono}</div>
+        </div>
+        {/* Fila 4 - Diagnóstico (DX) */}
+        <div className="flex border-b border-black">
+          <div className="w-[15%] border-r border-black p-1 font-semibold bg-gray-100">DX</div>
+          <div className="w-[85%] p-1 text-[9px] leading-tight whitespace-normal break-words">
+            {paciente.diagnostico || 'N/A'}
+          </div>
         </div>
         {/* Fila 4 - Novedad */}
         <div className="flex">

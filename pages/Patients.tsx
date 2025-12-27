@@ -1141,7 +1141,7 @@ const Patients: React.FC = () => {
         </div>
         
         {canManage && (
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <input 
               type="file" 
               accept=".csv" 
@@ -1175,67 +1175,126 @@ const Patients: React.FC = () => {
         )}
       </div>
 
-      <div className="md-card overflow-hidden">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Paciente / Doc</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">EPS / Servicio</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Estado</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Inicio</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Acciones</th>
-            </tr>
-          </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
-            {filteredPacientes.map((p) => (
-              <tr key={p.id} className="hover:bg-gray-50">
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-600">
-                  {String(p.consecutivo).padStart(3, '0')}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <div className="flex items-center gap-3">
-                    <div
-                      className="h-9 w-9 rounded-full flex items-center justify-center font-bold text-xs"
-                      style={{ background: 'rgba(37,99,235,0.12)', color: 'var(--md-primary)' }}
-                    >
-                      {initials(p.nombreCompleto)}
-                    </div>
-                    <div>
-                      <div className="font-semibold text-gray-900">{p.nombreCompleto}</div>
-                      <div className="text-sm text-gray-500">{p.tipoDocumento} {p.numeroDocumento}</div>
-                    </div>
+      {/* Mobile list (cards) */}
+      <div className="md:hidden space-y-3">
+        {filteredPacientes.map((p) => (
+          <button
+            key={p.id}
+            type="button"
+            onClick={() => { setSelectedPaciente(p); setViewMode('details'); }}
+            className="md-card w-full p-4 text-left"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex items-center gap-3">
+                <div
+                  className="h-10 w-10 rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0"
+                  style={{ background: 'rgba(37,99,235,0.12)', color: 'var(--md-primary)' }}
+                >
+                  {initials(p.nombreCompleto)}
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-mono bg-gray-100 px-2 py-1 rounded border border-gray-200 text-gray-600">
+                      {String(p.consecutivo).padStart(3, '0')}
+                    </span>
+                    <StatusBadge status={p.estado} />
                   </div>
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                  <div className="font-semibold text-blue-700">{p.eps}</div>
-                  <div className="text-xs">{p.tipoServicio} ({p.horasPrestadas})</div>
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <StatusBadge status={p.estado} />
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                  {new Date(p.fechaInicioPrograma).toLocaleDateString()}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                  <button 
-                    onClick={() => { setSelectedPaciente(p); setViewMode('details'); }}
-                    className="text-blue-600 hover:text-blue-900 font-semibold"
-                  >
-                    {canManage ? 'Gestionar' : 'Ver Detalles'}
-                  </button>
-                </td>
-              </tr>
-            ))}
-            {filteredPacientes.length === 0 && (
+                  <div className="mt-2 font-semibold text-gray-900 truncate">{p.nombreCompleto}</div>
+                  <div className="text-sm text-gray-500 truncate">{p.tipoDocumento} {p.numeroDocumento}</div>
+                </div>
+              </div>
+
+              <svg className="w-5 h-5 text-gray-400 flex-shrink-0 mt-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M9 18l6-6-6-6" />
+              </svg>
+            </div>
+
+            <div className="mt-3 text-sm text-gray-600">
+              <div className="font-semibold text-blue-700">{p.eps}</div>
+              <div className="text-xs text-gray-500">
+                {p.tipoServicio} {p.horasPrestadas ? `(${p.horasPrestadas})` : ''}
+              </div>
+              <div className="mt-1 text-xs text-gray-500">
+                Inicio: {new Date(p.fechaInicioPrograma).toLocaleDateString()}
+              </div>
+              <div className="mt-2 text-sm font-semibold text-blue-600">
+                {canManage ? 'Gestionar' : 'Ver Detalles'}
+              </div>
+            </div>
+          </button>
+        ))}
+
+        {filteredPacientes.length === 0 && (
+          <div className="md-card p-6 text-center text-gray-500">
+            No se encontraron pacientes que coincidan con la búsqueda.
+          </div>
+        )}
+      </div>
+
+      {/* Desktop/tablet table */}
+      <div className="hidden md:block md-card overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
               <tr>
-                <td colSpan={6} className="px-6 py-8 text-center text-gray-500">
-                  No se encontraron pacientes que coincidan con la búsqueda.
-                </td>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Paciente / Doc</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">EPS / Servicio</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Estado</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Inicio</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Acciones</th>
               </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {filteredPacientes.map((p) => (
+                <tr key={p.id} className="hover:bg-gray-50">
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-600">
+                    {String(p.consecutivo).padStart(3, '0')}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <div className="flex items-center gap-3">
+                      <div
+                        className="h-9 w-9 rounded-full flex items-center justify-center font-bold text-xs"
+                        style={{ background: 'rgba(37,99,235,0.12)', color: 'var(--md-primary)' }}
+                      >
+                        {initials(p.nombreCompleto)}
+                      </div>
+                      <div>
+                        <div className="font-semibold text-gray-900">{p.nombreCompleto}</div>
+                        <div className="text-sm text-gray-500">{p.tipoDocumento} {p.numeroDocumento}</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    <div className="font-semibold text-blue-700">{p.eps}</div>
+                    <div className="text-xs">{p.tipoServicio} ({p.horasPrestadas})</div>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <StatusBadge status={p.estado} />
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    {new Date(p.fechaInicioPrograma).toLocaleDateString()}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                    <button
+                      onClick={() => { setSelectedPaciente(p); setViewMode('details'); }}
+                      className="text-blue-600 hover:text-blue-900 font-semibold"
+                    >
+                      {canManage ? 'Gestionar' : 'Ver Detalles'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {filteredPacientes.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-6 py-8 text-center text-gray-500">
+                    No se encontraron pacientes que coincidan con la búsqueda.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </Layout>
   );

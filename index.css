@@ -226,6 +226,24 @@ html[data-theme='dark'] .bg-gray-100:not(.force-light),
 html[data-theme='dark'] .bg-gray-200:not(.force-light) {
   background-color: var(--md-surface-2) !important;
 }
+html[data-theme='dark'] .bg-blue-50:not(.force-light),
+html[data-theme='dark'] .bg-indigo-50:not(.force-light) {
+  background-color: rgba(37, 99, 235, 0.12) !important;
+}
+html[data-theme='dark'] .bg-green-50:not(.force-light) {
+  background-color: rgba(34, 197, 94, 0.12) !important;
+}
+html[data-theme='dark'] .bg-amber-50:not(.force-light),
+html[data-theme='dark'] .bg-yellow-50:not(.force-light) {
+  background-color: rgba(245, 158, 11, 0.14) !important;
+}
+html[data-theme='dark'] .bg-red-50:not(.force-light) {
+  background-color: rgba(239, 68, 68, 0.12) !important;
+}
+html[data-theme='dark'] .bg-orange-50:not(.force-light) {
+  background-color: rgba(249, 115, 22, 0.12) !important;
+}
+
 html[data-theme='dark'] .text-gray-900,
 html[data-theme='dark'] .text-gray-800 {
   color: var(--md-text) !important;
@@ -238,10 +256,68 @@ html[data-theme='dark'] .text-gray-500,
 html[data-theme='dark'] .text-gray-400 {
   color: var(--md-text-3) !important;
 }
+html[data-theme='dark'] .text-blue-900,
+html[data-theme='dark'] .text-blue-800,
+html[data-theme='dark'] .text-blue-700 {
+  color: #bfdbfe !important;
+}
+html[data-theme='dark'] .text-indigo-900,
+html[data-theme='dark'] .text-indigo-800,
+html[data-theme='dark'] .text-indigo-700 {
+  color: #c7d2fe !important;
+}
+html[data-theme='dark'] .text-green-900,
+html[data-theme='dark'] .text-green-800,
+html[data-theme='dark'] .text-green-700 {
+  color: #bbf7d0 !important;
+}
+html[data-theme='dark'] .text-amber-900,
+html[data-theme='dark'] .text-amber-800,
+html[data-theme='dark'] .text-amber-700,
+html[data-theme='dark'] .text-yellow-800,
+html[data-theme='dark'] .text-yellow-700 {
+  color: #fde68a !important;
+}
+html[data-theme='dark'] .text-red-900,
+html[data-theme='dark'] .text-red-800,
+html[data-theme='dark'] .text-red-700 {
+  color: #fecaca !important;
+}
+html[data-theme='dark'] .text-orange-900,
+html[data-theme='dark'] .text-orange-800,
+html[data-theme='dark'] .text-orange-700 {
+  color: #fed7aa !important;
+}
+
 html[data-theme='dark'] .border-gray-200,
 html[data-theme='dark'] .border-gray-300,
 html[data-theme='dark'] .border-slate-700 {
   border-color: var(--md-outline) !important;
+}
+html[data-theme='dark'] .border-blue-100,
+html[data-theme='dark'] .border-blue-200 {
+  border-color: rgba(37, 99, 235, 0.25) !important;
+}
+html[data-theme='dark'] .border-green-200 {
+  border-color: rgba(34, 197, 94, 0.25) !important;
+}
+html[data-theme='dark'] .border-amber-200,
+html[data-theme='dark'] .border-yellow-200 {
+  border-color: rgba(245, 158, 11, 0.25) !important;
+}
+html[data-theme='dark'] .border-red-200 {
+  border-color: rgba(239, 68, 68, 0.25) !important;
+}
+html[data-theme='dark'] .border-orange-200 {
+  border-color: rgba(249, 115, 22, 0.25) !important;
+}
+
+/* Hover utilities in dark mode (mejor contraste) */
+html[data-theme='dark'] .hover\\:bg-gray-50:hover {
+  background-color: rgba(148, 163, 184, 0.08) !important;
+}
+html[data-theme='dark'] .hover\\:bg-white:hover {
+  background-color: rgba(148, 163, 184, 0.06) !important;
 }
 
 /* Elementos que SIEMPRE deben verse claros (actas / firma) */
