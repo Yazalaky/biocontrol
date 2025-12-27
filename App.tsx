@@ -7,6 +7,7 @@ import Patients from './pages/Patients';
 import Inventory from './pages/Inventory';
 import Admin from './pages/Admin';
 import Reports from './pages/Reports';
+import InternalActas from './pages/InternalActas';
 
 // Simple Router Component
 const Router = () => {
@@ -44,6 +45,8 @@ const Router = () => {
       return <Inventory />;
     case '#/informes':
       return <Reports />;
+    case '#/actas-internas':
+      return <InternalActas />;
     case '#/admin':
       return <Admin />;
     case '#/':

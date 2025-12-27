@@ -57,6 +57,14 @@ function hasRole(role) {
       allow delete: if false;
     }
 
+    // --- ACTAS INTERNAS (biomedico -> auxiliar) ---
+    match /actas_internas/{id} {
+      // lectura para cualquier usuario logueado (auditoría)
+      allow read: if isSignedIn();
+      // escrituras solo vía Cloud Functions (admin SDK)
+      allow create, update, delete: if false;
+    }
+
     // --- DENY DEFAULT ---
     match /{document=**} {
       allow read, write: if false;

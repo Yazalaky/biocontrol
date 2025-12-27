@@ -14,9 +14,11 @@ import {
 
 import { db } from './firebase';
 import {
+  EstadoActaInterna,
   EstadoAsignacion,
   EstadoEquipo,
   EstadoPaciente,
+  type ActaInterna,
   type Asignacion,
   type EquipoBiomedico,
   type Paciente,
@@ -25,6 +27,7 @@ import {
 const pacientesCol = collection(db, 'pacientes');
 const equiposCol = collection(db, 'equipos');
 const asignacionesCol = collection(db, 'asignaciones');
+const actasInternasCol = collection(db, 'actas_internas');
 
 function assertRoleString(value: string, allowed: readonly string[], fieldName: string) {
   if (!allowed.includes(value)) {
@@ -97,6 +100,37 @@ export function subscribeAsignaciones(onData: (asignaciones: Asignacion[]) => vo
     (snap) => {
       const asignaciones = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Asignacion, 'id'>) }));
       onData(asignaciones);
+    },
+    (err) => onError?.(err as unknown as Error),
+  );
+}
+
+export function subscribeActasInternas(onData: (actas: ActaInterna[]) => void, onError?: (e: Error) => void) {
+  const q = query(actasInternasCol, orderBy('fecha', 'desc'));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const actas = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<ActaInterna, 'id'>) }));
+      onData(actas);
+    },
+    (err) => onError?.(err as unknown as Error),
+  );
+}
+
+export function subscribeActasInternasPendientesCount(
+  recibeUid: string,
+  onCount: (count: number) => void,
+  onError?: (e: Error) => void,
+) {
+  const q = query(
+    actasInternasCol,
+    where('recibeUid', '==', recibeUid),
+    where('estado', '==', EstadoActaInterna.ENVIADA),
+  );
+  return onSnapshot(
+    q,
+    (snap) => {
+      onCount(snap.size);
     },
     (err) => onError?.(err as unknown as Error),
   );
@@ -187,7 +221,13 @@ export async function saveEquipo(equipo: EquipoBiomedico) {
 
   const codigoInventario = await getNextMbgCode();
   const { id: _id, ...rest } = equipo;
-  await addDoc(equiposCol, stripUndefinedDeep({ ...rest, codigoInventario }) as any);
+  // Por defecto, los equipos nuevos no quedan disponibles para entrega (legacy: equipos antiguos no tienen el campo).
+  const disponibleParaEntrega =
+    typeof equipo.disponibleParaEntrega === 'boolean' ? equipo.disponibleParaEntrega : false;
+  await addDoc(
+    equiposCol,
+    stripUndefinedDeep({ ...rest, codigoInventario, disponibleParaEntrega }) as any,
+  );
 }
 
 export async function asignarEquipo(params: {

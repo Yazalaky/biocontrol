@@ -2,6 +2,7 @@ import React, { ReactNode } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import ThemeToggle from './ThemeToggle';
 import { RolUsuario } from '../types';
+import { subscribeActasInternasPendientesCount } from '../services/firestoreData';
 
 interface LayoutProps {
   children: ReactNode;
@@ -53,11 +54,34 @@ const Icons = {
       <path d="M9 12l2 2 4-4" />
     </svg>
   ),
+  actas: (
+    <svg className="app-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Z" />
+      <path d="M14 2v6h6" />
+      <path d="M8 13h8" />
+      <path d="M8 17h8" />
+      <path d="M8 9h2" />
+    </svg>
+  ),
 };
 
 const Layout: React.FC<LayoutProps> = ({ children, title }) => {
   const { usuario, logout, hasRole, isAdmin } = useAuth();
   const [isSidebarOpen, setIsSidebarOpen] = React.useState(false);
+  const [pendingActasInternas, setPendingActasInternas] = React.useState(0);
+
+  React.useEffect(() => {
+    setPendingActasInternas(0);
+    if (!usuario?.id) return;
+    if (usuario.rol !== RolUsuario.AUXILIAR_ADMINISTRATIVA) return;
+
+    const unsub = subscribeActasInternasPendientesCount(
+      usuario.id,
+      (count) => setPendingActasInternas(count),
+      () => setPendingActasInternas(0),
+    );
+    return () => unsub();
+  }, [usuario?.id, usuario?.rol]);
 
   // Navegación simple usando hash
   const navigate = (path: string) => {
@@ -65,7 +89,17 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
     setIsSidebarOpen(false);
   };
 
-  const NavItem = ({ label, path, roles }: { label: string, path: string, roles?: RolUsuario[] }) => {
+  const NavItem = ({
+    label,
+    path,
+    roles,
+    badge,
+  }: {
+    label: string;
+    path: string;
+    roles?: RolUsuario[];
+    badge?: number;
+  }) => {
     if (roles && !hasRole(roles)) return null;
     const isActive = window.location.hash === path;
     return (
@@ -78,8 +112,14 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
         {path === '#/pacientes' ? Icons.patients : null}
         {path === '#/equipos' ? Icons.inventory : null}
         {path === '#/informes' ? Icons.reports : null}
+        {path === '#/actas-internas' ? Icons.actas : null}
         {path === '#/admin' ? Icons.admin : null}
-        <span className="text-sm font-medium">{label}</span>
+        <span className="text-sm font-medium flex-1 text-left">{label}</span>
+        {!!badge && badge > 0 && (
+          <span className="ml-2 inline-flex min-w-6 h-6 items-center justify-center rounded-full bg-blue-600 text-white text-xs font-bold px-2">
+            {badge > 99 ? '99+' : badge}
+          </span>
+        )}
       </button>
     );
   };
@@ -132,6 +172,12 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
             label="Inventario Equipos" 
             path="#/equipos" 
             roles={[RolUsuario.INGENIERO_BIOMEDICO, RolUsuario.AUXILIAR_ADMINISTRATIVA, RolUsuario.GERENCIA]} 
+          />
+          <NavItem
+            label="Actas Internas"
+            path="#/actas-internas"
+            roles={[RolUsuario.INGENIERO_BIOMEDICO, RolUsuario.AUXILIAR_ADMINISTRATIVA, RolUsuario.GERENCIA]}
+            badge={usuario?.rol === RolUsuario.AUXILIAR_ADMINISTRATIVA ? pendingActasInternas : 0}
           />
           <NavItem
             label="Informes"

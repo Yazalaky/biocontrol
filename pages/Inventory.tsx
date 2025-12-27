@@ -6,7 +6,7 @@ import StatusBadge from '../components/StatusBadge';
 import { saveEquipo, subscribeAsignaciones, subscribeEquipos, subscribePacientes } from '../services/firestoreData';
 
 const Inventory: React.FC = () => {
-  const { hasRole } = useAuth();
+  const { hasRole, usuario } = useAuth();
   const [equipos, setEquipos] = useState<EquipoBiomedico[]>([]);
   const [pacientes, setPacientes] = useState<Paciente[]>([]);
   const [asignaciones, setAsignaciones] = useState<Asignacion[]>([]);
@@ -23,6 +23,7 @@ const Inventory: React.FC = () => {
   const [formData, setFormData] = useState<Partial<EquipoBiomedico>>({
     tipoPropiedad: TipoPropiedad.PROPIO,
     fechaIngreso: new Date().toISOString(),
+    disponibleParaEntrega: false,
   });
 
   // Modal History State
@@ -112,6 +113,9 @@ const Inventory: React.FC = () => {
       modelo: formData.modelo || '',
       estado: formData.estado || EstadoEquipo.DISPONIBLE,
       fechaIngreso: formData.fechaIngreso ? formData.fechaIngreso : new Date().toISOString(),
+      // Control (acta interna): equipos nuevos quedan NO disponibles para entrega hasta aceptación.
+      disponibleParaEntrega: typeof formData.disponibleParaEntrega === 'boolean' ? formData.disponibleParaEntrega : undefined,
+      custodioUid: formData.custodioUid || (formData.id ? undefined : usuario?.id),
       observaciones: formData.observaciones || '',
       ubicacionActual: formData.ubicacionActual || 'Bodega',
       tipoPropiedad: formData.tipoPropiedad || TipoPropiedad.PROPIO,
@@ -120,7 +124,7 @@ const Inventory: React.FC = () => {
     try {
       await saveEquipo(newEquipo);
       setIsModalOpen(false);
-      setFormData({ tipoPropiedad: TipoPropiedad.PROPIO, fechaIngreso: new Date().toISOString() });
+      setFormData({ tipoPropiedad: TipoPropiedad.PROPIO, fechaIngreso: new Date().toISOString(), disponibleParaEntrega: false });
     } catch (err: any) {
       console.error('Error guardando equipo:', err);
       alert(`${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo guardar el equipo.'}`);
@@ -258,6 +262,8 @@ const Inventory: React.FC = () => {
           ubicacionActual: columns[5]?.trim() || 'Bodega',
           observaciones: columns[6]?.trim() || '',
           estado: EstadoEquipo.DISPONIBLE,
+          disponibleParaEntrega: false,
+          custodioUid: usuario?.id,
           datosPropietario: tipoPropiedad === TipoPropiedad.EXTERNO ? {
              nombre: columns[7]?.trim() || '',
              nit: columns[8]?.trim() || '',
@@ -356,9 +362,16 @@ const Inventory: React.FC = () => {
             return (
           <div key={equipo.id} className="md-card p-5 hover:shadow-[var(--md-shadow-2)] transition-shadow relative">
             <div className="flex justify-between items-start mb-2">
-              <span className="text-xs font-mono bg-gray-100 px-2 py-1 rounded text-gray-600 border border-gray-200">
-                {equipo.codigoInventario}
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-mono bg-gray-100 px-2 py-1 rounded text-gray-600 border border-gray-200">
+                  {equipo.codigoInventario}
+                </span>
+                {equipo.disponibleParaEntrega === false && (
+                  <span className="text-[10px] uppercase px-2 py-1 rounded-full border border-amber-200 bg-amber-50 text-amber-800">
+                    Pendiente acta interna
+                  </span>
+                )}
+              </div>
               <StatusBadge status={status} />
             </div>
             <h3 className="text-lg font-bold text-gray-900">{equipo.nombre}</h3>

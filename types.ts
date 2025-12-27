@@ -26,6 +26,12 @@ export enum TipoPropiedad {
   EXTERNO = 'EXTERNO',
 }
 
+// Estados de Acta Interna (Biomédico -> Auxiliar)
+export enum EstadoActaInterna {
+  ENVIADA = 'ENVIADA',
+  ACEPTADA = 'ACEPTADA',
+}
+
 // Estados de la Asignación
 export enum EstadoAsignacion {
   ACTIVA = 'ACTIVA',
@@ -75,6 +81,12 @@ export interface EquipoBiomedico {
   estado: EstadoEquipo;
   // Fecha de ingreso del equipo al inventario (ISO string).
   fechaIngreso?: string;
+  // Control de disponibilidad para entregas a pacientes (Legacy: si no existe, se asume true).
+  disponibleParaEntrega?: boolean;
+  // UID del custodio actual (opcional, Legacy: si no existe, no se filtra por custodio).
+  custodioUid?: string;
+  // Si existe, indica que el equipo está en una acta interna pendiente de aceptación.
+  actaInternaPendienteId?: string;
   ubicacionActual?: string; 
   observaciones: string;
   tipoPropiedad: TipoPropiedad;
@@ -110,4 +122,35 @@ export interface Acta {
   tipo: 'ENTREGA' | 'DEVOLUCION';
   fecha: string;
   contenido: string; 
+}
+
+export interface ActaInternaItem {
+  idEquipo: string;
+  codigoInventario: string;
+  numeroSerie: string;
+  nombre: string;
+  marca: string;
+  modelo: string;
+  // Estado técnico del equipo al momento de la entrega interna (opcional).
+  estado?: string;
+}
+
+export interface ActaInterna {
+  id: string;
+  consecutivo: number;
+  fecha: string; // ISO
+  ciudad: string;
+  sede: string;
+  area: string;
+  cargoRecibe: string;
+  observaciones: string;
+  entregaUid: string;
+  entregaNombre: string;
+  recibeUid: string;
+  recibeNombre: string;
+  recibeEmail?: string;
+  estado: EstadoActaInterna;
+  items: ActaInternaItem[];
+  firmaEntrega?: string;
+  firmaRecibe?: string;
 }

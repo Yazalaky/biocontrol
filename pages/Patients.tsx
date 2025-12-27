@@ -122,9 +122,25 @@ const Patients: React.FC = () => {
       if (active) return false;
       const lastFinal = lastFinalEstadoByEquipo.get(e.id);
       const effective = lastFinal?.estadoFinal || e.estado;
-      return effective === EstadoEquipo.DISPONIBLE;
+      if (effective !== EstadoEquipo.DISPONIBLE) return false;
+
+      // Control de actas internas (Legacy):
+      // - Si disponibleParaEntrega no existe => se asume true (equipos antiguos).
+      // - Si existe y es false => NO se puede entregar a pacientes.
+      // - Si tiene acta interna pendiente => NO se puede entregar.
+      const entregable = e.disponibleParaEntrega !== false && !e.actaInternaPendienteId;
+      if (!entregable) return false;
+
+      // Si hay múltiples auxiliares, cada uno solo puede entregar equipos que estén
+      // bajo su custodia (o legacy sin custodioUid).
+      if (canManage) {
+        const custodioOk = !e.custodioUid || e.custodioUid === usuario?.id;
+        if (!custodioOk) return false;
+      }
+
+      return true;
     });
-  }, [equipos, activeAsignacionByEquipo, lastFinalEstadoByEquipo]);
+  }, [equipos, activeAsignacionByEquipo, lastFinalEstadoByEquipo, canManage, usuario?.id]);
 
   const equiposDisponiblesFiltrados = useMemo(() => {
     const q = equipoQuery.trim().toLowerCase();
