@@ -43,66 +43,66 @@ const InternalActaFormat: React.FC<InternalActaFormatProps> = ({ acta }) => {
         </div>
       </div>
 
-      {/* Bloque superior (verde) */}
+      {/* Bloque superior */}
       <div className="mx-[0.35in] mt-2 border border-black">
         <div className="grid grid-cols-12 border-b border-black text-[10px]">
           <div className="col-span-2 border-r border-black p-1 font-semibold bg-white">Fecha</div>
-          <div className="col-span-3 border-r border-black p-1 bg-[#00b050] text-black">{fecha.toLocaleDateString()}</div>
+          <div className="col-span-3 border-r border-black p-1 bg-white text-black">{fecha.toLocaleDateString()}</div>
           <div className="col-span-2 border-r border-black p-1 font-semibold bg-white">Acta No.</div>
-          <div className="col-span-1 border-r border-black p-1 bg-[#00b050] text-black text-center font-bold">{String(acta.consecutivo || 0)}</div>
+          <div className="col-span-1 border-r border-black p-1 bg-white text-black text-center font-bold">{String(acta.consecutivo || 0)}</div>
           <div className="col-span-2 border-r border-black p-1 font-semibold bg-white">Ciudad</div>
-          <div className="col-span-2 p-1 bg-[#00b050] text-black font-semibold">{acta.ciudad || ''}</div>
+          <div className="col-span-2 p-1 bg-white text-black font-semibold">{acta.ciudad || ''}</div>
         </div>
         <div className="grid grid-cols-12 border-b border-black text-[10px]">
           <div className="col-span-2 border-r border-black p-1 font-semibold bg-white">Sede</div>
-          <div className="col-span-4 border-r border-black p-1 bg-[#00b050] text-black font-semibold">{acta.sede || ''}</div>
+          <div className="col-span-4 border-r border-black p-1 bg-white text-black font-semibold">{acta.sede || ''}</div>
           <div className="col-span-2 border-r border-black p-1 font-semibold bg-white">Area</div>
-          <div className="col-span-4 p-1 bg-[#00b050] text-black font-semibold">{acta.area || 'Biomedica'}</div>
+          <div className="col-span-4 p-1 bg-white text-black font-semibold">{acta.area || 'Biomedica'}</div>
         </div>
         <div className="grid grid-cols-12 text-[10px]">
           <div className="col-span-6 border-r border-black p-1 font-semibold bg-white">
             Nombres y Apellidos de quien recibe
           </div>
-          <div className="col-span-3 border-r border-black p-1 bg-[#00b050] text-black font-semibold">
+          <div className="col-span-3 border-r border-black p-1 bg-white text-black font-semibold">
             {acta.recibeNombre || ''}
           </div>
           <div className="col-span-1 border-r border-black p-1 font-semibold bg-white text-center">Cargo</div>
-          <div className="col-span-2 p-1 bg-[#00b050] text-black font-semibold leading-tight break-words">
+          <div className="col-span-2 p-1 bg-white text-black font-semibold leading-tight break-words">
             {acta.cargoRecibe || 'Auxiliar Administrativa'}
           </div>
         </div>
       </div>
 
-      {/* Tabla equipos (verde) */}
+      {/* Tabla equipos */}
       <div className="mx-[0.35in] mt-2 border border-black">
         <div className="grid grid-cols-12 text-[10px] font-semibold">
-          <div className="col-span-2 border-r border-black p-1 bg-[#00b050]">ACTIVO</div>
-          <div className="col-span-3 border-r border-black p-1 bg-[#00b050]">EQUIPO</div>
-          <div className="col-span-2 border-r border-black p-1 bg-[#00b050]">Marca</div>
-          <div className="col-span-2 border-r border-black p-1 bg-[#00b050]">Serie</div>
-          <div className="col-span-2 border-r border-black p-1 bg-[#00b050]">Modelo</div>
-          <div className="col-span-1 p-1 bg-[#00b050]">Estado</div>
+          <div className="col-span-2 border-r border-black p-1 bg-white">ACTIVO</div>
+          <div className="col-span-3 border-r border-black p-1 bg-white">EQUIPO</div>
+          <div className="col-span-2 border-r border-black p-1 bg-white">Marca</div>
+          <div className="col-span-2 border-r border-black p-1 bg-white">Serie</div>
+          <div className="col-span-2 border-r border-black p-1 bg-white">Modelo</div>
+          <div className="col-span-1 p-1 bg-white">Estado</div>
         </div>
         <div className="border-t border-black">
           {(acta.items || []).length ? (
             acta.items.map((it, idx) => (
               <div key={`${it.idEquipo}-${idx}`} className="grid grid-cols-12 text-[10px] border-t border-black">
-                <div className="col-span-2 border-r border-black p-1 bg-[#00b050]">{it.codigoInventario}</div>
-                <div className="col-span-3 border-r border-black p-1 bg-[#00b050]">{it.nombre}</div>
-                <div className="col-span-2 border-r border-black p-1 bg-[#00b050]">{it.marca}</div>
-                <div className="col-span-2 border-r border-black p-1 bg-[#00b050]">{it.numeroSerie}</div>
-                <div className="col-span-2 border-r border-black p-1 bg-[#00b050]">{it.modelo}</div>
-                <div className="col-span-1 p-1 bg-[#00b050]">
+                <div className="col-span-2 border-r border-black p-1 bg-white">{it.codigoInventario}</div>
+                <div className="col-span-3 border-r border-black p-1 bg-white">{it.nombre}</div>
+                <div className="col-span-2 border-r border-black p-1 bg-white">{it.marca}</div>
+                <div className="col-span-2 border-r border-black p-1 bg-white">{it.numeroSerie}</div>
+                <div className="col-span-2 border-r border-black p-1 bg-white">{it.modelo}</div>
+                <div className="col-span-1 p-1 bg-white">
                   {it.estado === 'DISPONIBLE' || !it.estado ? 'NUEVO' : it.estado}
                 </div>
               </div>
             ))
           ) : (
-            <div className="p-3 text-center text-gray-700 bg-[#00b050]">Sin equipos.</div>
+            <div className="p-3 text-center text-gray-700 bg-white">Sin equipos.</div>
           )}
         </div>
 
-        <div className="border-t border-black p-2 bg-[#00b050] text-[10px] min-h-[70px]">
+        <div className="border-t border-black p-2 bg-white text-[10px] min-h-[70px]">
           <span className="font-semibold">Observaciones:</span>{' '}
           <span className="whitespace-pre-wrap break-words">{acta.observaciones || ''}</span>
         </div>
