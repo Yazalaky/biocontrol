@@ -8,6 +8,7 @@ import SignaturePad from '../components/SignaturePad';
 import {
   asignarEquipo,
   devolverEquipo,
+  guardarFirmaAuxiliar,
   guardarFirmaPaciente,
   savePaciente,
   subscribeAsignaciones,
@@ -49,6 +50,13 @@ const Patients: React.FC = () => {
     const dd = String(now.getDate()).padStart(2, '0');
     return `${yyyy}-${mm}-${dd}`;
   });
+  const getTodayYmd = () => {
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  };
   
   // Return State
   const [asignacionADevolver, setAsignacionADevolver] = useState<Asignacion | null>(null);
@@ -60,15 +68,17 @@ const Patients: React.FC = () => {
   const [patientSignature, setPatientSignature] = useState<string | null>(null);
   const [adminSignature, setAdminSignature] = useState<string | null>(null);
   const [savingPatientSig, setSavingPatientSig] = useState(false);
+  const [savingAdminSig, setSavingAdminSig] = useState(false);
   const actaViewportRef = useRef<HTMLDivElement>(null);
   const actaMeasureRef = useRef<HTMLDivElement>(null);
   const [actaPreviewScale, setActaPreviewScale] = useState(1);
 
   // Load Admin Signature from LocalStorage on mount
   useEffect(() => {
+    if (!canManage) return;
     const savedSig = localStorage.getItem('biocontrol_admin_sig');
     if (savedSig) setAdminSignature(savedSig);
-  }, []);
+  }, [canManage]);
 
   useEffect(() => {
     setFirestoreError(null);
@@ -405,6 +415,7 @@ const Patients: React.FC = () => {
         idEquipo: equipoSeleccionado,
         observacionesEntrega: obsAsignacion,
         usuarioAsigna: usuario?.nombre || 'Admin',
+        firmaAuxiliar: adminSignature || undefined,
         fechaAsignacionIso: isoFromDate(fechaAsignacion),
       });
       alert(
@@ -468,7 +479,7 @@ const Patients: React.FC = () => {
       setActaData({ asig, equipo, tipo });
       const savedSig = tipo === 'ENTREGA' ? asig.firmaPacienteEntrega : asig.firmaPacienteDevolucion;
       setPatientSignature(savedSig || null);
-      // Admin sig is kept from localstorage
+      if (asig.firmaAuxiliar) setAdminSignature(asig.firmaAuxiliar);
     }
   };
 
@@ -492,17 +503,58 @@ const Patients: React.FC = () => {
     }
   };
 
+  const handleGuardarFirmaAuxiliar = async () => {
+    if (!canManage) return;
+    if (!actaData) return;
+    if (!adminSignature) return;
+    if (actaData.asig.firmaAuxiliar) return;
+
+    setSavingAdminSig(true);
+    try {
+      await guardarFirmaAuxiliar({ idAsignacion: actaData.asig.id, dataUrl: adminSignature });
+      setActaData((prev) => {
+        if (!prev) return prev;
+        return { ...prev, asig: { ...prev.asig, firmaAuxiliar: adminSignature } };
+      });
+      alert('Firma del auxiliar guardada correctamente.');
+    } catch (err: any) {
+      console.error('Error guardando firma auxiliar:', err);
+      alert(`${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo guardar la firma del auxiliar.'}`);
+    } finally {
+      setSavingAdminSig(false);
+    }
+  };
+
   const handleAdminSigUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (file) {
-          const reader = new FileReader();
-          reader.onload = (evt) => {
-              const res = evt.target?.result as string;
-              setAdminSignature(res);
-              localStorage.setItem('biocontrol_admin_sig', res);
-          };
-          reader.readAsDataURL(file);
+    if (!canManage) return;
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      const res = evt.target?.result as string;
+      setAdminSignature(res);
+      localStorage.setItem('biocontrol_admin_sig', res);
+
+      // Si estamos en una acta y aún no hay firma guardada para esta asignación, la persistimos en Firestore.
+      if (actaData && !actaData.asig.firmaAuxiliar) {
+        try {
+          await guardarFirmaAuxiliar({ idAsignacion: actaData.asig.id, dataUrl: res });
+          setActaData((prev) => {
+            if (!prev) return prev;
+            return { ...prev, asig: { ...prev.asig, firmaAuxiliar: res } };
+          });
+        } catch (err: any) {
+          console.error('Error guardando firma auxiliar (upload):', err);
+          alert(
+            `${err?.code ? `${err.code}: ` : ''}${
+              err?.message || 'No se pudo guardar la firma del auxiliar en Firestore.'
+            }`,
+          );
+        }
       }
+    };
+    reader.readAsDataURL(file);
   };
 
   const handlePrint = () => {
@@ -732,23 +784,36 @@ const Patients: React.FC = () => {
               <div className="bg-white p-6 rounded-lg shadow">
                 <h3 className="text-md font-bold mb-4">Nueva Asignación de Equipo</h3>
                 <div className="flex flex-col gap-4">
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div className="md:col-span-1">
-                      <label className="block text-sm font-medium text-gray-700">Fecha de asignación</label>
-                      <input
-                        type="date"
-                        className="mt-1 w-full border p-2 rounded"
-                        value={fechaAsignacion}
-                        onChange={(e) => setFechaAsignacion(e.target.value)}
-                      />
-                      <p className="text-xs text-gray-500 mt-1">
-                        Útil para registrar entregas antiguas.
-                      </p>
-                    </div>
+	                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+	                    <div className="md:col-span-1">
+	                      <label className="block text-sm font-medium text-gray-700">Fecha de actualización</label>
+	                      <input
+	                        type="date"
+	                        className="mt-1 w-full border p-2 rounded bg-gray-50 text-gray-700"
+	                        value={getTodayYmd()}
+	                        disabled
+	                      />
+	                      <p className="text-xs text-gray-500 mt-1">
+	                        Se asigna automáticamente al crear el acta en el sistema.
+	                      </p>
+	                    </div>
 
-                    <div className="md:col-span-2">
-                      <label className="block text-sm font-medium text-gray-700">Buscar equipo (MBG o serie)</label>
-                      <div className="relative">
+	                    <div className="md:col-span-1">
+	                      <label className="block text-sm font-medium text-gray-700">Fecha de entrega original</label>
+	                      <input
+	                        type="date"
+	                        className="mt-1 w-full border p-2 rounded"
+	                        value={fechaAsignacion}
+	                        onChange={(e) => setFechaAsignacion(e.target.value)}
+	                      />
+	                      <p className="text-xs text-gray-500 mt-1">
+	                        Diligencia manualmente la fecha real de entrega (útil para entregas antiguas).
+	                      </p>
+	                    </div>
+
+	                    <div className="md:col-span-2">
+	                      <label className="block text-sm font-medium text-gray-700">Buscar equipo (MBG o serie)</label>
+	                      <div className="relative">
                         <input
                           className="mt-1 w-full border p-2 rounded"
                           placeholder="Ej: MBG-015 o 250103654"
@@ -1002,31 +1067,38 @@ const Patients: React.FC = () => {
                     <div className="w-80 bg-gray-50 border-r border-gray-200 p-4 overflow-y-auto no-print">
                         <h4 className="font-bold text-gray-700 mb-4 border-b pb-2">Configurar Firmas</h4>
                         
-                        {/* Firma Paciente */}
-                        <div className="mb-6">
-                            <label className="block text-sm font-medium text-gray-600 mb-2">Firma Paciente/Familiar</label>
-                            {(() => {
-                              const savedSig =
-                                actaData.tipo === 'ENTREGA'
-                                  ? actaData.asig.firmaPacienteEntrega
-                                  : actaData.asig.firmaPacienteDevolucion;
-                              const locked = !!savedSig;
+	                        {/* Firma Paciente */}
+	                        <div className="mb-6">
+	                            <label className="block text-sm font-medium text-gray-600 mb-2">Firma Paciente/Familiar</label>
+	                            {(() => {
+	                              const savedSig =
+	                                actaData.tipo === 'ENTREGA'
+	                                  ? actaData.asig.firmaPacienteEntrega
+	                                  : actaData.asig.firmaPacienteDevolucion;
+	                              const locked = !!savedSig;
 
-                              return (
-                                <>
-                                  <div className="bg-white">
-                                    {locked ? (
-                                      <div className="border border-gray-300 rounded bg-white p-2">
-                                        <img
-                                          src={savedSig}
-                                          alt="Firma guardada del paciente/familiar"
-                                          className="w-full h-40 object-contain"
-                                        />
-                                      </div>
-                                    ) : (
-                                      <SignaturePad onEnd={setPatientSignature} />
-                                    )}
-                                  </div>
+	                              return (
+	                                <>
+	                                  <div className="bg-white">
+	                                    {locked ? (
+	                                      <div className="border border-gray-300 rounded bg-white p-2">
+	                                        <img
+	                                          src={savedSig}
+	                                          alt="Firma guardada del paciente/familiar"
+	                                          className="w-full h-40 object-contain"
+	                                        />
+	                                      </div>
+	                                    ) : canManage ? (
+	                                      <SignaturePad onEnd={setPatientSignature} />
+	                                    ) : (
+	                                      <div className="border border-gray-300 rounded bg-white p-4 text-center text-sm text-gray-500">
+	                                        Sin firma registrada.
+	                                        <div className="text-xs text-gray-400 mt-1">
+	                                          Solo el rol AUXILIAR_ADMINISTRATIVA puede registrar/guardar firmas.
+	                                        </div>
+	                                      </div>
+	                                    )}
+	                                  </div>
 
                                   <p className="text-xs text-gray-400 mt-1">
                                     {locked
@@ -1034,12 +1106,12 @@ const Patients: React.FC = () => {
                                       : 'El paciente puede firmar usando el mouse o el dedo en pantallas táctiles.'}
                                   </p>
 
-                                  {!locked && (
-                                    <>
-                                      <div className="mt-3 flex gap-2">
-                                        <button
-                                          type="button"
-                                          onClick={handleGuardarFirmaPaciente}
+	                                  {!locked && canManage && (
+	                                    <>
+	                                      <div className="mt-3 flex gap-2">
+	                                        <button
+	                                          type="button"
+	                                          onClick={handleGuardarFirmaPaciente}
                                           disabled={savingPatientSig || !patientSignature}
                                           className="flex-1 bg-blue-600 text-white px-3 py-2 rounded text-sm disabled:opacity-60"
                                           title={
@@ -1063,38 +1135,105 @@ const Patients: React.FC = () => {
                                         {actaData.tipo === 'ENTREGA' ? 'firmaPacienteEntrega' : 'firmaPacienteDevolucion'}).
                                       </p>
                                     </>
-                                  )}
-                                </>
-                              );
-                            })()}
-                        </div>
+	                                  )}
+	                                </>
+	                              );
+	                            })()}
+	                        </div>
 
-                        {/* Firma Admin */}
-                        <div className="mb-6">
-                            <label className="block text-sm font-medium text-gray-600 mb-2">Firma Auxiliar Admin</label>
-                            
-                            {adminSignature ? (
-                                <div className="mb-2 bg-white p-2 border rounded relative">
-                                    <img src={adminSignature} className="h-16 mx-auto object-contain" alt="Admin Sig" />
-                                    <button 
-                                        onClick={() => { setAdminSignature(null); localStorage.removeItem('biocontrol_admin_sig'); }}
-                                        className="absolute top-0 right-0 bg-red-100 text-red-600 p-1 rounded-bl text-xs"
-                                    >✕</button>
-                                </div>
-                            ) : (
-                                <div className="border-2 border-dashed border-gray-300 rounded p-4 text-center hover:bg-white transition-colors cursor-pointer relative">
-                                    <input 
-                                        type="file" 
-                                        accept="image/*" 
-                                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                                        onChange={handleAdminSigUpload}
-                                    />
-                                    <svg className="w-8 h-8 mx-auto text-gray-400 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
-                                    <span className="text-xs text-gray-500">Cargar imagen de firma</span>
-                                </div>
-                            )}
-                            <p className="text-xs text-gray-400 mt-1">Cargue una imagen (PNG/JPG) con la firma escaneada. Se guardará para futuras actas.</p>
-                        </div>
+	                        {/* Firma Admin */}
+	                        <div className="mb-6">
+	                            <label className="block text-sm font-medium text-gray-600 mb-2">Firma Auxiliar Admin</label>
+
+	                            {(() => {
+	                              const savedAdminSig = actaData.asig.firmaAuxiliar || null;
+	                              const locked = !!savedAdminSig;
+	                              const effectiveAdminSig = locked ? savedAdminSig : canManage ? adminSignature : null;
+
+	                              return (
+	                                <>
+	                                  {effectiveAdminSig ? (
+	                                    <div className="mb-2 bg-white p-2 border rounded relative">
+	                                      <img
+	                                        src={effectiveAdminSig}
+	                                        className="h-16 mx-auto object-contain"
+	                                        alt="Firma Auxiliar"
+	                                      />
+	                                      {canManage && !locked && (
+	                                        <button
+	                                          onClick={() => {
+	                                            setAdminSignature(null);
+	                                            localStorage.removeItem('biocontrol_admin_sig');
+	                                          }}
+	                                          className="absolute top-0 right-0 bg-red-100 text-red-600 p-1 rounded-bl text-xs"
+	                                        >
+	                                          ✕
+	                                        </button>
+	                                      )}
+	                                    </div>
+	                                  ) : (
+	                                    <div className="mb-2 border border-gray-300 rounded bg-white p-3 text-center text-sm text-gray-500">
+	                                      Sin firma digital registrada.
+	                                    </div>
+	                                  )}
+
+	                                  {locked ? (
+	                                    <p className="text-xs text-gray-400 mt-1">
+	                                      Esta acta ya tiene firma del auxiliar registrada. Por control, no se puede modificar.
+	                                    </p>
+	                                  ) : canManage ? (
+	                                    <>
+	                                      <div className="border-2 border-dashed border-gray-300 rounded p-4 text-center hover:bg-white transition-colors cursor-pointer relative">
+	                                        <input
+	                                          type="file"
+	                                          accept="image/*"
+	                                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+	                                          onChange={handleAdminSigUpload}
+	                                        />
+	                                        <svg
+	                                          className="w-8 h-8 mx-auto text-gray-400 mb-1"
+	                                          fill="none"
+	                                          stroke="currentColor"
+	                                          viewBox="0 0 24 24"
+	                                        >
+	                                          <path
+	                                            strokeLinecap="round"
+	                                            strokeLinejoin="round"
+	                                            strokeWidth={2}
+	                                            d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+	                                          />
+	                                        </svg>
+	                                        <span className="text-xs text-gray-500">Cargar imagen de firma</span>
+	                                      </div>
+
+	                                      {adminSignature && !savedAdminSig && (
+	                                        <div className="mt-3 flex gap-2">
+	                                          <button
+	                                            type="button"
+	                                            onClick={handleGuardarFirmaAuxiliar}
+	                                            disabled={savingAdminSig}
+	                                            className="flex-1 bg-blue-600 text-white px-3 py-2 rounded text-sm disabled:opacity-60"
+	                                            title="Guardar la firma del auxiliar en Firestore para esta asignación"
+	                                          >
+	                                            {savingAdminSig ? 'Guardando...' : 'Guardar firma'}
+	                                          </button>
+	                                        </div>
+	                                      )}
+
+	                                      <p className="text-xs text-gray-400 mt-1">
+	                                        Cargue una imagen (PNG/JPG) con la firma escaneada. Se guardará en Firestore para el acta
+	                                        y también en este dispositivo para futuras actas.
+	                                      </p>
+	                                    </>
+	                                  ) : (
+	                                    <p className="text-xs text-gray-400 mt-1">
+	                                      Solo el rol AUXILIAR_ADMINISTRATIVA puede registrar/guardar esta firma.
+	                                    </p>
+	                                  )}
+	                                </>
+	                              );
+	                            })()}
+	                        </div>
 
                         <div className="bg-blue-50 p-3 rounded text-xs text-blue-800 border border-blue-100">
                             <strong>Nota:</strong> Las firmas se insertarán automáticamente en los recuadros correspondientes del formato al imprimir.
@@ -1112,17 +1251,19 @@ const Patients: React.FC = () => {
                             style={{ transform: `scale(${actaPreviewScale})`, transformOrigin: 'top center' }}
                           >
                             <div id="acta-print-container" ref={actaMeasureRef} className="bg-white shadow-lg">
-                              <ActaFormat 
-                                  paciente={selectedPaciente}
-                                  equipo={actaData.equipo}
-                                  asignacion={actaData.asig}
-                                  tipoActa={actaData.tipo}
-                                  patientSignature={patientSignature}
-                                  adminSignature={adminSignature}
-                              />
-                            </div>
-                          </div>
-                        </div>
+	                              <ActaFormat 
+	                                  paciente={selectedPaciente}
+	                                  equipo={actaData.equipo}
+	                                  asignacion={actaData.asig}
+	                                  tipoActa={actaData.tipo}
+	                                  patientSignature={patientSignature}
+	                                  adminSignature={
+	                                    actaData.asig.firmaAuxiliar ? actaData.asig.firmaAuxiliar : canManage ? adminSignature : null
+	                                  }
+	                              />
+	                            </div>
+	                          </div>
+	                        </div>
                     </div>
                 </div>
              </div>

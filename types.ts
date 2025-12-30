@@ -3,6 +3,7 @@ export enum RolUsuario {
   GERENCIA = 'GERENCIA',
   INGENIERO_BIOMEDICO = 'INGENIERO_BIOMEDICO',
   AUXILIAR_ADMINISTRATIVA = 'AUXILIAR_ADMINISTRATIVA',
+  VISITADOR = 'VISITADOR',
 }
 
 // Estados del Paciente
@@ -68,6 +69,9 @@ export interface Paciente {
 
   estado: EstadoPaciente;
   fechaSalida?: string; // ISO Date
+
+  // Campo para control de acceso del rol VISITADOR (solo pacientes con asignación activa).
+  tieneAsignacionActiva?: boolean;
 }
 
 // Modelo de Equipo Biomédico
@@ -87,6 +91,8 @@ export interface EquipoBiomedico {
   custodioUid?: string;
   // Si existe, indica que el equipo está en una acta interna pendiente de aceptación.
   actaInternaPendienteId?: string;
+  // Campo para control de acceso del rol VISITADOR (solo equipos con asignación activa).
+  asignadoActivo?: boolean;
   ubicacionActual?: string; 
   observaciones: string;
   tipoPropiedad: TipoPropiedad;
@@ -104,6 +110,8 @@ export interface Asignacion {
   idPaciente: string;
   idEquipo: string;
   fechaAsignacion: string;
+  // Fecha en la que se generó/actualizó la entrega en el sistema (ISO). No cambia con el tiempo (opción A).
+  fechaActualizacionEntrega?: string;
   fechaDevolucion?: string;
   estado: EstadoAsignacion;
   observacionesEntrega: string;
@@ -113,6 +121,8 @@ export interface Asignacion {
   // Firmas (DataURL base64) guardadas en Firestore
   firmaPacienteEntrega?: string;
   firmaPacienteDevolucion?: string;
+  // Firma del auxiliar (DataURL base64) guardada en Firestore para auditoría/consistencia del acta.
+  firmaAuxiliar?: string;
   usuarioAsigna: string; 
 }
 
@@ -153,4 +163,43 @@ export interface ActaInterna {
   items: ActaInternaItem[];
   firmaEntrega?: string;
   firmaRecibe?: string;
+}
+
+export enum EstadoReporteEquipo {
+  ABIERTO = 'ABIERTO',
+  CERRADO = 'CERRADO',
+}
+
+export interface ReporteFoto {
+  path: string; // Ruta en Storage
+  name: string; // Nombre original
+  size: number; // bytes
+  contentType: string;
+}
+
+export interface ReporteEquipo {
+  id: string;
+  estado: EstadoReporteEquipo;
+  idAsignacion: string;
+  idPaciente: string;
+  idEquipo: string;
+  fechaVisita: string; // ISO
+  descripcion: string;
+  fotos: ReporteFoto[];
+
+  creadoPorUid: string;
+  creadoPorNombre: string;
+
+  // Snapshot mínimo para reportes/email (no depende de joins).
+  pacienteNombre: string;
+  pacienteDocumento: string;
+  equipoCodigoInventario: string;
+  equipoNombre: string;
+  equipoSerie: string;
+
+  // Campos de cierre (solo biomédico)
+  cerradoAt?: string;
+  cerradoPorUid?: string;
+  cerradoPorNombre?: string;
+  cierreNotas?: string;
 }

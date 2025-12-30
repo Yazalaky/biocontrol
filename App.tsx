@@ -8,10 +8,12 @@ import Inventory from './pages/Inventory';
 import Admin from './pages/Admin';
 import Reports from './pages/Reports';
 import InternalActas from './pages/InternalActas';
+import Visits from './pages/Visits';
+import { RolUsuario } from './types';
 
 // Simple Router Component
 const Router = () => {
-  const { isAuthenticated, loading } = useAuth();
+  const { isAuthenticated, loading, usuario } = useAuth();
   const [currentHash, setCurrentHash] = useState(window.location.hash || '#/');
 
   useEffect(() => {
@@ -37,6 +39,11 @@ const Router = () => {
     return <Login />;
   }
 
+  // VISITADOR: solo usa la pantalla de visitas/reportes
+  if (usuario?.rol === RolUsuario.VISITADOR) {
+    return <Visits />;
+  }
+
   // Rutas
   switch (currentHash) {
     case '#/pacientes':
@@ -47,6 +54,8 @@ const Router = () => {
       return <Reports />;
     case '#/actas-internas':
       return <InternalActas />;
+    case '#/visitas':
+      return <Visits />;
     case '#/admin':
       return <Admin />;
     case '#/':

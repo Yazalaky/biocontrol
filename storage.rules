@@ -1,0 +1,38 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function role() {
+      return isSignedIn()
+        ? firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.rol
+        : null;
+    }
+
+    function hasRole(r) {
+      return role() == r;
+    }
+
+    // Fotos de reportes (VISITADOR)
+    match /reportes_equipos/{uid}/{reporteId}/{fileName} {
+      allow write: if isSignedIn()
+        && request.auth.uid == uid
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/(png|jpeg)');
+
+      allow read: if isSignedIn()
+        && (request.auth.uid == uid
+          || hasRole('INGENIERO_BIOMEDICO')
+          || hasRole('GERENCIA'));
+    }
+
+    // Deny by default
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
+

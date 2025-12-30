@@ -11,7 +11,9 @@ interface ActaFormatProps {
 }
 
 const ActaFormat: React.FC<ActaFormatProps> = ({ paciente, equipo, asignacion, tipoActa, patientSignature, adminSignature }) => {
-  const fecha = new Date(tipoActa === 'ENTREGA' ? asignacion.fechaAsignacion : (asignacion.fechaDevolucion || new Date().toISOString()));
+  const fechaEntregaOriginal = new Date(asignacion.fechaAsignacion);
+  const fechaActualizacionEntrega = new Date(asignacion.fechaActualizacionEntrega || asignacion.fechaAsignacion);
+  const fechaDevolucion = new Date(asignacion.fechaDevolucion || new Date().toISOString());
   const logoCandidates = ['/medicuc-logo.png', '/medicuc-logo.jpg', '/medicuc-logo.svg'] as const;
   const [logoIndex, setLogoIndex] = useState(0);
   const [logoFailed, setLogoFailed] = useState(false);
@@ -60,8 +62,10 @@ const ActaFormat: React.FC<ActaFormatProps> = ({ paciente, equipo, asignacion, t
       <div className="border-2 border-black mb-4">
         {/* Fila 1 */}
         <div className="flex border-b border-black">
-          <div className="w-[10%] border-r border-black p-1 font-semibold bg-gray-100">Fecha</div>
-          <div className="w-[15%] border-r border-black p-1">{fecha.toLocaleDateString()}</div>
+          <div className="w-[15%] border-r border-black p-1 font-semibold bg-gray-100">Fecha actualización</div>
+          <div className="w-[10%] border-r border-black p-1">
+            {(tipoActa === 'ENTREGA' ? fechaActualizacionEntrega : fechaDevolucion).toLocaleDateString()}
+          </div>
           <div className="w-[10%] border-r border-black p-1 font-semibold bg-gray-100">Acta</div>
           <div className="w-[10%] border-r border-black p-1 text-center text-red-600 font-bold">{String(asignacion.consecutivo).padStart(4, '0')}</div>
           <div className="w-[10%] border-r border-black p-1 font-semibold bg-gray-100">Sede</div>
@@ -69,6 +73,13 @@ const ActaFormat: React.FC<ActaFormatProps> = ({ paciente, equipo, asignacion, t
           <div className="w-[10%] border-r border-black p-1 font-semibold bg-gray-100">Eps</div>
           <div className="w-[20%] p-1">{paciente.eps}</div>
         </div>
+        {/* Fila 1.1 - Fecha entrega original (solo ENTREGA) */}
+        {tipoActa === 'ENTREGA' ? (
+          <div className="flex border-b border-black">
+            <div className="w-[20%] border-r border-black p-1 font-semibold bg-gray-100">Fecha entrega original</div>
+            <div className="w-[80%] p-1">{fechaEntregaOriginal.toLocaleDateString()}</div>
+          </div>
+        ) : null}
         {/* Fila 2 */}
         <div className="flex border-b border-black">
             <div className="w-[15%] border-r border-black p-1 font-semibold bg-gray-100">Identificación</div>

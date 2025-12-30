@@ -1,6 +1,9 @@
 import {setGlobalOptions} from "firebase-functions";
 import {HttpsError, onCall} from "firebase-functions/v2/https";
-import {onDocumentCreated} from "firebase-functions/v2/firestore";
+import {
+  onDocumentCreated,
+  onDocumentUpdated,
+} from "firebase-functions/v2/firestore";
 import {auth as authTriggers} from "firebase-functions/v1";
 import {initializeApp} from "firebase-admin/app";
 import {getAuth} from "firebase-admin/auth";
@@ -17,6 +20,7 @@ const ALLOWED_ROLES = [
   "GERENCIA",
   "AUXILIAR_ADMINISTRATIVA",
   "INGENIERO_BIOMEDICO",
+  "VISITADOR",
 ] as const;
 
 type AllowedRole = (typeof ALLOWED_ROLES)[number];
@@ -263,6 +267,118 @@ export const listAuxiliares = onCall(async (request) => {
 });
 
 /**
+ * Recalcula flags para VISITADOR basándose en asignaciones activas.
+ * Útil como paso de migración inicial (cuando ya existen asignaciones previas).
+ *
+ * @return {Promise<Object>} Resultado con conteos.
+ */
+export const rebuildVisitadorFlags = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
+  }
+
+  await assertCallerIsAdminOrHasRole(
+    request.auth.uid,
+    "INGENIERO_BIOMEDICO",
+  );
+
+  const activeSnap = await db
+    .collection("asignaciones")
+    .where("estado", "==", "ACTIVA")
+    .get();
+
+  const pacientesSet = new Set<string>();
+  const equiposSet = new Set<string>();
+  for (const docSnap of activeSnap.docs) {
+    const d = docSnap.data() as Record<string, unknown>;
+    const idPaciente = typeof d.idPaciente === "string" ? d.idPaciente : "";
+    const idEquipo = typeof d.idEquipo === "string" ? d.idEquipo : "";
+    if (idPaciente) pacientesSet.add(idPaciente);
+    if (idEquipo) equiposSet.add(idEquipo);
+  }
+
+  const commitBatches = async (
+    ops: Array<{refPath: string; data: Record<string, unknown>}>,
+  ) => {
+    const chunkSize = 400;
+    for (let i = 0; i < ops.length; i += chunkSize) {
+      const chunk = ops.slice(i, i + chunkSize);
+      const batch = db.batch();
+      for (const op of chunk) {
+        batch.set(db.doc(op.refPath), op.data, {merge: true});
+      }
+      await batch.commit();
+    }
+  };
+
+  // 1) Marcar true para los que están activos
+  await Promise.all([
+    commitBatches(
+      Array.from(pacientesSet).map((id) => ({
+        refPath: `pacientes/${id}`,
+        data: {
+          tieneAsignacionActiva: true,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+      })),
+    ),
+    commitBatches(
+      Array.from(equiposSet).map((id) => ({
+        refPath: `equipos/${id}`,
+        data: {
+          asignadoActivo: true,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+      })),
+    ),
+  ]);
+
+  // 2) Marcar false solo para docs que estaban true pero ya no están activos
+  const pacientesTrueSnap = await db
+    .collection("pacientes")
+    .where("tieneAsignacionActiva", "==", true)
+    .get();
+  const equiposTrueSnap = await db
+    .collection("equipos")
+    .where("asignadoActivo", "==", true)
+    .get();
+
+  const pacientesToFalse = pacientesTrueSnap.docs
+    .filter((d) => !pacientesSet.has(d.id))
+    .map((d) => ({
+      refPath: `pacientes/${d.id}`,
+      data: {
+        tieneAsignacionActiva: false,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+    }));
+
+  const equiposToFalse = equiposTrueSnap.docs
+    .filter((d) => !equiposSet.has(d.id))
+    .map((d) => ({
+      refPath: `equipos/${d.id}`,
+      data: {
+        asignadoActivo: false,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+    }));
+
+  await Promise.all([
+    commitBatches(pacientesToFalse),
+    commitBatches(equiposToFalse),
+  ]);
+
+  return {
+    ok: true,
+    pacientesActivos: pacientesSet.size,
+    equiposActivos: equiposSet.size,
+  };
+});
+
+/**
  * 4) INVENTARIO: por defecto, los equipos nuevos NO quedan disponibles para
  * entrega a pacientes hasta que exista una acta interna aceptada.
  *
@@ -288,6 +404,112 @@ export const defaultEquipoDisponibilidad = onDocumentCreated(
       },
       {merge: true},
     );
+  },
+);
+
+/**
+ * Mantiene flags para el rol VISITADOR:
+ * - pacientes/{id}.tieneAsignacionActiva
+ * - equipos/{id}.asignadoActivo
+ *
+ * Se actualizan cuando se crean/finalizan asignaciones.
+ */
+export const onAsignacionCreatedUpdateFlags = onDocumentCreated(
+  "asignaciones/{asigId}",
+  async (event) => {
+    const snap = event.data;
+    if (!snap) return;
+    const data = snap.data() as Record<string, unknown>;
+    const estado = typeof data.estado === "string" ? data.estado : "";
+    if (estado !== "ACTIVA") return;
+
+    const idPaciente =
+      typeof data.idPaciente === "string" ? data.idPaciente : "";
+    const idEquipo = typeof data.idEquipo === "string" ? data.idEquipo : "";
+
+    const ops: Promise<unknown>[] = [];
+    if (idPaciente) {
+      ops.push(
+        db.doc(`pacientes/${idPaciente}`).set(
+          {
+            tieneAsignacionActiva: true,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        ),
+      );
+    }
+    if (idEquipo) {
+      ops.push(
+        db.doc(`equipos/${idEquipo}`).set(
+          {
+            asignadoActivo: true,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          {merge: true},
+        ),
+      );
+    }
+    await Promise.all(ops);
+  },
+);
+
+export const onAsignacionUpdatedUpdateFlags = onDocumentUpdated(
+  "asignaciones/{asigId}",
+  async (event) => {
+    const before = event.data?.before?.data() as
+      | Record<string, unknown>
+      | undefined;
+    const after = event.data?.after?.data() as
+      | Record<string, unknown>
+      | undefined;
+    if (!before || !after) return;
+
+    const beforeEstado = typeof before.estado === "string" ? before.estado : "";
+    const afterEstado = typeof after.estado === "string" ? after.estado : "";
+    if (beforeEstado === afterEstado) return;
+
+    const idPaciente =
+      typeof after.idPaciente === "string" ? after.idPaciente : "";
+    const idEquipo = typeof after.idEquipo === "string" ? after.idEquipo : "";
+
+    const recomputePaciente = async () => {
+      if (!idPaciente) return;
+      const q = await db
+        .collection("asignaciones")
+        .where("idPaciente", "==", idPaciente)
+        .where("estado", "==", "ACTIVA")
+        .limit(1)
+        .get();
+      const hasActive = !q.empty;
+      await db.doc(`pacientes/${idPaciente}`).set(
+        {
+          tieneAsignacionActiva: hasActive,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+    };
+
+    const recomputeEquipo = async () => {
+      if (!idEquipo) return;
+      const q = await db
+        .collection("asignaciones")
+        .where("idEquipo", "==", idEquipo)
+        .where("estado", "==", "ACTIVA")
+        .limit(1)
+        .get();
+      const hasActive = !q.empty;
+      await db.doc(`equipos/${idEquipo}`).set(
+        {
+          asignadoActivo: hasActive,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        {merge: true},
+      );
+    };
+
+    await Promise.all([recomputePaciente(), recomputeEquipo()]);
   },
 );
 
@@ -594,3 +816,72 @@ export const acceptInternalActa = onCall(async (request) => {
   await batch.commit();
   return {ok: true};
 });
+
+/**
+ * Reportes de visita/falla (VISITADOR -> Biomedico)
+ * Al crear un reporte, insertamos un doc en /mail (Trigger Email Extension).
+ */
+export const onReporteEquipoCreatedNotify = onDocumentCreated(
+  "reportes_equipos/{reporteId}",
+  async (event) => {
+    const snap = event.data;
+    if (!snap) return;
+    const d = snap.data() as Record<string, unknown>;
+
+    const equipoCodigo =
+      typeof d.equipoCodigoInventario === "string" ?
+        d.equipoCodigoInventario :
+        "";
+    const equipoNombre =
+      typeof d.equipoNombre === "string" ? d.equipoNombre : "";
+    const pacienteNombre =
+      typeof d.pacienteNombre === "string" ? d.pacienteNombre : "";
+    const pacienteDocumento =
+      typeof d.pacienteDocumento === "string" ? d.pacienteDocumento : "";
+    const descripcion =
+      typeof d.descripcion === "string" ? d.descripcion : "";
+    const fechaVisita =
+      typeof d.fechaVisita === "string" ? d.fechaVisita : "";
+
+    // Buscar biomédicos para notificar
+    const usersSnap = await db
+      .collection("users")
+      .where("rol", "==", "INGENIERO_BIOMEDICO")
+      .get();
+    const recipients = usersSnap.docs
+      .map((u) => u.data()?.email)
+      .filter((e) => typeof e === "string" && e.includes("@")) as string[];
+
+    if (recipients.length === 0) return;
+
+    const subject =
+      `BioControl: Reporte de visita (${equipoCodigo || "Equipo"})`;
+    const pacienteLine = pacienteDocumento ?
+      `${pacienteNombre} (${pacienteDocumento})` :
+      pacienteNombre;
+    const textLines = [
+      "Se ha creado un nuevo reporte de visita/falla.",
+      "",
+      `Paciente: ${pacienteLine}`,
+      `Equipo: ${equipoCodigo} - ${equipoNombre}`,
+      `Fecha visita: ${fechaVisita}`,
+      "",
+      "Descripción:",
+      descripcion,
+      "",
+      "Ingresa a BioControl para ver el detalle y cerrar el reporte.",
+    ];
+
+    // Requiere Trigger Email Extension configurada (colección /mail).
+    await db.collection("mail").add({
+      to: recipients,
+      message: {
+        subject,
+        text: textLines.join("\n"),
+      },
+      createdAt: FieldValue.serverTimestamp(),
+      source: "reportes_equipos",
+      reporteId: snap.id,
+    });
+  },
+);

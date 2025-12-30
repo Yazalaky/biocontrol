@@ -5,7 +5,11 @@ import { useAuth } from '../contexts/AuthContext';
 import { firebaseFunctions } from '../services/firebaseFunctions';
 import { RolUsuario } from '../types';
 
-type AllowedRole = RolUsuario.GERENCIA | RolUsuario.AUXILIAR_ADMINISTRATIVA | RolUsuario.INGENIERO_BIOMEDICO;
+type AllowedRole =
+  | RolUsuario.GERENCIA
+  | RolUsuario.AUXILIAR_ADMINISTRATIVA
+  | RolUsuario.INGENIERO_BIOMEDICO
+  | RolUsuario.VISITADOR;
 
 function parseCallableError(err: any): string {
   const code = typeof err?.code === 'string' ? err.code : null;
@@ -22,6 +26,7 @@ const Admin: React.FC = () => {
         { value: RolUsuario.GERENCIA, label: 'GERENCIA (solo lectura)' },
         { value: RolUsuario.AUXILIAR_ADMINISTRATIVA, label: 'AUXILIAR_ADMINISTRATIVA (pacientes + asignaciones)' },
         { value: RolUsuario.INGENIERO_BIOMEDICO, label: 'INGENIERO_BIOMEDICO (inventario completo)' },
+        { value: RolUsuario.VISITADOR, label: 'VISITADOR (reportes + fotos)' },
       ] as const,
     [],
   );
@@ -42,6 +47,11 @@ const Admin: React.FC = () => {
   const [assigning, setAssigning] = useState(false);
   const [assignOk, setAssignOk] = useState<string | null>(null);
   const [assignError, setAssignError] = useState<string | null>(null);
+
+  // Recalcular flags VISITADOR
+  const [rebuilding, setRebuilding] = useState(false);
+  const [rebuildMsg, setRebuildMsg] = useState<string | null>(null);
+  const [rebuildErr, setRebuildErr] = useState<string | null>(null);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -237,10 +247,56 @@ const Admin: React.FC = () => {
             </button>
           </form>
         </div>
+
+        <div className="bg-white p-6 rounded-lg shadow">
+          <h3 className="font-bold text-gray-900 mb-1">VISITADOR: Recalcular flags</h3>
+          <p className="text-xs text-gray-500 mb-4">
+            Paso recomendado al activar el rol VISITADOR si ya existen asignaciones previas.
+          </p>
+
+          {rebuildErr && (
+            <div className="mb-4 bg-red-50 border border-red-200 text-red-800 rounded p-3 text-sm">
+              {rebuildErr}
+            </div>
+          )}
+          {rebuildMsg && (
+            <div className="mb-4 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded p-3 text-sm">
+              {rebuildMsg}
+            </div>
+          )}
+
+          <button
+            className="md-btn md-btn-filled w-full"
+            disabled={rebuilding}
+            onClick={async () => {
+              setRebuildErr(null);
+              setRebuildMsg(null);
+              setRebuilding(true);
+              try {
+                const fn = httpsCallable(firebaseFunctions, 'rebuildVisitadorFlags');
+                const res = await fn({});
+                const data = res.data as any;
+                setRebuildMsg(
+                  `OK. Pacientes activos: ${data?.pacientesActivos ?? 0} · Equipos activos: ${data?.equiposActivos ?? 0}`,
+                );
+              } catch (err: any) {
+                setRebuildErr(parseCallableError(err));
+              } finally {
+                setRebuilding(false);
+              }
+            }}
+          >
+            {rebuilding ? 'Recalculando...' : 'Recalcular ahora'}
+          </button>
+
+          <div className="text-xs text-gray-500 mt-3">
+            Esto actualiza <code className="px-1">pacientes.tieneAsignacionActiva</code> y{' '}
+            <code className="px-1">equipos.asignadoActivo</code> basándose en asignaciones activas.
+          </div>
+        </div>
       </div>
     </Layout>
   );
 };
 
 export default Admin;
-

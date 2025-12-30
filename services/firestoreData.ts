@@ -8,6 +8,8 @@ import {
   onSnapshot,
   orderBy,
   query,
+  serverTimestamp,
+  setDoc,
   updateDoc,
   where,
 } from 'firebase/firestore';
@@ -18,6 +20,8 @@ import {
   EstadoAsignacion,
   EstadoEquipo,
   EstadoPaciente,
+  EstadoReporteEquipo,
+  type ReporteEquipo,
   type ActaInterna,
   type Asignacion,
   type EquipoBiomedico,
@@ -28,6 +32,7 @@ const pacientesCol = collection(db, 'pacientes');
 const equiposCol = collection(db, 'equipos');
 const asignacionesCol = collection(db, 'asignaciones');
 const actasInternasCol = collection(db, 'actas_internas');
+const reportesEquiposCol = collection(db, 'reportes_equipos');
 
 function assertRoleString(value: string, allowed: readonly string[], fieldName: string) {
   if (!allowed.includes(value)) {
@@ -105,6 +110,52 @@ export function subscribeAsignaciones(onData: (asignaciones: Asignacion[]) => vo
   );
 }
 
+// Subscriptions específicas para el rol VISITADOR (evita permission-denied por queries sin filtro).
+export function subscribePacientesConAsignacionActiva(
+  onData: (pacientes: Paciente[]) => void,
+  onError?: (e: Error) => void,
+) {
+  const q = query(pacientesCol, where('tieneAsignacionActiva', '==', true));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const pacientes = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Paciente, 'id'>) }));
+      onData(pacientes);
+    },
+    (err) => onError?.(err as unknown as Error),
+  );
+}
+
+export function subscribeEquiposAsignadosActivos(
+  onData: (equipos: EquipoBiomedico[]) => void,
+  onError?: (e: Error) => void,
+) {
+  const q = query(equiposCol, where('asignadoActivo', '==', true));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const equipos = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<EquipoBiomedico, 'id'>) }));
+      onData(equipos);
+    },
+    (err) => onError?.(err as unknown as Error),
+  );
+}
+
+export function subscribeAsignacionesActivas(
+  onData: (asignaciones: Asignacion[]) => void,
+  onError?: (e: Error) => void,
+) {
+  const q = query(asignacionesCol, where('estado', '==', EstadoAsignacion.ACTIVA));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const asignaciones = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Asignacion, 'id'>) }));
+      onData(asignaciones);
+    },
+    (err) => onError?.(err as unknown as Error),
+  );
+}
+
 export function subscribeActasInternas(onData: (actas: ActaInterna[]) => void, onError?: (e: Error) => void) {
   const q = query(actasInternasCol, orderBy('fecha', 'desc'));
   return onSnapshot(
@@ -114,6 +165,46 @@ export function subscribeActasInternas(onData: (actas: ActaInterna[]) => void, o
       onData(actas);
     },
     (err) => onError?.(err as unknown as Error),
+  );
+}
+
+export function subscribeReportesEquipos(
+  onData: (reportes: ReporteEquipo[]) => void,
+  onError?: (e: Error) => void,
+) {
+  const q = query(reportesEquiposCol);
+  return onSnapshot(
+    q,
+    (snap) => {
+      const reportes = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<ReporteEquipo, 'id'>) }));
+      onData(reportes);
+    },
+    (err) => onError?.(err as unknown as Error),
+  );
+}
+
+export async function createReporteEquipo(reporte: ReporteEquipo) {
+  const ref = doc(reportesEquiposCol, reporte.id);
+  const { id, ...rest } = reporte;
+  await setDoc(ref, stripUndefinedDeep({ ...rest, createdAt: serverTimestamp() }) as any);
+}
+
+export async function cerrarReporteEquipo(params: {
+  idReporte: string;
+  cierreNotas: string;
+  cerradoPorUid: string;
+  cerradoPorNombre: string;
+}) {
+  const ref = doc(reportesEquiposCol, params.idReporte);
+  await updateDoc(
+    ref,
+    stripUndefinedDeep({
+      estado: EstadoReporteEquipo.CERRADO,
+      cierreNotas: params.cierreNotas,
+      cerradoAt: new Date().toISOString(),
+      cerradoPorUid: params.cerradoPorUid,
+      cerradoPorNombre: params.cerradoPorNombre,
+    }) as any,
   );
 }
 
@@ -235,9 +326,11 @@ export async function asignarEquipo(params: {
   idEquipo: string;
   observacionesEntrega: string;
   usuarioAsigna: string;
+  firmaAuxiliar?: string;
   fechaAsignacionIso?: string;
 }): Promise<Asignacion> {
-  const { idPaciente, idEquipo, observacionesEntrega, usuarioAsigna, fechaAsignacionIso } = params;
+  const { idPaciente, idEquipo, observacionesEntrega, usuarioAsigna, firmaAuxiliar, fechaAsignacionIso } =
+    params;
 
   const activeEquipoQ = query(
     asignacionesCol,
@@ -257,8 +350,10 @@ export async function asignarEquipo(params: {
     idPaciente,
     idEquipo,
     fechaAsignacion,
+    fechaActualizacionEntrega: nowIso,
     estado: EstadoAsignacion.ACTIVA,
     observacionesEntrega,
+    firmaAuxiliar,
     usuarioAsigna,
   };
 
@@ -317,5 +412,12 @@ export async function guardarFirmaPaciente(params: {
   const fieldName = tipoActa === 'ENTREGA' ? 'firmaPacienteEntrega' : 'firmaPacienteDevolucion';
   await updateDoc(ref, {
     [fieldName]: dataUrl ? dataUrl : deleteField(),
+  } as any);
+}
+
+export async function guardarFirmaAuxiliar(params: { idAsignacion: string; dataUrl: string | null }) {
+  const ref = doc(asignacionesCol, params.idAsignacion);
+  await updateDoc(ref, {
+    firmaAuxiliar: params.dataUrl ? params.dataUrl : deleteField(),
   } as any);
 }
