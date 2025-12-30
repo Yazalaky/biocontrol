@@ -24,13 +24,17 @@ import {
   type ReporteEquipo,
   type ActaInterna,
   type Asignacion,
+  type AsignacionProfesional,
   type EquipoBiomedico,
   type Paciente,
+  type Profesional,
 } from '../types';
 
 const pacientesCol = collection(db, 'pacientes');
+const profesionalesCol = collection(db, 'profesionales');
 const equiposCol = collection(db, 'equipos');
 const asignacionesCol = collection(db, 'asignaciones');
+const asignacionesProfesionalesCol = collection(db, 'asignaciones_profesionales');
 const actasInternasCol = collection(db, 'actas_internas');
 const reportesEquiposCol = collection(db, 'reportes_equipos');
 
@@ -55,8 +59,17 @@ function stripUndefinedDeep<T>(value: T): T {
   return value;
 }
 
-async function getNextNumber(collectionName: 'pacientes' | 'asignaciones'): Promise<number> {
-  const col = collectionName === 'pacientes' ? pacientesCol : asignacionesCol;
+async function getNextNumber(
+  collectionName: 'pacientes' | 'profesionales' | 'asignaciones' | 'asignaciones_profesionales',
+): Promise<number> {
+  const col =
+    collectionName === 'pacientes'
+      ? pacientesCol
+      : collectionName === 'profesionales'
+        ? profesionalesCol
+        : collectionName === 'asignaciones_profesionales'
+          ? asignacionesProfesionalesCol
+          : asignacionesCol;
   const q = query(col, orderBy('consecutivo', 'desc'), limit(1));
   const snap = await getDocs(q);
   const last = snap.docs[0]?.data()?.consecutivo;
@@ -86,6 +99,21 @@ export function subscribePacientes(onData: (pacientes: Paciente[]) => void, onEr
   );
 }
 
+export function subscribeProfesionales(
+  onData: (profesionales: Profesional[]) => void,
+  onError?: (e: Error) => void,
+) {
+  const q = query(profesionalesCol, orderBy('consecutivo', 'asc'));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const profesionales = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Profesional, 'id'>) }));
+      onData(profesionales);
+    },
+    (err) => onError?.(err as unknown as Error),
+  );
+}
+
 export function subscribeEquipos(onData: (equipos: EquipoBiomedico[]) => void, onError?: (e: Error) => void) {
   const q = query(equiposCol, orderBy('codigoInventario', 'asc'));
   return onSnapshot(
@@ -108,6 +136,151 @@ export function subscribeAsignaciones(onData: (asignaciones: Asignacion[]) => vo
     },
     (err) => onError?.(err as unknown as Error),
   );
+}
+
+export function subscribeAsignacionesProfesionales(
+  onData: (asignaciones: AsignacionProfesional[]) => void,
+  onError?: (e: Error) => void,
+) {
+  const q = query(asignacionesProfesionalesCol, orderBy('fechaEntregaOriginal', 'asc'));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const asignaciones = snap.docs.map((d) => ({
+        id: d.id,
+        ...(d.data() as Omit<AsignacionProfesional, 'id'>),
+      }));
+      onData(asignaciones);
+    },
+    (err) => onError?.(err as unknown as Error),
+  );
+}
+
+export async function saveProfesional(profesional: Profesional) {
+  if (!profesional.nombre || !profesional.cedula) {
+    throw new Error('El profesional debe tener nombre y cédula.');
+  }
+
+  if (profesional.id) {
+    const ref = doc(profesionalesCol, profesional.id);
+    const { id, ...rest } = profesional;
+    await updateDoc(ref, stripUndefinedDeep(rest) as any);
+    return;
+  }
+
+  const consecutivo = await getNextNumber('profesionales');
+  const { id: _id, ...rest } = profesional;
+  await addDoc(
+    profesionalesCol,
+    stripUndefinedDeep({ ...rest, consecutivo, createdAt: new Date().toISOString() }) as any,
+  );
+}
+
+export async function asignarEquipoProfesional(params: {
+  idProfesional: string;
+  idEquipo: string;
+  fechaEntregaOriginalIso: string;
+  ciudad?: string;
+  sede?: string;
+  observacionesEntrega: string;
+  usuarioAsigna: string;
+  uidAsigna?: string;
+  firmaAuxiliar?: string;
+}): Promise<AsignacionProfesional> {
+  const {
+    idProfesional,
+    idEquipo,
+    fechaEntregaOriginalIso,
+    ciudad,
+    sede,
+    observacionesEntrega,
+    usuarioAsigna,
+    uidAsigna,
+    firmaAuxiliar,
+  } = params;
+
+  // Bloqueo: no permitir si está activo en pacientes o profesionales.
+  const activePacienteQ = query(
+    asignacionesCol,
+    where('idEquipo', '==', idEquipo),
+    where('estado', '==', EstadoAsignacion.ACTIVA),
+    limit(1),
+  );
+  const activeProfesionalQ = query(
+    asignacionesProfesionalesCol,
+    where('idEquipo', '==', idEquipo),
+    where('estado', '==', EstadoAsignacion.ACTIVA),
+    limit(1),
+  );
+
+  const [activePacienteSnap, activeProfesionalSnap] = await Promise.all([
+    getDocs(activePacienteQ),
+    getDocs(activeProfesionalQ),
+  ]);
+  if (!activePacienteSnap.empty || !activeProfesionalSnap.empty) {
+    throw new Error('El equipo no está disponible');
+  }
+
+  const consecutivo = await getNextNumber('asignaciones_profesionales');
+  const nowIso = new Date().toISOString();
+
+  const asignacion: Omit<AsignacionProfesional, 'id'> = {
+    consecutivo,
+    idProfesional,
+    idEquipo,
+    fechaEntregaOriginal: fechaEntregaOriginalIso,
+    fechaActualizacionEntrega: nowIso,
+    ciudad: ciudad || '',
+    sede: sede || '',
+    estado: EstadoAsignacion.ACTIVA,
+    observacionesEntrega,
+    firmaAuxiliar,
+    usuarioAsigna,
+    uidAsigna,
+  };
+
+  const docRef = await addDoc(asignacionesProfesionalesCol, stripUndefinedDeep(asignacion) as any);
+  return { id: docRef.id, ...asignacion };
+}
+
+export async function devolverEquipoProfesional(params: {
+  idAsignacion: string;
+  observacionesDevolucion: string;
+  estadoFinalEquipo: EstadoEquipo;
+}) {
+  const { idAsignacion, observacionesDevolucion, estadoFinalEquipo } = params;
+  assertRoleString(estadoFinalEquipo, Object.values(EstadoEquipo), 'estadoFinalEquipo');
+
+  const ref = doc(asignacionesProfesionalesCol, idAsignacion);
+  await updateDoc(
+    ref,
+    stripUndefinedDeep({
+      fechaDevolucion: new Date().toISOString(),
+      estado: EstadoAsignacion.FINALIZADA,
+      observacionesDevolucion,
+      estadoFinalEquipo,
+    }) as any,
+  );
+}
+
+export async function guardarFirmaProfesional(params: {
+  idAsignacion: string;
+  tipoActa: 'ENTREGA' | 'DEVOLUCION';
+  dataUrl: string | null;
+}) {
+  const { idAsignacion, tipoActa, dataUrl } = params;
+  const ref = doc(asignacionesProfesionalesCol, idAsignacion);
+  const fieldName = tipoActa === 'ENTREGA' ? 'firmaProfesionalEntrega' : 'firmaProfesionalDevolucion';
+  await updateDoc(ref, {
+    [fieldName]: dataUrl ? dataUrl : deleteField(),
+  } as any);
+}
+
+export async function guardarFirmaAuxiliarProfesional(params: { idAsignacion: string; dataUrl: string | null }) {
+  const ref = doc(asignacionesProfesionalesCol, params.idAsignacion);
+  await updateDoc(ref, {
+    firmaAuxiliar: params.dataUrl ? params.dataUrl : deleteField(),
+  } as any);
 }
 
 // Subscriptions específicas para el rol VISITADOR (evita permission-denied por queries sin filtro).
@@ -338,8 +511,17 @@ export async function asignarEquipo(params: {
     where('estado', '==', EstadoAsignacion.ACTIVA),
     limit(1),
   );
-  const activeEquipoSnap = await getDocs(activeEquipoQ);
-  if (!activeEquipoSnap.empty) throw new Error('El equipo no está disponible');
+  const activeEquipoProfesionalQ = query(
+    asignacionesProfesionalesCol,
+    where('idEquipo', '==', idEquipo),
+    where('estado', '==', EstadoAsignacion.ACTIVA),
+    limit(1),
+  );
+  const [activeEquipoSnap, activeEquipoProfesionalSnap] = await Promise.all([
+    getDocs(activeEquipoQ),
+    getDocs(activeEquipoProfesionalQ),
+  ]);
+  if (!activeEquipoSnap.empty || !activeEquipoProfesionalSnap.empty) throw new Error('El equipo no está disponible');
 
   const consecutivo = await getNextNumber('asignaciones');
   const nowIso = new Date().toISOString();

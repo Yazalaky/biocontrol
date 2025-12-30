@@ -1,6 +1,16 @@
 import React, { useMemo, useState, useEffect, useRef, useLayoutEffect } from 'react';
 import Layout from '../components/Layout';
-import { Paciente, EstadoPaciente, Asignacion, EquipoBiomedico, EstadoEquipo, EstadoAsignacion, RolUsuario, EPS } from '../types';
+import {
+  Paciente,
+  EstadoPaciente,
+  Asignacion,
+  AsignacionProfesional,
+  EquipoBiomedico,
+  EstadoEquipo,
+  EstadoAsignacion,
+  RolUsuario,
+  EPS,
+} from '../types';
 import { useAuth } from '../contexts/AuthContext';
 import StatusBadge from '../components/StatusBadge';
 import ActaFormat from '../components/ActaFormat';
@@ -12,6 +22,7 @@ import {
   guardarFirmaPaciente,
   savePaciente,
   subscribeAsignaciones,
+  subscribeAsignacionesProfesionales,
   subscribeEquipos,
   subscribePacientes,
   validarSalidaPaciente,
@@ -22,6 +33,7 @@ const Patients: React.FC = () => {
   const [pacientes, setPacientes] = useState<Paciente[]>([]);
   const [equipos, setEquipos] = useState<EquipoBiomedico[]>([]);
   const [allAsignaciones, setAllAsignaciones] = useState<Asignacion[]>([]);
+  const [asignacionesProfesionales, setAsignacionesProfesionales] = useState<AsignacionProfesional[]>([]);
   const [selectedPaciente, setSelectedPaciente] = useState<Paciente | null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'create' | 'details'>('list');
   const [firestoreError, setFirestoreError] = useState<string | null>(null);
@@ -95,23 +107,33 @@ const Patients: React.FC = () => {
       console.error('Firestore subscribeAsignaciones error:', e);
       setFirestoreError(`No tienes permisos para leer "asignaciones" en Firestore. Detalle: ${e.message}`);
     });
+    const unsubAsignacionesProfesionales = subscribeAsignacionesProfesionales(setAsignacionesProfesionales, (e) => {
+      console.error('Firestore subscribeAsignacionesProfesionales error:', e);
+      setFirestoreError(
+        `No tienes permisos para leer "asignaciones_profesionales" en Firestore. Detalle: ${e.message}`,
+      );
+    });
 
     return () => {
       unsubPacientes();
       unsubEquipos();
       unsubAsignaciones();
+      unsubAsignacionesProfesionales();
     };
   }, []);
 
   const pacientesById = useMemo(() => new Map(pacientes.map((p) => [p.id, p])), [pacientes]);
   const equiposById = useMemo(() => new Map(equipos.map((e) => [e.id, e])), [equipos]);
   const activeAsignacionByEquipo = useMemo(() => {
-    const map = new Map<string, Asignacion>();
+    const set = new Set<string>();
     for (const a of allAsignaciones) {
-      if (a.estado === EstadoAsignacion.ACTIVA) map.set(a.idEquipo, a);
+      if (a.estado === EstadoAsignacion.ACTIVA) set.add(a.idEquipo);
     }
-    return map;
-  }, [allAsignaciones]);
+    for (const a of asignacionesProfesionales) {
+      if (a.estado === EstadoAsignacion.ACTIVA) set.add(a.idEquipo);
+    }
+    return set;
+  }, [allAsignaciones, asignacionesProfesionales]);
   const lastFinalEstadoByEquipo = useMemo(() => {
     const map = new Map<string, { date: number; estadoFinal: EstadoEquipo }>();
     for (const a of allAsignaciones) {
@@ -123,8 +145,17 @@ const Patients: React.FC = () => {
         map.set(a.idEquipo, { date, estadoFinal: a.estadoFinalEquipo as EstadoEquipo });
       }
     }
+    for (const a of asignacionesProfesionales) {
+      if (a.estado !== EstadoAsignacion.FINALIZADA) continue;
+      if (!a.estadoFinalEquipo) continue;
+      const date = new Date(a.fechaDevolucion || a.fechaEntregaOriginal).getTime();
+      const prev = map.get(a.idEquipo);
+      if (!prev || date > prev.date) {
+        map.set(a.idEquipo, { date, estadoFinal: a.estadoFinalEquipo as EstadoEquipo });
+      }
+    }
     return map;
-  }, [allAsignaciones]);
+  }, [allAsignaciones, asignacionesProfesionales]);
 
   const equiposDisponibles = useMemo(() => {
     return equipos.filter((e) => {

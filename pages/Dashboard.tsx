@@ -1,9 +1,17 @@
 import React, { useEffect, useState } from 'react';
 import Layout from '../components/Layout';
-import { EstadoAsignacion, EstadoEquipo, EstadoPaciente, type Asignacion, type EquipoBiomedico, type Paciente } from '../types';
+import {
+  EstadoAsignacion,
+  EstadoEquipo,
+  EstadoPaciente,
+  type Asignacion,
+  type AsignacionProfesional,
+  type EquipoBiomedico,
+  type Paciente,
+} from '../types';
 import StatusBadge from '../components/StatusBadge';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
-import { subscribeAsignaciones, subscribeEquipos, subscribePacientes } from '../services/firestoreData';
+import { subscribeAsignaciones, subscribeAsignacionesProfesionales, subscribeEquipos, subscribePacientes } from '../services/firestoreData';
 
 const StatIcon = ({ type }: { type: 'patients' | 'equipos' | 'assigned' | 'maintenance' }) => {
   switch (type) {
@@ -57,14 +65,24 @@ const Dashboard: React.FC = () => {
     let pacientes: Paciente[] = [];
     let equipos: EquipoBiomedico[] = [];
     let asignaciones: Asignacion[] = [];
+    let asignacionesProfesionales: AsignacionProfesional[] = [];
 
     const recompute = () => {
-      const activos = new Set(asignaciones.filter((a) => a.estado === EstadoAsignacion.ACTIVA).map((a) => a.idEquipo));
+      const activos = new Set<string>();
+      for (const a of asignaciones) if (a.estado === EstadoAsignacion.ACTIVA) activos.add(a.idEquipo);
+      for (const a of asignacionesProfesionales) if (a.estado === EstadoAsignacion.ACTIVA) activos.add(a.idEquipo);
       const lastFinalEstadoByEquipo = new Map<string, { date: number; estadoFinal: EstadoEquipo }>();
       for (const a of asignaciones) {
         if (a.estado !== EstadoAsignacion.FINALIZADA) continue;
         if (!a.estadoFinalEquipo) continue;
         const date = new Date(a.fechaDevolucion || a.fechaAsignacion).getTime();
+        const prev = lastFinalEstadoByEquipo.get(a.idEquipo);
+        if (!prev || date > prev.date) lastFinalEstadoByEquipo.set(a.idEquipo, { date, estadoFinal: a.estadoFinalEquipo as EstadoEquipo });
+      }
+      for (const a of asignacionesProfesionales) {
+        if (a.estado !== EstadoAsignacion.FINALIZADA) continue;
+        if (!a.estadoFinalEquipo) continue;
+        const date = new Date(a.fechaDevolucion || a.fechaEntregaOriginal).getTime();
         const prev = lastFinalEstadoByEquipo.get(a.idEquipo);
         if (!prev || date > prev.date) lastFinalEstadoByEquipo.set(a.idEquipo, { date, estadoFinal: a.estadoFinalEquipo as EstadoEquipo });
       }
@@ -124,11 +142,19 @@ const Dashboard: React.FC = () => {
       console.error('Firestore subscribeAsignaciones error:', e);
       setFirestoreError(`No tienes permisos para leer "asignaciones" en Firestore. Detalle: ${e.message}`);
     });
+    const unsubAsignacionesProfesionales = subscribeAsignacionesProfesionales((a) => {
+      asignacionesProfesionales = a;
+      recompute();
+    }, (e) => {
+      console.error('Firestore subscribeAsignacionesProfesionales error:', e);
+      setFirestoreError(`No tienes permisos para leer "asignaciones_profesionales" en Firestore. Detalle: ${e.message}`);
+    });
 
     return () => {
       unsubPacientes();
       unsubEquipos();
       unsubAsignaciones();
+      unsubAsignacionesProfesionales();
     };
   }, []);
 

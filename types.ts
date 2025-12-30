@@ -46,6 +46,19 @@ export interface Usuario {
   rol: RolUsuario;
 }
 
+export interface Profesional {
+  id: string;
+  consecutivo: number;
+  nombre: string;
+  cedula: string;
+  direccion: string;
+  telefono: string;
+  cargo: string;
+  createdAt?: string;
+  createdByUid?: string;
+  createdByNombre?: string;
+}
+
 // Modelo de Paciente Actualizado
 export interface Paciente {
   id: string; // ID interno (UUID)
@@ -124,6 +137,31 @@ export interface Asignacion {
   // Firma del auxiliar (DataURL base64) guardada en Firestore para auditoría/consistencia del acta.
   firmaAuxiliar?: string;
   usuarioAsigna: string; 
+}
+
+export interface AsignacionProfesional {
+  id: string;
+  consecutivo: number;
+  idProfesional: string;
+  idEquipo: string;
+  // Fecha real/histórica de entrega (manual).
+  fechaEntregaOriginal: string;
+  // Fecha en la que se generó/actualizó la entrega en el sistema (ISO). No cambia con el tiempo (opción A).
+  fechaActualizacionEntrega: string;
+  ciudad?: string;
+  sede?: string;
+  estado: EstadoAsignacion;
+  observacionesEntrega: string;
+  observacionesDevolucion?: string;
+  fechaDevolucion?: string;
+  // Estado final del equipo al devolver (para métricas/historial).
+  estadoFinalEquipo?: EstadoEquipo;
+  // Firmas (DataURL base64)
+  firmaProfesionalEntrega?: string;
+  firmaProfesionalDevolucion?: string;
+  firmaAuxiliar?: string;
+  usuarioAsigna: string;
+  uidAsigna?: string;
 }
 
 // Modelo de Acta

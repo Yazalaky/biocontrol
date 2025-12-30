@@ -1,15 +1,34 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import Layout from '../components/Layout';
-import { EquipoBiomedico, EstadoAsignacion, EstadoEquipo, RolUsuario, TipoPropiedad, type Asignacion, type Paciente } from '../types';
+import {
+  EquipoBiomedico,
+  EstadoAsignacion,
+  EstadoEquipo,
+  RolUsuario,
+  TipoPropiedad,
+  type Asignacion,
+  type AsignacionProfesional,
+  type Paciente,
+  type Profesional,
+} from '../types';
 import { useAuth } from '../contexts/AuthContext';
 import StatusBadge from '../components/StatusBadge';
-import { saveEquipo, subscribeAsignaciones, subscribeEquipos, subscribePacientes } from '../services/firestoreData';
+import {
+  saveEquipo,
+  subscribeAsignaciones,
+  subscribeAsignacionesProfesionales,
+  subscribeEquipos,
+  subscribePacientes,
+  subscribeProfesionales,
+} from '../services/firestoreData';
 
 const Inventory: React.FC = () => {
   const { hasRole, usuario } = useAuth();
   const [equipos, setEquipos] = useState<EquipoBiomedico[]>([]);
   const [pacientes, setPacientes] = useState<Paciente[]>([]);
   const [asignaciones, setAsignaciones] = useState<Asignacion[]>([]);
+  const [profesionales, setProfesionales] = useState<Profesional[]>([]);
+  const [asignacionesProfesionales, setAsignacionesProfesionales] = useState<AsignacionProfesional[]>([]);
   const [firestoreError, setFirestoreError] = useState<string | null>(null);
   
   // Search State
@@ -48,11 +67,20 @@ const Inventory: React.FC = () => {
       console.error('Firestore subscribeAsignaciones error:', e);
       setFirestoreError(`No tienes permisos para leer "asignaciones" en Firestore. Detalle: ${e.message}`);
     });
+    const unsubProfesionales = subscribeProfesionales(setProfesionales, () => {});
+    const unsubAsignacionesProfesionales = subscribeAsignacionesProfesionales(setAsignacionesProfesionales, (e) => {
+      console.error('Firestore subscribeAsignacionesProfesionales error:', e);
+      setFirestoreError(
+        `No tienes permisos para leer "asignaciones_profesionales" en Firestore. Detalle: ${e.message}`,
+      );
+    });
 
     return () => {
       unsubEquipos();
       unsubPacientes();
       unsubAsignaciones();
+      unsubProfesionales();
+      unsubAsignacionesProfesionales();
     };
   }, []);
 
@@ -62,18 +90,26 @@ const Inventory: React.FC = () => {
       const equipoId = a.idEquipo;
       counts[equipoId] = (counts[equipoId] || 0) + 1;
     }
+    for (const a of asignacionesProfesionales) {
+      const equipoId = a.idEquipo;
+      counts[equipoId] = (counts[equipoId] || 0) + 1;
+    }
     setAssignmentCounts(counts);
-  }, [asignaciones]);
+  }, [asignaciones, asignacionesProfesionales]);
 
   const canEdit = hasRole([RolUsuario.INGENIERO_BIOMEDICO]);
   const pacientesById = useMemo(() => new Map(pacientes.map((p) => [p.id, p])), [pacientes]);
+  const profesionalesById = useMemo(() => new Map(profesionales.map((p) => [p.id, p])), [profesionales]);
   const activeAsignacionByEquipo = useMemo(() => {
-    const map = new Map<string, Asignacion>();
+    const map = new Map<string, { tipo: 'PACIENTE' | 'PROFESIONAL'; asignacion: Asignacion | AsignacionProfesional }>();
     for (const a of asignaciones) {
-      if (a.estado === EstadoAsignacion.ACTIVA) map.set(a.idEquipo, a);
+      if (a.estado === EstadoAsignacion.ACTIVA) map.set(a.idEquipo, { tipo: 'PACIENTE', asignacion: a });
+    }
+    for (const a of asignacionesProfesionales) {
+      if (a.estado === EstadoAsignacion.ACTIVA) map.set(a.idEquipo, { tipo: 'PROFESIONAL', asignacion: a });
     }
     return map;
-  }, [asignaciones]);
+  }, [asignaciones, asignacionesProfesionales]);
   const lastFinalEstadoByEquipo = useMemo(() => {
     const map = new Map<string, { date: number; estadoFinal: EstadoEquipo }>();
     for (const a of asignaciones) {
@@ -85,8 +121,17 @@ const Inventory: React.FC = () => {
         map.set(a.idEquipo, { date, estadoFinal: a.estadoFinalEquipo as EstadoEquipo });
       }
     }
+    for (const a of asignacionesProfesionales) {
+      if (a.estado !== EstadoAsignacion.FINALIZADA) continue;
+      if (!a.estadoFinalEquipo) continue;
+      const date = new Date(a.fechaDevolucion || a.fechaEntregaOriginal).getTime();
+      const prev = map.get(a.idEquipo);
+      if (!prev || date > prev.date) {
+        map.set(a.idEquipo, { date, estadoFinal: a.estadoFinalEquipo as EstadoEquipo });
+      }
+    }
     return map;
-  }, [asignaciones]);
+  }, [asignaciones, asignacionesProfesionales]);
 
   // Filtro de Equipos (Buscador)
   const filteredEquipos = equipos.filter(e => {
@@ -148,18 +193,47 @@ const Inventory: React.FC = () => {
   };
 
   const openHistory = (equipo: EquipoBiomedico) => {
-    const historial = asignaciones
+    const historialPacientes = asignaciones
       .filter((a) => a.idEquipo === equipo.id)
-      .sort((a, b) => new Date(b.fechaAsignacion).getTime() - new Date(a.fechaAsignacion).getTime());
+      .map((h) => {
+        const paciente = pacientesById.get(h.idPaciente);
+        return {
+          id: h.id,
+          tipo: 'PACIENTE' as const,
+          fecha: h.fechaAsignacion,
+          fechaFin: h.fechaDevolucion,
+          estado: h.estado,
+          consecutivo: h.consecutivo,
+          nombre: paciente ? paciente.nombreCompleto : 'Paciente Eliminado',
+          doc: paciente ? paciente.numeroDocumento : 'N/A',
+          observacionesEntrega: h.observacionesEntrega,
+          observacionesDevolucion: h.observacionesDevolucion,
+          estadoFinalEquipo: h.estadoFinalEquipo,
+        };
+      });
 
-    const enriched = historial.map((h) => {
-      const paciente = pacientesById.get(h.idPaciente);
-      return {
-        ...h,
-        nombrePaciente: paciente ? paciente.nombreCompleto : 'Paciente Eliminado',
-        docPaciente: paciente ? paciente.numeroDocumento : 'N/A',
-      };
-    });
+    const historialProfesionales = asignacionesProfesionales
+      .filter((a) => a.idEquipo === equipo.id)
+      .map((h) => {
+        const prof = profesionalesById.get(h.idProfesional);
+        return {
+          id: h.id,
+          tipo: 'PROFESIONAL' as const,
+          fecha: h.fechaEntregaOriginal,
+          fechaFin: h.fechaDevolucion,
+          estado: h.estado,
+          consecutivo: h.consecutivo,
+          nombre: prof ? prof.nombre : 'Profesional Eliminado',
+          doc: prof ? prof.cedula : 'N/A',
+          observacionesEntrega: h.observacionesEntrega,
+          observacionesDevolucion: h.observacionesDevolucion,
+          estadoFinalEquipo: h.estadoFinalEquipo,
+        };
+      });
+
+    const enriched = [...historialPacientes, ...historialProfesionales].sort(
+      (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime(),
+    );
 
     setHistoryEquipo({ equipo, data: enriched });
     setIsHistoryOpen(true);
@@ -358,7 +432,15 @@ const Inventory: React.FC = () => {
             const active = activeAsignacionByEquipo.get(equipo.id);
             const lastFinal = lastFinalEstadoByEquipo.get(equipo.id);
             const status = active ? EstadoEquipo.ASIGNADO : (lastFinal?.estadoFinal || equipo.estado);
-            const ubicacion = active ? pacientesById.get(active.idPaciente)?.nombreCompleto || equipo.ubicacionActual : equipo.ubicacionActual;
+            const ubicacion = (() => {
+              if (!active) return equipo.ubicacionActual;
+              if (active.tipo === 'PACIENTE') {
+                const a = active.asignacion as Asignacion;
+                return pacientesById.get(a.idPaciente)?.nombreCompleto || equipo.ubicacionActual;
+              }
+              const a = active.asignacion as AsignacionProfesional;
+              return profesionalesById.get(a.idProfesional)?.nombre || equipo.ubicacionActual;
+            })();
             return (
           <div key={equipo.id} className="md-card p-5 hover:shadow-[var(--md-shadow-2)] transition-shadow relative">
             <div className="flex justify-between items-start mb-2">
@@ -410,8 +492,8 @@ const Inventory: React.FC = () => {
             {/* Contador de Historial */}
             <div className="mt-3 flex items-center justify-between">
                 <span className="text-xs text-gray-500 font-medium bg-gray-50 px-2 py-1 rounded">
-                    Historial: {assignmentCounts[equipo.id] || 0} pacientes
-                </span>
+	                    Historial: {assignmentCounts[equipo.id] || 0} registros
+	                </span>
                 <button 
                     onClick={() => openHistory(equipo)}
                     className="text-xs text-indigo-600 hover:text-indigo-800 font-semibold underline"
@@ -628,40 +710,56 @@ const Inventory: React.FC = () => {
                 ) : (
                     <div className="space-y-4">
                         <div className="flex justify-between items-center mb-2">
-                            <h4 className="font-semibold text-gray-700">Historial de Uso ({historyEquipo.data.length} pacientes)</h4>
-                        </div>
-                        <div className="border rounded-lg overflow-hidden">
-                            <table className="min-w-full divide-y divide-gray-200">
-                                <thead className="bg-gray-50">
-                                    <tr>
-                                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Acta #</th>
-                                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Paciente</th>
-                                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Fecha Inicio</th>
-                                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Fecha Fin</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="bg-white divide-y divide-gray-200">
-                                    {historyEquipo.data.map((h, idx) => (
-                                        <tr key={h.id} className="hover:bg-gray-50">
-                                            <td className="px-4 py-2 text-xs font-mono font-bold text-gray-600">
-                                                {h.consecutivo ? String(h.consecutivo).padStart(4, '0') : '-'}
-                                            </td>
-                                            <td className="px-4 py-2 text-sm text-gray-900">
-                                                <div className="font-medium">{h.nombrePaciente}</div>
-                                                <div className="text-xs text-gray-500">{h.docPaciente}</div>
-                                            </td>
-                                            <td className="px-4 py-2 text-sm text-gray-500">
-                                                {new Date(h.fechaAsignacion).toLocaleDateString()}
-                                            </td>
-                                            <td className="px-4 py-2 text-sm text-gray-500">
-                                                {h.fechaDevolucion ? new Date(h.fechaDevolucion).toLocaleDateString() : 
-                                                    <span className="text-green-600 text-xs font-bold border border-green-200 bg-green-50 px-1 rounded">ACTUAL</span>
-                                                }
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
+	                            <h4 className="font-semibold text-gray-700">Historial de Uso ({historyEquipo.data.length} registros)</h4>
+	                        </div>
+	                        <div className="border rounded-lg overflow-hidden">
+	                            <table className="min-w-full divide-y divide-gray-200">
+	                                <thead className="bg-gray-50">
+	                                    <tr>
+	                                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Acta #</th>
+	                                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Tipo</th>
+	                                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Receptor</th>
+	                                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Fecha Inicio</th>
+	                                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Fecha Fin</th>
+	                                    </tr>
+	                                </thead>
+	                                <tbody className="bg-white divide-y divide-gray-200">
+	                                    {historyEquipo.data.map((h, idx) => (
+	                                        <tr key={h.id || idx} className="hover:bg-gray-50">
+	                                            <td className="px-4 py-2 text-xs font-mono font-bold text-gray-600">
+	                                                {h.consecutivo ? String(h.consecutivo).padStart(4, '0') : '-'}
+	                                            </td>
+	                                            <td className="px-4 py-2 text-xs font-semibold">
+	                                              <span
+	                                                className={
+	                                                  h.tipo === 'PROFESIONAL'
+	                                                    ? 'px-2 py-0.5 rounded-full border border-indigo-200 bg-indigo-50 text-indigo-800'
+	                                                    : 'px-2 py-0.5 rounded-full border border-emerald-200 bg-emerald-50 text-emerald-800'
+	                                                }
+	                                              >
+	                                                {h.tipo}
+	                                              </span>
+	                                            </td>
+	                                            <td className="px-4 py-2 text-sm text-gray-900">
+	                                              <div className="font-medium">{h.nombre}</div>
+	                                              <div className="text-xs text-gray-500">{h.doc}</div>
+	                                            </td>
+	                                            <td className="px-4 py-2 text-sm text-gray-500">
+	                                              {new Date(h.fecha).toLocaleDateString()}
+	                                            </td>
+	                                            <td className="px-4 py-2 text-sm text-gray-500">
+	                                              {h.fechaFin ? (
+	                                                new Date(h.fechaFin).toLocaleDateString()
+	                                              ) : (
+	                                                <span className="text-green-600 text-xs font-bold border border-green-200 bg-green-50 px-1 rounded">
+	                                                  ACTUAL
+	                                                </span>
+	                                              )}
+	                                            </td>
+	                                        </tr>
+	                                    ))}
+	                                </tbody>
+	                            </table>
                         </div>
                     </div>
                 )}

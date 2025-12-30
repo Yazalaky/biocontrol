@@ -54,6 +54,12 @@ service cloud.firestore {
       allow create, update, delete: if isSignedIn() && isAuxiliar();
     }
 
+    // --- PROFESIONALES ---
+    match /profesionales/{id} {
+      allow read: if isSignedIn() && (isAuxiliar() || isGerencia() || isBiomedico());
+      allow create, update, delete: if isSignedIn() && isAuxiliar();
+    }
+
     // --- EQUIPOS ---
     match /equipos/{id} {
       // VISITADOR: solo puede ver equipos con asignación activa
@@ -66,6 +72,13 @@ service cloud.firestore {
       // VISITADOR: solo puede ver asignaciones activas
       allow read: if isSignedIn() && (!isVisitador() || resource.data.estado == "ACTIVA");
       // crear/actualizar solo auxiliar
+      allow create, update: if isSignedIn() && isAuxiliar();
+      allow delete: if false;
+    }
+
+    // --- ASIGNACIONES PROFESIONALES ---
+    match /asignaciones_profesionales/{id} {
+      allow read: if isSignedIn() && (isAuxiliar() || isGerencia() || isBiomedico());
       allow create, update: if isSignedIn() && isAuxiliar();
       allow delete: if false;
     }

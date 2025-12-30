@@ -35,6 +35,13 @@ const Icons = {
       <path d="M16 3.13a4 4 0 0 1 0 7.75" />
     </svg>
   ),
+  professionals: (
+    <svg className="app-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
+      <path d="M16 11l2 2 4-4" />
+    </svg>
+  ),
   inventory: (
     <svg className="app-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <path d="M21 16V8a2 2 0 0 0-1-1.73L13 2.27a2 2 0 0 0-2 0L4 6.27A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4a2 2 0 0 0 1-1.73Z" />
@@ -119,6 +126,7 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
       >
         {path === '#/' ? Icons.dashboard : null}
         {path === '#/pacientes' ? Icons.patients : null}
+        {path === '#/profesionales' ? Icons.professionals : null}
         {path === '#/equipos' ? Icons.inventory : null}
         {path === '#/informes' ? Icons.reports : null}
         {path === '#/visitas' ? Icons.visits : null}
@@ -181,6 +189,11 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
             label="Pacientes" 
             path="#/pacientes" 
             roles={[RolUsuario.AUXILIAR_ADMINISTRATIVA, RolUsuario.GERENCIA, RolUsuario.INGENIERO_BIOMEDICO]} 
+          />
+          <NavItem
+            label="Profesionales"
+            path="#/profesionales"
+            roles={[RolUsuario.AUXILIAR_ADMINISTRATIVA, RolUsuario.GERENCIA, RolUsuario.INGENIERO_BIOMEDICO]}
           />
           <NavItem 
             label="Inventario Equipos" 

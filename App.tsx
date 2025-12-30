@@ -4,6 +4,7 @@ import { ThemeProvider } from './contexts/ThemeContext';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Patients from './pages/Patients';
+import Professionals from './pages/Professionals';
 import Inventory from './pages/Inventory';
 import Admin from './pages/Admin';
 import Reports from './pages/Reports';
@@ -48,6 +49,8 @@ const Router = () => {
   switch (currentHash) {
     case '#/pacientes':
       return <Patients />;
+    case '#/profesionales':
+      return <Professionals />;
     case '#/equipos':
       return <Inventory />;
     case '#/informes':
