@@ -134,6 +134,10 @@ export interface Asignacion {
   // Firmas (DataURL base64) guardadas en Firestore
   firmaPacienteEntrega?: string;
   firmaPacienteDevolucion?: string;
+  // Auditoría de firma capturada por VISITADOR (solo entrega).
+  firmaPacienteEntregaCapturadaAt?: string;
+  firmaPacienteEntregaCapturadaPorUid?: string;
+  firmaPacienteEntregaCapturadaPorNombre?: string;
   // Firma del auxiliar (DataURL base64) guardada en Firestore para auditoría/consistencia del acta.
   firmaAuxiliar?: string;
   usuarioAsigna: string; 
@@ -227,6 +231,9 @@ export interface ReporteEquipo {
 
   creadoPorUid: string;
   creadoPorNombre: string;
+
+  // Marca de leído por VISITADOR (cuando el biomédico cierra y el visitador abre el detalle).
+  vistoPorVisitadorAt?: string;
 
   // Snapshot mínimo para reportes/email (no depende de joins).
   pacienteNombre: string;

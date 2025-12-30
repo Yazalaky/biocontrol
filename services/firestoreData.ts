@@ -356,6 +356,62 @@ export function subscribeReportesEquipos(
   );
 }
 
+export function subscribeReportesEquiposByUser(
+  uid: string,
+  onData: (reportes: ReporteEquipo[]) => void,
+  onError?: (e: Error) => void,
+) {
+  const q = query(reportesEquiposCol, where('creadoPorUid', '==', uid));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const reportes = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<ReporteEquipo, 'id'>) }));
+      onData(reportes);
+    },
+    (err) => onError?.(err as unknown as Error),
+  );
+}
+
+export function subscribeReportesEquiposAbiertosCount(
+  onCount: (count: number) => void,
+  onError?: (e: Error) => void,
+) {
+  const q = query(reportesEquiposCol, where('estado', '==', EstadoReporteEquipo.ABIERTO));
+  return onSnapshot(
+    q,
+    (snap) => onCount(snap.size),
+    (err) => onError?.(err as unknown as Error),
+  );
+}
+
+export function subscribeReportesCerradosSinLeerCount(
+  uid: string,
+  onCount: (count: number) => void,
+  onError?: (e: Error) => void,
+) {
+  const q = query(
+    reportesEquiposCol,
+    where('creadoPorUid', '==', uid),
+    where('estado', '==', EstadoReporteEquipo.CERRADO),
+    where('vistoPorVisitadorAt', '==', null),
+  );
+  return onSnapshot(
+    q,
+    (snap) => onCount(snap.size),
+    (err) => onError?.(err as unknown as Error),
+  );
+}
+
+export async function marcarReporteVistoPorVisitador(params: { idReporte: string; vistoAtIso?: string }) {
+  const ref = doc(reportesEquiposCol, params.idReporte);
+  await updateDoc(
+    ref,
+    stripUndefinedDeep({
+      vistoPorVisitadorAt: params.vistoAtIso || new Date().toISOString(),
+    }) as any,
+  );
+}
+
 export async function createReporteEquipo(reporte: ReporteEquipo) {
   const ref = doc(reportesEquiposCol, reporte.id);
   const { id, ...rest } = reporte;
@@ -602,4 +658,22 @@ export async function guardarFirmaAuxiliar(params: { idAsignacion: string; dataU
   await updateDoc(ref, {
     firmaAuxiliar: params.dataUrl ? params.dataUrl : deleteField(),
   } as any);
+}
+
+export async function guardarFirmaEntregaVisitador(params: {
+  idAsignacion: string;
+  dataUrl: string;
+  capturadoPorUid: string;
+  capturadoPorNombre: string;
+}) {
+  const ref = doc(asignacionesCol, params.idAsignacion);
+  await updateDoc(
+    ref,
+    stripUndefinedDeep({
+      firmaPacienteEntrega: params.dataUrl,
+      firmaPacienteEntregaCapturadaAt: new Date().toISOString(),
+      firmaPacienteEntregaCapturadaPorUid: params.capturadoPorUid,
+      firmaPacienteEntregaCapturadaPorNombre: params.capturadoPorNombre,
+    }) as any,
+  );
 }

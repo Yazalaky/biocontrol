@@ -242,16 +242,26 @@ const ActaFormat: React.FC<ActaFormatProps> = ({ paciente, equipo, asignacion, t
                  <div className="w-1/3 p-1 bg-gray-100 font-semibold border-r border-black text-[9px]">Parentezco</div>
                  <div className="w-2/3 p-1 text-[9px]">{paciente.parentescoFamiliar}</div>
               </div>
-              <div className="flex min-h-[50px] relative">
-                 <div className="w-1/3 p-1 bg-gray-100 font-semibold border-r border-black text-[9px] flex items-center">Firma</div>
-                 <div className="w-2/3 p-1 flex items-center justify-center overflow-hidden">
-                    {patientSignature ? (
-                        <img src={patientSignature} alt="Firma Paciente" className="max-h-12 max-w-full object-contain" />
-                    ) : (
-                        <span className="text-[8px] text-gray-300 italic">Sin firma digital</span>
-                    )}
-                 </div>
-              </div>
+	              <div className="flex min-h-[50px] relative">
+	                 <div className="w-1/3 p-1 bg-gray-100 font-semibold border-r border-black text-[9px] flex items-center">Firma</div>
+	                 <div className="w-2/3 p-1 flex flex-col items-center justify-center gap-1 overflow-hidden">
+	                    {patientSignature ? (
+	                        <img src={patientSignature} alt="Firma Paciente" className="max-h-12 max-w-full object-contain" />
+	                    ) : (
+	                        <span className="text-[8px] text-gray-300 italic">Sin firma digital</span>
+	                    )}
+	                    {tipoActa === 'ENTREGA' &&
+	                    patientSignature &&
+	                    asignacion.firmaPacienteEntregaCapturadaAt &&
+	                    asignacion.firmaPacienteEntregaCapturadaPorNombre ? (
+	                      <div className="text-[7px] text-gray-500 text-center leading-tight">
+	                        Firma capturada en visita:{' '}
+	                        {new Date(asignacion.firmaPacienteEntregaCapturadaAt).toLocaleDateString()} ·{' '}
+	                        {asignacion.firmaPacienteEntregaCapturadaPorNombre}
+	                      </div>
+	                    ) : null}
+	                 </div>
+	              </div>
            </div>
 
            <div className="mt-2 border border-black min-h-[40px] p-1">

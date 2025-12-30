@@ -71,8 +71,28 @@ service cloud.firestore {
     match /asignaciones/{id} {
       // VISITADOR: solo puede ver asignaciones activas
       allow read: if isSignedIn() && (!isVisitador() || resource.data.estado == "ACTIVA");
-      // crear/actualizar solo auxiliar
-      allow create, update: if isSignedIn() && isAuxiliar();
+      // crear solo auxiliar
+      allow create: if isSignedIn() && isAuxiliar();
+
+      // actualizar: auxiliar completo, visitador solo para capturar firma de ENTREGA (una sola vez)
+      allow update: if isSignedIn() && (
+        isAuxiliar()
+        || (
+          isVisitador()
+          && resource.data.estado == "ACTIVA"
+          && resource.data.firmaPacienteEntrega == null
+          && request.resource.data.firmaPacienteEntrega is string
+          && request.resource.data.firmaPacienteEntregaCapturadaAt is string
+          && request.resource.data.firmaPacienteEntregaCapturadaPorUid == request.auth.uid
+          && request.resource.data.firmaPacienteEntregaCapturadaPorNombre is string
+          && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+            "firmaPacienteEntrega",
+            "firmaPacienteEntregaCapturadaAt",
+            "firmaPacienteEntregaCapturadaPorUid",
+            "firmaPacienteEntregaCapturadaPorNombre"
+          ])
+        )
+      );
       allow delete: if false;
     }
 
@@ -115,18 +135,35 @@ service cloud.firestore {
         || (isVisitador() && resource.data.creadoPorUid == request.auth.uid)
       );
 
-      // Cierre: solo biomédico, y solo para cerrar (no modificar campos base)
-      allow update: if isSignedIn()
-        && isBiomedico()
-        && resource.data.estado == "ABIERTO"
-        && request.resource.data.estado == "CERRADO"
-        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
-          "estado",
-          "cerradoAt",
-          "cerradoPorUid",
-          "cerradoPorNombre",
-          "cierreNotas"
-        ]);
+      // Update:
+      // - Cierre: solo biomédico, y solo para cerrar (no modificar campos base)
+      // - Leído: visitador marca vistoPorVisitadorAt (solo su propio reporte ya cerrado)
+      allow update: if isSignedIn() && (
+        (
+          isBiomedico()
+          && resource.data.estado == "ABIERTO"
+          && request.resource.data.estado == "CERRADO"
+          && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+            "estado",
+            "cerradoAt",
+            "cerradoPorUid",
+            "cerradoPorNombre",
+            "cierreNotas"
+          ])
+        )
+        || (
+          isVisitador()
+          && resource.data.estado == "CERRADO"
+          && request.resource.data.estado == "CERRADO"
+          && resource.data.creadoPorUid == request.auth.uid
+          && request.resource.data.creadoPorUid == resource.data.creadoPorUid
+          && resource.data.vistoPorVisitadorAt == null
+          && request.resource.data.vistoPorVisitadorAt is string
+          && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+            "vistoPorVisitadorAt"
+          ])
+        )
+      );
 
       allow delete: if false;
     }

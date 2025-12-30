@@ -1,16 +1,20 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
-import { collection, doc } from 'firebase/firestore';
+import { collection, doc, getDocs, limit, query, where } from 'firebase/firestore';
 import Layout from '../components/Layout';
+import SignaturePad from '../components/SignaturePad';
 import { useAuth } from '../contexts/AuthContext';
 import { db, storage } from '../services/firebase';
 import {
   cerrarReporteEquipo,
   createReporteEquipo,
+  guardarFirmaEntregaVisitador,
+  marcarReporteVistoPorVisitador,
   subscribeAsignacionesActivas,
   subscribeEquiposAsignadosActivos,
   subscribePacientesConAsignacionActiva,
   subscribeReportesEquipos,
+  subscribeReportesEquiposByUser,
 } from '../services/firestoreData';
 import {
   EstadoAsignacion,
@@ -79,10 +83,18 @@ const Visits: React.FC = () => {
         console.error('subscribeAsignacionesActivas error:', e);
         setFirestoreError(`No tienes permisos para leer asignaciones activas. Detalle: ${e.message}`);
       });
+      const unsubReportes = usuario?.id
+        ? subscribeReportesEquiposByUser(
+            usuario.id,
+            setReportes,
+            (e) => setFirestoreError(`No tienes permisos para leer tus reportes. Detalle: ${e.message}`),
+          )
+        : () => {};
       return () => {
         unsubPacientes();
         unsubEquipos();
         unsubAsignaciones();
+        unsubReportes();
       };
     }
 
@@ -93,7 +105,7 @@ const Visits: React.FC = () => {
       });
       return () => unsubReportes();
     }
-  }, [isVisitador, isBiomedico]);
+  }, [isVisitador, isBiomedico, usuario?.id]);
 
   const pacientesById = useMemo(() => new Map(pacientes.map((p) => [p.id, p])), [pacientes]);
   const equiposById = useMemo(() => new Map(equipos.map((e) => [e.id, e])), [equipos]);
@@ -127,6 +139,20 @@ const Visits: React.FC = () => {
       );
     });
   }, [asignacionesActivasEnriquecidas, search]);
+
+  // Tabs y detalle de reportes (VISITADOR y BIOMEDICO)
+  const [tab, setTab] = useState<'ABIERTO' | 'CERRADO'>('ABIERTO');
+  const reportesFiltrados = useMemo(() => {
+    const wanted = tab === 'ABIERTO' ? EstadoReporteEquipo.ABIERTO : EstadoReporteEquipo.CERRADO;
+    return reportes
+      .filter((r) => r.estado === wanted)
+      .sort((a, b) => new Date(b.fechaVisita).getTime() - new Date(a.fechaVisita).getTime());
+  }, [reportes, tab]);
+
+  const [openReporte, setOpenReporte] = useState<ReporteEquipo | null>(null);
+  const [fotoUrls, setFotoUrls] = useState<Record<string, string>>({});
+  const [cierreNotas, setCierreNotas] = useState('');
+  const [closing, setClosing] = useState(false);
 
   // Modal crear reporte (VISITADOR)
   const [creating, setCreating] = useState(false);
@@ -180,6 +206,67 @@ const Visits: React.FC = () => {
     setCreating(false);
   };
 
+  // Modal firma de ENTREGA (VISITADOR)
+  const [openFirma, setOpenFirma] = useState<{
+    asignacion: Asignacion;
+    paciente: Paciente;
+    equipo: EquipoBiomedico;
+  } | null>(null);
+  const [firmaEntrega, setFirmaEntrega] = useState<string | null>(null);
+  const [savingFirma, setSavingFirma] = useState(false);
+  const [openFirmaView, setOpenFirmaView] = useState<{
+    asignacion: Asignacion;
+    paciente: Paciente;
+    equipo: EquipoBiomedico;
+  } | null>(null);
+
+  const resetFirma = () => {
+    setOpenFirma(null);
+    setFirmaEntrega(null);
+    setSavingFirma(false);
+  };
+
+  const closeFirmaView = () => setOpenFirmaView(null);
+
+  const saveFirmaEntrega = async () => {
+    if (!usuario) return;
+    if (!openFirma) return;
+    if (!firmaEntrega) {
+      alert('El paciente debe firmar antes de guardar.');
+      return;
+    }
+    if (openFirma.asignacion.firmaPacienteEntrega) {
+      alert('Esta asignación ya tiene firma registrada. No se puede modificar.');
+      resetFirma();
+      return;
+    }
+
+    setSavingFirma(true);
+    try {
+      await guardarFirmaEntregaVisitador({
+        idAsignacion: openFirma.asignacion.id,
+        dataUrl: firmaEntrega,
+        capturadoPorUid: usuario.id,
+        capturadoPorNombre: usuario.nombre,
+      });
+      alert('Firma registrada correctamente.');
+      resetFirma();
+    } catch (e: any) {
+      console.error('saveFirmaEntrega error:', e);
+      alert(`${e?.code ? `${e.code}: ` : ''}${e?.message || 'No se pudo guardar la firma.'}`);
+      setSavingFirma(false);
+    }
+  };
+
+  const openReporteByAsignacion = (idAsignacion: string) => {
+    const r = reportes.find((x) => x.idAsignacion === idAsignacion && x.estado === EstadoReporteEquipo.ABIERTO);
+    if (r) {
+      setOpenReporte(r);
+      return true;
+    }
+    return false;
+  };
+
   const submitReporte = async () => {
     if (!usuario) return;
     if (!openCreate) return;
@@ -194,6 +281,42 @@ const Visits: React.FC = () => {
     if (files.length > MAX_FOTOS) {
       alert(`Máximo ${MAX_FOTOS} fotos por reporte.`);
       return;
+    }
+
+    // Bloqueo de duplicados: 1 reporte ABIERTO por idAsignacion (para evitar reportes repetidos de la misma falla).
+    // Hacemos doble validación: (1) memoria y (2) consulta a Firestore (por si aún no cargó la suscripción).
+    const alreadyOpenLocal = reportes.find(
+      (r) => r.idAsignacion === openCreate.asignacion.id && r.estado === EstadoReporteEquipo.ABIERTO,
+    );
+    if (alreadyOpenLocal) {
+      alert(
+        'Ya existe un reporte ABIERTO para esta asignación.\n\nRevisa el detalle del reporte para ver el estado y evitar duplicados.',
+      );
+      setOpenReporte(alreadyOpenLocal);
+      resetCreate();
+      return;
+    }
+    try {
+      const q = query(
+        collection(db, 'reportes_equipos'),
+        where('idAsignacion', '==', openCreate.asignacion.id),
+        where('estado', '==', EstadoReporteEquipo.ABIERTO),
+        where('creadoPorUid', '==', usuario.id),
+        limit(1),
+      );
+      const snap = await getDocs(q);
+      const doc0 = snap.docs[0];
+      if (doc0) {
+        const existing = { id: doc0.id, ...(doc0.data() as Omit<ReporteEquipo, 'id'>) };
+        alert(
+          'Ya existe un reporte ABIERTO para esta asignación.\n\nRevisa el detalle del reporte para ver el estado y evitar duplicados.',
+        );
+        setOpenReporte(existing);
+        resetCreate();
+        return;
+      }
+    } catch {
+      // Si falla la consulta, seguimos y la seguridad final la imponen las rules (y el flujo normal).
     }
 
     setCreating(true);
@@ -239,26 +362,30 @@ const Visits: React.FC = () => {
     }
   };
 
-  // BIOMEDICO: ver/cerrar reportes
-  const [tab, setTab] = useState<'ABIERTO' | 'CERRADO'>('ABIERTO');
-  const reportesFiltrados = useMemo(() => {
-    const wanted = tab === 'ABIERTO' ? EstadoReporteEquipo.ABIERTO : EstadoReporteEquipo.CERRADO;
-    return reportes
-      .filter((r) => r.estado === wanted)
-      .sort((a, b) => new Date(b.fechaVisita).getTime() - new Date(a.fechaVisita).getTime());
-  }, [reportes, tab]);
-
-  const [openReporte, setOpenReporte] = useState<ReporteEquipo | null>(null);
-  const [fotoUrls, setFotoUrls] = useState<Record<string, string>>({});
-  const [cierreNotas, setCierreNotas] = useState('');
-  const [closing, setClosing] = useState(false);
-
   useEffect(() => {
     let canceled = false;
     const loadUrls = async () => {
       setFotoUrls({});
       const r = openReporte;
       if (!r) return;
+
+      // VISITADOR: al abrir un reporte cerrado propio, lo marca como leído (badge "cerrados sin leer").
+      if (
+        isVisitador &&
+        r.estado === EstadoReporteEquipo.CERRADO &&
+        !r.vistoPorVisitadorAt &&
+        r.creadoPorUid === usuario.id
+      ) {
+        try {
+          await marcarReporteVistoPorVisitador({ idReporte: r.id });
+          if (!canceled) {
+            setOpenReporte((prev) => (prev ? { ...prev, vistoPorVisitadorAt: new Date().toISOString() } : prev));
+          }
+        } catch (err) {
+          console.warn('marcarReporteVistoPorVisitador failed', err);
+        }
+      }
+
       const entries: Array<[string, string]> = [];
       for (const f of r.fotos || []) {
         try {
@@ -327,6 +454,170 @@ const Visits: React.FC = () => {
 
       {isVisitador && (
         <div className="space-y-4">
+          {/* Firmas de entrega pendientes (VISITADOR) */}
+          <div className="md-card p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-bold text-gray-900">Firmas de entrega pendientes</div>
+                <div className="text-xs text-gray-500 mt-0.5">
+                  Captura la firma del paciente en el domicilio para dejar evidencia en el acta de entrega.
+                </div>
+              </div>
+              <div className="text-xs text-gray-500">
+                Pendientes:{' '}
+                {asignacionesActivasEnriquecidas.filter(({ a }) => !a.firmaPacienteEntrega).length}
+              </div>
+            </div>
+
+            <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
+              {asignacionesActivasEnriquecidas.filter(({ a }) => !a.firmaPacienteEntrega).length === 0 ? (
+                <div className="text-sm text-gray-500">No hay firmas pendientes.</div>
+              ) : (
+                asignacionesActivasEnriquecidas
+                  .filter(({ a }) => !a.firmaPacienteEntrega)
+                  .slice(0, 6)
+                  .map(({ a, paciente, equipo }) => (
+                    <div key={a.id} className="border rounded-lg p-3 bg-white">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="text-sm font-bold text-gray-900">{paciente!.nombreCompleto}</div>
+                          <div className="text-xs text-gray-500">
+                            Doc: {paciente!.numeroDocumento} · Equipo:{' '}
+                            <span className="font-mono">{equipo!.codigoInventario}</span>
+                          </div>
+                          <div className="text-xs text-gray-500">
+                            {equipo!.nombre} · Serie: <span className="font-mono">{equipo!.numeroSerie}</span>
+                          </div>
+                        </div>
+                        <button
+                          className="md-btn md-btn-outlined"
+                          onClick={() => {
+                            setOpenFirma({ asignacion: a, paciente: paciente!, equipo: equipo! });
+                            setFirmaEntrega(null);
+                          }}
+                          type="button"
+                        >
+                          Capturar firma
+                        </button>
+                      </div>
+                    </div>
+                  ))
+              )}
+            </div>
+          </div>
+
+          {/* Firmas capturadas (VISITADOR) */}
+          <div className="md-card p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-bold text-gray-900">Firmas capturadas</div>
+                <div className="text-xs text-gray-500 mt-0.5">
+                  Historial de firmas de entrega registradas por ti.
+                </div>
+              </div>
+              <div className="text-xs text-gray-500">
+                Total:{' '}
+                {
+                  asignacionesActivasEnriquecidas.filter(
+                    ({ a }) => !!a.firmaPacienteEntrega && a.firmaPacienteEntregaCapturadaPorUid === usuario.id,
+                  ).length
+                }
+              </div>
+            </div>
+
+            <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
+              {asignacionesActivasEnriquecidas.filter(
+                ({ a }) => !!a.firmaPacienteEntrega && a.firmaPacienteEntregaCapturadaPorUid === usuario.id,
+              ).length === 0 ? (
+                <div className="text-sm text-gray-500">Aún no has capturado firmas.</div>
+              ) : (
+                asignacionesActivasEnriquecidas
+                  .filter(({ a }) => !!a.firmaPacienteEntrega && a.firmaPacienteEntregaCapturadaPorUid === usuario.id)
+                  .slice(0, 6)
+                  .map(({ a, paciente, equipo }) => (
+                    <div key={a.id} className="border rounded-lg p-3 bg-white">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="text-sm font-bold text-gray-900">{paciente!.nombreCompleto}</div>
+                          <div className="text-xs text-gray-500">
+                            Equipo: <span className="font-mono">{equipo!.codigoInventario}</span> ·{' '}
+                            {a.firmaPacienteEntregaCapturadaAt
+                              ? `Capturada: ${new Date(a.firmaPacienteEntregaCapturadaAt).toLocaleDateString()}`
+                              : 'Capturada'}
+                          </div>
+                        </div>
+                        <button
+                          className="md-btn md-btn-outlined"
+                          onClick={() => setOpenFirmaView({ asignacion: a, paciente: paciente!, equipo: equipo! })}
+                          type="button"
+                        >
+                          Ver firma
+                        </button>
+                      </div>
+                    </div>
+                  ))
+              )}
+            </div>
+          </div>
+
+          {/* Resumen/historial del visitador */}
+          <div className="md-card p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-bold text-gray-900">Mis reportes</div>
+                <div className="text-xs text-gray-500">
+                  Abiertos: {reportes.filter((r) => r.estado === EstadoReporteEquipo.ABIERTO).length} · Cerrados:{' '}
+                  {reportes.filter((r) => r.estado === EstadoReporteEquipo.CERRADO).length}
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  className={`md-btn ${tab === 'ABIERTO' ? 'md-btn-filled' : 'md-btn-outlined'}`}
+                  onClick={() => setTab('ABIERTO')}
+                  type="button"
+                >
+                  Abiertos
+                </button>
+                <button
+                  className={`md-btn ${tab === 'CERRADO' ? 'md-btn-filled' : 'md-btn-outlined'}`}
+                  onClick={() => setTab('CERRADO')}
+                  type="button"
+                >
+                  Cerrados
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 space-y-2">
+              {reportesFiltrados.length === 0 ? (
+                <div className="text-sm text-gray-500">Sin reportes {tab === 'ABIERTO' ? 'abiertos' : 'cerrados'}.</div>
+              ) : (
+                reportesFiltrados.slice(0, 8).map((r) => (
+                  <button
+                    key={r.id}
+                    className="w-full text-left border rounded-lg p-3 hover:bg-gray-50"
+                    onClick={() => setOpenReporte(r)}
+                    type="button"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-gray-900">
+                          {r.equipoCodigoInventario} · {r.pacienteNombre}
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          {new Date(r.fechaVisita).toLocaleDateString()} · {r.estado}
+                          {r.cerradoAt ? ` · Cerrado: ${new Date(r.cerradoAt).toLocaleDateString()}` : ''}
+                        </div>
+                        {r.cierreNotas ? <div className="text-xs text-gray-600 mt-1">{r.cierreNotas}</div> : null}
+                      </div>
+                      <span className="text-xs font-semibold text-indigo-600 underline">Ver</span>
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+
           <div className="md-search max-w-xl">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="11" cy="11" r="7" />
@@ -361,15 +652,17 @@ const Visits: React.FC = () => {
                         {equipo!.nombre} · Serie: <span className="font-mono">{equipo!.numeroSerie}</span>
                       </div>
                     </div>
-                    <button
-                      className="md-btn md-btn-filled"
-                      onClick={() => {
-                        setOpenCreate({ asignacion: a, paciente: paciente!, equipo: equipo! });
-                        setFechaVisita(todayInput());
-                        setDescripcion('');
-                        setFiles([]);
-                      }}
-                    >
+	                  <button
+	                      className="md-btn md-btn-filled"
+	                      onClick={() => {
+	                        // Bloqueo de duplicados por idAsignacion: si ya existe reporte abierto, mostramos el existente.
+	                        if (openReporteByAsignacion(a.id)) return;
+	                        setOpenCreate({ asignacion: a, paciente: paciente!, equipo: equipo! });
+	                        setFechaVisita(todayInput());
+	                        setDescripcion('');
+	                        setFiles([]);
+	                      }}
+	                    >
                       Reportar
                     </button>
                   </div>
@@ -377,11 +670,50 @@ const Visits: React.FC = () => {
               ))}
             </div>
           )}
-        </div>
-      )}
+	        </div>
+	      )}
 
-      {isBiomedico && (
-        <div className="space-y-4">
+	      {/* Modal firma de entrega (VISITADOR) */}
+      {openFirma && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+	          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[92vh] overflow-auto">
+	            <div className="p-4 border-b flex items-center justify-between">
+	              <div>
+	                <div className="text-lg font-bold text-gray-900">Capturar firma · Acta de entrega</div>
+	                <div className="text-xs text-gray-500">
+	                  Paciente: {openFirma.paciente.nombreCompleto} · Equipo:{' '}
+	                  <span className="font-mono">{openFirma.equipo.codigoInventario}</span>
+	                </div>
+	              </div>
+	              <button className="md-btn md-btn-outlined" onClick={resetFirma} disabled={savingFirma} type="button">
+	                Cerrar
+	              </button>
+	            </div>
+
+	            <div className="p-4 space-y-4">
+	              <div className="md-card p-4">
+	                <div className="text-sm font-semibold text-gray-900 mb-2">Firma del paciente</div>
+	                <SignaturePad onEnd={setFirmaEntrega} />
+	                <div className="text-xs text-gray-500 mt-2">
+	                  Esta firma quedará como evidencia en el acta de entrega. No se podrá modificar después de guardarla.
+	                </div>
+	              </div>
+
+	              <div className="flex justify-end gap-2">
+	                <button className="md-btn md-btn-outlined" onClick={resetFirma} disabled={savingFirma} type="button">
+	                  Cancelar
+	                </button>
+	                <button className="md-btn md-btn-filled" onClick={saveFirmaEntrega} disabled={savingFirma} type="button">
+	                  {savingFirma ? 'Guardando...' : 'Guardar firma'}
+	                </button>
+	              </div>
+	            </div>
+	          </div>
+	        </div>
+	      )}
+
+	      {isBiomedico && (
+	        <div className="space-y-4">
           <div className="flex items-center gap-2">
             <button
               className={`md-btn ${tab === 'ABIERTO' ? 'md-btn-filled' : 'md-btn-outlined'}`}
@@ -438,6 +770,48 @@ const Visits: React.FC = () => {
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* Modal ver firma (VISITADOR) */}
+      {openFirmaView && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[92vh] overflow-auto">
+            <div className="p-4 border-b flex items-center justify-between">
+              <div>
+                <div className="text-lg font-bold text-gray-900">Firma registrada · Acta de entrega</div>
+                <div className="text-xs text-gray-500">
+                  Paciente: {openFirmaView.paciente.nombreCompleto} · Equipo:{' '}
+                  <span className="font-mono">{openFirmaView.equipo.codigoInventario}</span>
+                </div>
+              </div>
+              <button className="md-btn md-btn-outlined" onClick={closeFirmaView} type="button">
+                Cerrar
+              </button>
+            </div>
+
+            <div className="p-4 space-y-4">
+              <div className="md-card p-4">
+                {openFirmaView.asignacion.firmaPacienteEntrega ? (
+                  <img
+                    src={openFirmaView.asignacion.firmaPacienteEntrega}
+                    alt="Firma paciente"
+                    className="w-full max-h-[420px] object-contain bg-white"
+                  />
+                ) : (
+                  <div className="text-sm text-gray-500">Sin firma registrada.</div>
+                )}
+                <div className="text-xs text-gray-500 mt-2">
+                  {openFirmaView.asignacion.firmaPacienteEntregaCapturadaAt
+                    ? `Capturada: ${new Date(openFirmaView.asignacion.firmaPacienteEntregaCapturadaAt).toLocaleString()}`
+                    : 'Capturada'}
+                  {openFirmaView.asignacion.firmaPacienteEntregaCapturadaPorNombre
+                    ? ` · Por: ${openFirmaView.asignacion.firmaPacienteEntregaCapturadaPorNombre}`
+                    : ''}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -570,39 +944,57 @@ const Visits: React.FC = () => {
               </div>
 
               <div className="space-y-4">
-                {openReporte.estado === EstadoReporteEquipo.ABIERTO ? (
-                  <div className="md-card p-4">
-                    <div className="text-sm font-semibold text-gray-900">Cerrar reporte</div>
-                    <div className="text-xs text-gray-500 mt-1">
-                      Al cerrar, el reporte queda en estado <b>CERRADO</b> y no se puede modificar.
-                    </div>
-                    <div className="mt-3">
-                      <label className="block text-sm font-medium text-gray-700">Nota de cierre</label>
-                      <textarea
-                        className="w-full border p-2.5 rounded-md"
-                        rows={4}
-                        value={cierreNotas}
-                        onChange={(e) => setCierreNotas(e.target.value)}
-                        placeholder="Ej: Se reemplazó cable / equipo enviado a mantenimiento / se realizó prueba funcional..."
-                      />
-                    </div>
-                    <button className="md-btn md-btn-filled w-full mt-3" onClick={closeReporte} disabled={closing}>
-                      {closing ? 'Cerrando...' : 'Cerrar reporte'}
-                    </button>
-                  </div>
-                ) : (
-                  <div className="md-card p-4 text-sm text-gray-600">
-                    Este reporte ya está cerrado.
-                    {openReporte.cierreNotas ? (
-                      <div className="mt-2 whitespace-pre-wrap text-gray-700">{openReporte.cierreNotas}</div>
-                    ) : null}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+	                {openReporte.estado === EstadoReporteEquipo.ABIERTO ? (
+	                  isBiomedico ? (
+	                    <div className="md-card p-4">
+	                      <div className="text-sm font-semibold text-gray-900">Cerrar reporte</div>
+	                      <div className="text-xs text-gray-500 mt-1">
+	                        Al cerrar, el reporte queda en estado <b>CERRADO</b> y no se puede modificar.
+	                      </div>
+	                      <div className="mt-3">
+	                        <label className="block text-sm font-medium text-gray-700">Nota de cierre</label>
+	                        <textarea
+	                          className="w-full border p-2.5 rounded-md"
+	                          rows={4}
+	                          value={cierreNotas}
+	                          onChange={(e) => setCierreNotas(e.target.value)}
+	                          placeholder="Ej: Se reemplazó cable / equipo enviado a mantenimiento / se realizó prueba funcional..."
+	                        />
+	                      </div>
+	                      <button className="md-btn md-btn-filled w-full mt-3" onClick={closeReporte} disabled={closing}>
+	                        {closing ? 'Cerrando...' : 'Cerrar reporte'}
+	                      </button>
+	                    </div>
+	                  ) : (
+	                    <div className="md-card p-4 text-sm text-gray-600">
+	                      <div className="font-semibold text-gray-900">Reporte en revisión</div>
+	                      <div className="text-xs text-gray-500 mt-1">
+	                        Este reporte está <b>ABIERTO</b>. Cuando el biomédico lo cierre, aquí verás la respuesta.
+	                      </div>
+	                      <div className="mt-3 text-xs text-gray-500">
+	                        Evita crear otro reporte para la misma asignación mientras esté abierto.
+	                      </div>
+	                    </div>
+	                  )
+	                ) : (
+	                  <div className="md-card p-4 text-sm text-gray-600">
+	                    <div className="font-semibold text-gray-900">Reporte cerrado</div>
+	                    <div className="text-xs text-gray-500 mt-1">
+	                      Cerrado por: {openReporte.cerradoPorNombre || '—'} ·{' '}
+	                      {openReporte.cerradoAt ? new Date(openReporte.cerradoAt).toLocaleDateString() : '—'}
+	                    </div>
+	                    {openReporte.cierreNotas ? (
+	                      <div className="mt-3 whitespace-pre-wrap text-gray-700">{openReporte.cierreNotas}</div>
+	                    ) : (
+	                      <div className="mt-3 text-gray-500">Sin nota de cierre.</div>
+	                    )}
+	                  </div>
+	                )}
+	              </div>
+	            </div>
+	          </div>
+	        </div>
+	      )}
     </Layout>
   );
 };

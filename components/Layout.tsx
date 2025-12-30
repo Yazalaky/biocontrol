@@ -2,7 +2,11 @@ import React, { ReactNode } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import ThemeToggle from './ThemeToggle';
 import { RolUsuario } from '../types';
-import { subscribeActasInternasPendientesCount } from '../services/firestoreData';
+import {
+  subscribeActasInternasPendientesCount,
+  subscribeReportesCerradosSinLeerCount,
+  subscribeReportesEquiposAbiertosCount,
+} from '../services/firestoreData';
 
 interface LayoutProps {
   children: ReactNode;
@@ -85,6 +89,8 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
   const { usuario, logout, hasRole, isAdmin } = useAuth();
   const [isSidebarOpen, setIsSidebarOpen] = React.useState(false);
   const [pendingActasInternas, setPendingActasInternas] = React.useState(0);
+  const [pendingReportesAbiertos, setPendingReportesAbiertos] = React.useState(0);
+  const [pendingCerradosSinLeer, setPendingCerradosSinLeer] = React.useState(0);
 
   React.useEffect(() => {
     setPendingActasInternas(0);
@@ -95,6 +101,31 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
       usuario.id,
       (count) => setPendingActasInternas(count),
       () => setPendingActasInternas(0),
+    );
+    return () => unsub();
+  }, [usuario?.id, usuario?.rol]);
+
+  React.useEffect(() => {
+    setPendingReportesAbiertos(0);
+    if (!usuario?.id) return;
+    if (usuario.rol !== RolUsuario.INGENIERO_BIOMEDICO) return;
+
+    const unsub = subscribeReportesEquiposAbiertosCount(
+      (count) => setPendingReportesAbiertos(count),
+      () => setPendingReportesAbiertos(0),
+    );
+    return () => unsub();
+  }, [usuario?.id, usuario?.rol]);
+
+  React.useEffect(() => {
+    setPendingCerradosSinLeer(0);
+    if (!usuario?.id) return;
+    if (usuario.rol !== RolUsuario.VISITADOR) return;
+
+    const unsub = subscribeReportesCerradosSinLeerCount(
+      usuario.id,
+      (count) => setPendingCerradosSinLeer(count),
+      () => setPendingCerradosSinLeer(0),
     );
     return () => unsub();
   }, [usuario?.id, usuario?.rol]);
@@ -204,6 +235,13 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
             label="Visitas"
             path="#/visitas"
             roles={[RolUsuario.VISITADOR, RolUsuario.INGENIERO_BIOMEDICO]}
+            badge={
+              usuario?.rol === RolUsuario.INGENIERO_BIOMEDICO
+                ? pendingReportesAbiertos
+                : usuario?.rol === RolUsuario.VISITADOR
+                  ? pendingCerradosSinLeer
+                  : 0
+            }
           />
           <NavItem
             label="Actas Internas"
