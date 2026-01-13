@@ -1,5 +1,6 @@
 import React, { useMemo, useRef, useState } from 'react';
 import Layout from '../components/Layout';
+import { toast } from '../services/feedback';
 import { EstadoAsignacion, type Asignacion, type EquipoBiomedico, type Paciente } from '../types';
 import {
   subscribeDevolucionesByMonth,
@@ -37,7 +38,7 @@ function escapeCsv(value: unknown): string {
 
 function downloadCsv(filename: string, rows: Record<string, unknown>[]) {
   if (rows.length === 0) {
-    alert('No hay datos para exportar.');
+    toast({ tone: 'warning', message: 'No hay datos para exportar.' });
     return;
   }
 
@@ -335,4 +336,3 @@ const Reports: React.FC = () => {
 };
 
 export default Reports;
-

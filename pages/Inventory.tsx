@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import Layout from '../components/Layout';
+import { toast } from '../services/feedback';
 import {
   EquipoBiomedico,
   EstadoAsignacion,
@@ -172,7 +173,7 @@ const Inventory: React.FC = () => {
       setFormData({ tipoPropiedad: TipoPropiedad.PROPIO, fechaIngreso: new Date().toISOString(), disponibleParaEntrega: false });
     } catch (err: any) {
       console.error('Error guardando equipo:', err);
-      alert(`${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo guardar el equipo.'}`);
+      toast({ tone: 'error', message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo guardar el equipo.'}` });
     }
   };
 
@@ -361,9 +362,9 @@ const Inventory: React.FC = () => {
       if (errorCount > 0) {
         message += `\n\nErrores:\n${errorMessages.slice(0, 5).join('\n')}${errorMessages.length > 5 ? '\n...' : ''}`;
       }
-      alert(message);
+      toast({ tone: errorCount > 0 ? 'warning' : 'success', title: 'Importacion CSV', message });
       if (fileInputRef.current) fileInputRef.current.value = ''; 
-      })().catch((err) => alert(err?.message || 'Error importando CSV'));
+      })().catch((err) => toast({ tone: 'error', message: err?.message || 'Error importando CSV' }));
     };
     reader.readAsText(file);
   };

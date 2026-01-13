@@ -10,6 +10,7 @@ import Admin from './pages/Admin';
 import Reports from './pages/Reports';
 import InternalActas from './pages/InternalActas';
 import Visits from './pages/Visits';
+import FeedbackHost from './components/FeedbackHost';
 import { RolUsuario } from './types';
 
 // Simple Router Component
@@ -72,6 +73,7 @@ const App: React.FC = () => {
     <ThemeProvider>
       <AuthProvider>
         <Router />
+        <FeedbackHost />
       </AuthProvider>
     </ThemeProvider>
   );

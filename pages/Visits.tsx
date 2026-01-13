@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
 import { collection, doc, getDocs, limit, query, where } from 'firebase/firestore';
 import Layout from '../components/Layout';
+import { toast } from '../services/feedback';
 import SignaturePad from '../components/SignaturePad';
 import { useAuth } from '../contexts/AuthContext';
 import { db, storage } from '../services/firebase';
@@ -180,11 +181,11 @@ const Visits: React.FC = () => {
     for (const f of list) {
       if (merged.length >= MAX_FOTOS) break;
       if (!isAllowedImage(f)) {
-        alert(`Archivo no soportado: ${f.name}. Usa PNG o JPG/JPEG.`);
+        toast({ tone: 'warning', message: `Archivo no soportado: ${f.name}. Usa PNG o JPG/JPEG.` });
         continue;
       }
       if (f.size > MAX_BYTES) {
-        alert(`"${f.name}" supera ${MAX_MB}MB. Reduce el tamaño y vuelve a intentar.`);
+        toast({ tone: 'warning', message: `"${f.name}" supera ${MAX_MB}MB. Reduce el tamaño y vuelve a intentar.` });
         continue;
       }
       merged.push(f);
@@ -232,11 +233,11 @@ const Visits: React.FC = () => {
     if (!usuario) return;
     if (!openFirma) return;
     if (!firmaEntrega) {
-      alert('El paciente debe firmar antes de guardar.');
+      toast({ tone: 'warning', message: 'El paciente debe firmar antes de guardar.' });
       return;
     }
     if (openFirma.asignacion.firmaPacienteEntrega) {
-      alert('Esta asignación ya tiene firma registrada. No se puede modificar.');
+      toast({ tone: 'warning', message: 'Esta asignacion ya tiene firma registrada. No se puede modificar.' });
       resetFirma();
       return;
     }
@@ -249,11 +250,11 @@ const Visits: React.FC = () => {
         capturadoPorUid: usuario.id,
         capturadoPorNombre: usuario.nombre,
       });
-      alert('Firma registrada correctamente.');
+      toast({ tone: 'success', message: 'Firma registrada correctamente.' });
       resetFirma();
     } catch (e: any) {
       console.error('saveFirmaEntrega error:', e);
-      alert(`${e?.code ? `${e.code}: ` : ''}${e?.message || 'No se pudo guardar la firma.'}`);
+      toast({ tone: 'error', message: `${e?.code ? `${e.code}: ` : ''}${e?.message || 'No se pudo guardar la firma.'}` });
       setSavingFirma(false);
     }
   };
@@ -271,15 +272,15 @@ const Visits: React.FC = () => {
     if (!usuario) return;
     if (!openCreate) return;
     if (!descripcion.trim()) {
-      alert('Escribe una descripción del hallazgo/falla.');
+      toast({ tone: 'warning', message: 'Escribe una descripcion del hallazgo/falla.' });
       return;
     }
     if (files.length === 0) {
-      alert('Debes adjuntar al menos 1 foto.');
+      toast({ tone: 'warning', message: 'Debes adjuntar al menos 1 foto.' });
       return;
     }
     if (files.length > MAX_FOTOS) {
-      alert(`Máximo ${MAX_FOTOS} fotos por reporte.`);
+      toast({ tone: 'warning', message: `Maximo ${MAX_FOTOS} fotos por reporte.` });
       return;
     }
 
@@ -289,9 +290,11 @@ const Visits: React.FC = () => {
       (r) => r.idAsignacion === openCreate.asignacion.id && r.estado === EstadoReporteEquipo.ABIERTO,
     );
     if (alreadyOpenLocal) {
-      alert(
-        'Ya existe un reporte ABIERTO para esta asignación.\n\nRevisa el detalle del reporte para ver el estado y evitar duplicados.',
-      );
+      toast({
+        tone: 'warning',
+        title: 'Reporte duplicado',
+        message: 'Ya existe un reporte ABIERTO para esta asignacion. Revisa el detalle del reporte para ver el estado y evitar duplicados.',
+      });
       setOpenReporte(alreadyOpenLocal);
       resetCreate();
       return;
@@ -308,9 +311,11 @@ const Visits: React.FC = () => {
       const doc0 = snap.docs[0];
       if (doc0) {
         const existing = { id: doc0.id, ...(doc0.data() as Omit<ReporteEquipo, 'id'>) };
-        alert(
-          'Ya existe un reporte ABIERTO para esta asignación.\n\nRevisa el detalle del reporte para ver el estado y evitar duplicados.',
-        );
+        toast({
+          tone: 'warning',
+          title: 'Reporte duplicado',
+          message: 'Ya existe un reporte ABIERTO para esta asignacion. Revisa el detalle del reporte para ver el estado y evitar duplicados.',
+        });
         setOpenReporte(existing);
         resetCreate();
         return;
@@ -353,11 +358,15 @@ const Visits: React.FC = () => {
       };
 
       await createReporteEquipo(reporte);
-      alert('Reporte creado correctamente. Se notificará al biomédico por email (si está configurado).');
+      toast({
+        tone: 'success',
+        title: 'Reporte creado',
+        message: 'Se notificara al biomedico por email (si esta configurado).',
+      });
       resetCreate();
     } catch (e: any) {
       console.error('submitReporte error:', e);
-      alert(`${e?.code ? `${e.code}: ` : ''}${e?.message || 'No se pudo crear el reporte.'}`);
+      toast({ tone: 'error', message: `${e?.code ? `${e.code}: ` : ''}${e?.message || 'No se pudo crear el reporte.'}` });
       setCreating(false);
     }
   };
@@ -407,7 +416,7 @@ const Visits: React.FC = () => {
     if (!usuario) return;
     if (!openReporte) return;
     if (!cierreNotas.trim()) {
-      alert('Agrega una nota de cierre (qué se encontró/qué se hizo).');
+      toast({ tone: 'warning', message: 'Agrega una nota de cierre (que se encontro/que se hizo).' });
       return;
     }
     setClosing(true);
@@ -418,12 +427,12 @@ const Visits: React.FC = () => {
         cerradoPorUid: usuario.id,
         cerradoPorNombre: usuario.nombre,
       });
-      alert('Reporte cerrado correctamente.');
+      toast({ tone: 'success', message: 'Reporte cerrado correctamente.' });
       setOpenReporte(null);
       setCierreNotas('');
     } catch (e: any) {
       console.error('closeReporte error:', e);
-      alert(`${e?.code ? `${e.code}: ` : ''}${e?.message || 'No se pudo cerrar el reporte.'}`);
+      toast({ tone: 'error', message: `${e?.code ? `${e.code}: ` : ''}${e?.message || 'No se pudo cerrar el reporte.'}` });
     } finally {
       setClosing(false);
     }

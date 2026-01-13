@@ -1,4 +1,5 @@
 import React, { useMemo, useRef } from 'react';
+import { confirmDialog, toast } from '../services/feedback';
 
 interface Props {
   value: string | null;
@@ -21,16 +22,22 @@ const SignatureImageInput: React.FC<Props> = ({ value, onChange, label, required
 
   const pick = () => inputRef.current?.click();
 
-  const handleFile = (file?: File) => {
+  const handleFile = async (file?: File) => {
     if (!file) return;
     const okType = ['image/png', 'image/jpeg'].includes(file.type);
     if (!okType) {
-      alert('Formato no soportado. Usa PNG o JPG/JPEG.');
+      toast({ tone: 'warning', message: 'Formato no soportado. Usa PNG o JPG/JPEG.' });
       return;
     }
     // Límite simple para evitar firmas gigantes (puedes subirlo si lo necesitas).
     if (file.size > 1024 * 1024) {
-      const ok = confirm('La imagen pesa más de 1MB. ¿Deseas continuar? (puede afectar rendimiento)');
+      const ok = await confirmDialog({
+        title: 'Archivo grande',
+        message: 'La imagen pesa mas de 1MB. Deseas continuar? (puede afectar rendimiento)',
+        confirmText: 'Continuar',
+        cancelText: 'Cancelar',
+        tone: 'default',
+      });
       if (!ok) return;
     }
     const reader = new FileReader();
@@ -56,7 +63,7 @@ const SignatureImageInput: React.FC<Props> = ({ value, onChange, label, required
             type="file"
             accept="image/png,image/jpeg"
             className="hidden"
-            onChange={(e) => handleFile(e.target.files?.[0])}
+            onChange={(e) => void handleFile(e.target.files?.[0])}
           />
           <button type="button" onClick={pick} className="md-btn md-btn-outlined">
             {value ? 'Cambiar' : 'Subir firma'}
@@ -87,4 +94,3 @@ const SignatureImageInput: React.FC<Props> = ({ value, onChange, label, required
 };
 
 export default SignatureImageInput;
-

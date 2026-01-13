@@ -818,6 +818,69 @@ export const acceptInternalActa = onCall(async (request) => {
 });
 
 /**
+ * 7) ACTA INTERNA: anular acta enviada (borra el doc y libera equipos).
+ * Solo permite anular si el acta está en estado ENVIADA.
+ */
+export const cancelInternalActa = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
+  }
+
+  const callerUid = request.auth.uid;
+  await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
+
+  const data = request.data as {actaId?: unknown};
+  const actaId = assertNonEmptyString(data.actaId, "actaId");
+
+  const actaRef = db.doc(`actas_internas/${actaId}`);
+  const actaSnap = await actaRef.get();
+  if (!actaSnap.exists) {
+    throw new HttpsError("not-found", "El acta no existe.");
+  }
+
+  const acta = actaSnap.data() as Record<string, unknown>;
+  const estado = acta.estado as InternalActaEstado | undefined;
+  if (estado !== "ENVIADA") {
+    throw new HttpsError(
+      "failed-precondition",
+      "Solo se pueden anular actas en estado ENVIADA.",
+    );
+  }
+
+  const entregaUid =
+    typeof acta.entregaUid === "string" ? acta.entregaUid : "";
+  if (entregaUid && entregaUid !== callerUid) {
+    throw new HttpsError(
+      "permission-denied",
+      "Solo el biomédico que creó el acta puede anularla.",
+    );
+  }
+
+  const items = Array.isArray(acta.items) ? acta.items : [];
+
+  const batch = db.batch();
+  batch.delete(actaRef);
+
+  type ActaItem = {idEquipo?: unknown};
+  for (const it of items as ActaItem[]) {
+    const idEquipo = typeof it.idEquipo === "string" ? it.idEquipo : "";
+    if (!idEquipo) continue;
+    const equipoRef = db.doc(`equipos/${idEquipo}`);
+    batch.update(equipoRef, {
+      actaInternaPendienteId: FieldValue.delete(),
+      actaInternaPendienteRecibeUid: FieldValue.delete(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  }
+
+  await batch.commit();
+  return {ok: true, equipos: items.length};
+});
+
+/**
  * Reportes de visita/falla (VISITADOR -> Biomedico)
  * Al crear un reporte, insertamos un doc en /mail (Trigger Email Extension).
  */

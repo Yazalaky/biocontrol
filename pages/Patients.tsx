@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useEffect, useRef, useLayoutEffect } from 'react';
 import Layout from '../components/Layout';
+import { toast } from '../services/feedback';
 import {
   Paciente,
   EstadoPaciente,
@@ -298,7 +299,7 @@ const Patients: React.FC = () => {
       }
     } catch (err: any) {
       console.error('Error guardando paciente:', err);
-      alert(`${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo guardar el paciente.'}`); // Mostrar error de duplicado o sistema
+      toast({ tone: 'error', message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo guardar el paciente.'}` });
     }
   };
 
@@ -419,9 +420,9 @@ const Patients: React.FC = () => {
       if (errorCount > 0) {
         message += `\n\nErrores:\n${errorMessages.slice(0, 5).join('\n')}${errorMessages.length > 5 ? '\n...' : ''}`;
       }
-      alert(message);
+      toast({ tone: errorCount > 0 ? 'warning' : 'success', title: 'Importacion CSV', message });
       if (fileInputRef.current) fileInputRef.current.value = ''; 
-      })().catch((err) => alert(err?.message || 'Error importando CSV'));
+      })().catch((err) => toast({ tone: 'error', message: err?.message || 'Error importando CSV' }));
     };
     reader.readAsText(file);
   };
@@ -429,7 +430,7 @@ const Patients: React.FC = () => {
   const handleAsignar = async () => {
     if (!selectedPaciente || !equipoSeleccionado || !canManage) return;
     if (!fechaAsignacion) {
-      alert('Selecciona la fecha de asignación antes de continuar.');
+      toast({ tone: 'warning', message: 'Selecciona la fecha de asignacion antes de continuar.' });
       return;
     }
     try {
@@ -449,9 +450,11 @@ const Patients: React.FC = () => {
         firmaAuxiliar: adminSignature || undefined,
         fechaAsignacionIso: isoFromDate(fechaAsignacion),
       });
-      alert(
-        `Asignación exitosa.\n\nACTA DE ENTREGA N° ${nuevaAsignacion.consecutivo}\nPaciente: ${selectedPaciente.nombreCompleto}`,
-      );
+      toast({
+        tone: 'success',
+        title: 'Asignacion exitosa',
+        message: `ACTA DE ENTREGA N° ${nuevaAsignacion.consecutivo}\nPaciente: ${selectedPaciente.nombreCompleto}`,
+      });
       setObsAsignacion('');
       setEquipoSeleccionado('');
       setEquipoQuery('');
@@ -464,7 +467,7 @@ const Patients: React.FC = () => {
       }
     } catch (err: any) {
       console.error('Error asignando equipo:', err);
-      alert(`${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo asignar el equipo.'}`);
+      toast({ tone: 'error', message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo asignar el equipo.'}` });
     }
   };
 
@@ -476,12 +479,12 @@ const Patients: React.FC = () => {
         observacionesDevolucion: obsDevolucion,
         estadoFinalEquipo: estadoDevolucion,
       });
-      alert('Equipo devuelto. Acta de devolución generada y almacenada en historial.');
+      toast({ tone: 'success', message: 'Equipo devuelto. Acta de devolucion generada y almacenada en historial.' });
       setAsignacionADevolver(null);
       setObsDevolucion('');
     } catch (err: any) {
       console.error('Error registrando devolución:', err);
-      alert(`${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo registrar la devolución.'}`);
+      toast({ tone: 'error', message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo registrar la devolucion.'}` });
     }
   };
 
@@ -492,13 +495,13 @@ const Patients: React.FC = () => {
       success = await validarSalidaPaciente(selectedPaciente.id);
     } catch (err: any) {
       console.error('Error registrando salida:', err);
-      alert(`${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo registrar la salida.'}`);
+      toast({ tone: 'error', message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo registrar la salida.'}` });
       return;
     }
     if (!success) {
-      alert("No se puede dar salida: El paciente tiene equipos asignados pendientes de devolución.");
+      toast({ tone: 'warning', message: 'No se puede dar salida: El paciente tiene equipos asignados pendientes de devolucion.' });
     } else {
-      alert("Salida registrada exitosamente.");
+      toast({ tone: 'success', message: 'Salida registrada exitosamente.' });
       setViewMode('list');
     }
   };
@@ -525,10 +528,10 @@ const Patients: React.FC = () => {
         tipoActa: actaData.tipo,
         dataUrl: patientSignature,
       });
-      alert('Firma del paciente/familiar guardada correctamente.');
+      toast({ tone: 'success', message: 'Firma del paciente/familiar guardada correctamente.' });
     } catch (err: any) {
       console.error('Error guardando firma paciente:', err);
-      alert(`${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo guardar la firma del paciente/familiar.'}`);
+      toast({ tone: 'error', message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo guardar la firma del paciente/familiar.'}` });
     } finally {
       setSavingPatientSig(false);
     }
@@ -547,10 +550,10 @@ const Patients: React.FC = () => {
         if (!prev) return prev;
         return { ...prev, asig: { ...prev.asig, firmaAuxiliar: adminSignature } };
       });
-      alert('Firma del auxiliar guardada correctamente.');
+      toast({ tone: 'success', message: 'Firma del auxiliar guardada correctamente.' });
     } catch (err: any) {
       console.error('Error guardando firma auxiliar:', err);
-      alert(`${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo guardar la firma del auxiliar.'}`);
+      toast({ tone: 'error', message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo guardar la firma del auxiliar.'}` });
     } finally {
       setSavingAdminSig(false);
     }
@@ -577,11 +580,10 @@ const Patients: React.FC = () => {
           });
         } catch (err: any) {
           console.error('Error guardando firma auxiliar (upload):', err);
-          alert(
-            `${err?.code ? `${err.code}: ` : ''}${
-              err?.message || 'No se pudo guardar la firma del auxiliar en Firestore.'
-            }`,
-          );
+          toast({
+            tone: 'error',
+            message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo guardar la firma del auxiliar en Firestore.'}`,
+          });
         }
       }
     };

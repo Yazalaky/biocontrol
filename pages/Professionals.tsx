@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Layout from '../components/Layout';
+import { toast } from '../services/feedback';
 import ActaProfesionalFormat from '../components/ActaProfesionalFormat';
 import SignaturePad from '../components/SignaturePad';
 import StatusBadge from '../components/StatusBadge';
@@ -241,7 +242,7 @@ const Professionals: React.FC = () => {
       setFormData({});
     } catch (err: any) {
       console.error('Error guardando profesional:', err);
-      alert(err?.message || 'No se pudo guardar el profesional.');
+      toast({ tone: 'error', message: err?.message || 'No se pudo guardar el profesional.' });
     }
   };
 
@@ -249,7 +250,7 @@ const Professionals: React.FC = () => {
     if (!selectedProfesional || !canManage) return;
     if (!equipoSeleccionado) return;
     if (!fechaEntregaOriginal) {
-      alert('Selecciona la fecha de entrega original.');
+      toast({ tone: 'warning', message: 'Selecciona la fecha de entrega original.' });
       return;
     }
 
@@ -267,9 +268,11 @@ const Professionals: React.FC = () => {
         firmaAuxiliar: adminSignature || undefined,
       });
 
-      alert(
-        `Asignación exitosa.\n\nACTA DE ENTREGA N° ${nuevaAsignacion.consecutivo}\nProfesional: ${selectedProfesional.nombre}`,
-      );
+      toast({
+        tone: 'success',
+        title: 'Asignacion exitosa',
+        message: `ACTA DE ENTREGA N° ${nuevaAsignacion.consecutivo}\nProfesional: ${selectedProfesional.nombre}`,
+      });
 
       setObsEntrega('');
       setEquipoSeleccionado('');
@@ -282,7 +285,7 @@ const Professionals: React.FC = () => {
       }
     } catch (err: any) {
       console.error('Error asignando equipo a profesional:', err);
-      alert(`${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo asignar el equipo.'}`);
+      toast({ tone: 'error', message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo asignar el equipo.'}` });
     }
   };
 
@@ -294,12 +297,12 @@ const Professionals: React.FC = () => {
         observacionesDevolucion: obsDevolucion,
         estadoFinalEquipo: estadoDevolucion,
       });
-      alert('Equipo devuelto. Acta de devolución generada y almacenada en historial.');
+      toast({ tone: 'success', message: 'Equipo devuelto. Acta de devolucion generada y almacenada en historial.' });
       setAsignacionADevolver(null);
       setObsDevolucion('');
     } catch (err: any) {
       console.error('Error registrando devolución (profesional):', err);
-      alert(`${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo registrar la devolución.'}`);
+      toast({ tone: 'error', message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo registrar la devolucion.'}` });
     }
   };
 
@@ -323,10 +326,10 @@ const Professionals: React.FC = () => {
         tipoActa: actaData.tipo,
         dataUrl: professionalSignature,
       });
-      alert('Firma del profesional guardada correctamente.');
+      toast({ tone: 'success', message: 'Firma del profesional guardada correctamente.' });
     } catch (err: any) {
       console.error('Error guardando firma profesional:', err);
-      alert(`${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo guardar la firma del profesional.'}`);
+      toast({ tone: 'error', message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo guardar la firma del profesional.'}` });
     } finally {
       setSavingProfessionalSig(false);
     }
@@ -345,10 +348,10 @@ const Professionals: React.FC = () => {
         if (!prev) return prev;
         return { ...prev, asig: { ...prev.asig, firmaAuxiliar: adminSignature } };
       });
-      alert('Firma del auxiliar guardada correctamente.');
+      toast({ tone: 'success', message: 'Firma del auxiliar guardada correctamente.' });
     } catch (err: any) {
       console.error('Error guardando firma auxiliar (profesional):', err);
-      alert(`${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo guardar la firma del auxiliar.'}`);
+      toast({ tone: 'error', message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo guardar la firma del auxiliar.'}` });
     } finally {
       setSavingAdminSig(false);
     }
@@ -373,7 +376,7 @@ const Professionals: React.FC = () => {
           });
         } catch (err: any) {
           console.error('Error guardando firma auxiliar (upload profesional):', err);
-          alert(err?.message || 'No se pudo guardar la firma del auxiliar en Firestore.');
+          toast({ tone: 'error', message: err?.message || 'No se pudo guardar la firma del auxiliar en Firestore.' });
         }
       }
     };

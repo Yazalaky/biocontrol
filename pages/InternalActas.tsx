@@ -1,10 +1,10 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { httpsCallable } from 'firebase/functions';
 import Layout from '../components/Layout';
-import SignaturePad from '../components/SignaturePad';
 import InternalActaFormat from '../components/InternalActaFormat';
 import SignatureImageInput from '../components/SignatureImageInput';
 import { useAuth } from '../contexts/AuthContext';
+import { confirmDialog, toast } from '../services/feedback';
 import { firebaseFunctions } from '../services/firebaseFunctions';
 import {
   EstadoActaInterna,
@@ -45,6 +45,7 @@ const InternalActas: React.FC = () => {
   const [openActa, setOpenActa] = useState<ActaInterna | null>(null);
   const [firmaRecibe, setFirmaRecibe] = useState<string | null>(null);
   const [accepting, setAccepting] = useState(false);
+  const [canceling, setCanceling] = useState(false);
 
   // Modal: creación
   const [createOpen, setCreateOpen] = useState(false);
@@ -331,15 +332,15 @@ const InternalActas: React.FC = () => {
   const handleCreate = async () => {
     if (!isIngeniero) return;
     if (!createRecibeUid) {
-      alert('Selecciona el Auxiliar Administrativa (receptor).');
+      toast({ tone: 'warning', message: 'Selecciona el Auxiliar Administrativa (receptor).' });
       return;
     }
     if (createSelectedEquipoIds.length === 0) {
-      alert('Selecciona al menos 1 equipo para el acta.');
+      toast({ tone: 'warning', message: 'Selecciona al menos 1 equipo para el acta.' });
       return;
     }
     if (!firmaEntrega) {
-      alert('La firma del biomédico es obligatoria para enviar el acta.');
+      toast({ tone: 'warning', message: 'La firma del biomédico es obligatoria para enviar el acta.' });
       return;
     }
 
@@ -360,12 +361,16 @@ const InternalActas: React.FC = () => {
         firmaEntrega,
       });
       const data = res.data as any;
-      alert(`Acta interna enviada.\n\nActa No. ${data?.consecutivo ?? ''}`);
+      toast({
+        tone: 'success',
+        title: 'Acta interna enviada',
+        message: `Acta No. ${data?.consecutivo ?? ''}`,
+      });
       setCreateOpen(false);
       resetCreate();
     } catch (err: any) {
       console.error('Error createInternalActa:', err);
-      alert(`${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo crear el acta.'}`);
+      toast({ tone: 'error', message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo crear el acta.'}` });
     } finally {
       setCreateSaving(false);
     }
@@ -376,7 +381,7 @@ const InternalActas: React.FC = () => {
     if (!openActa) return;
     if (openActa.estado !== EstadoActaInterna.ENVIADA) return;
     if (!firmaRecibe) {
-      alert('Debes firmar para aceptar el acta.');
+      toast({ tone: 'warning', message: 'Debes firmar para aceptar el acta.' });
       return;
     }
 
@@ -384,13 +389,44 @@ const InternalActas: React.FC = () => {
     try {
       const fn = httpsCallable(firebaseFunctions, 'acceptInternalActa');
       await fn({ actaId: openActa.id, firmaRecibe });
-      alert('Acta aceptada. Los equipos ya están disponibles para entrega a pacientes.');
+      toast({
+        tone: 'success',
+        title: 'Acta aceptada',
+        message: 'Los equipos ya estan disponibles para entrega a pacientes.',
+      });
       closeDetails();
     } catch (err: any) {
       console.error('Error acceptInternalActa:', err);
-      alert(`${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo aceptar el acta.'}`);
+      toast({ tone: 'error', message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo aceptar el acta.'}` });
     } finally {
       setAccepting(false);
+    }
+  };
+
+  const handleCancel = async () => {
+    if (!isIngeniero) return;
+    if (!openActa) return;
+    if (openActa.estado !== EstadoActaInterna.ENVIADA) return;
+    const ok = await confirmDialog({
+      title: 'Anular acta',
+      message: 'Se eliminara el acta y los equipos quedaran sin acta pendiente.',
+      confirmText: 'Anular',
+      cancelText: 'Cancelar',
+      tone: 'danger',
+    });
+    if (!ok) return;
+
+    setCanceling(true);
+    try {
+      const fn = httpsCallable(firebaseFunctions, 'cancelInternalActa');
+      await fn({ actaId: openActa.id });
+      toast({ tone: 'success', message: 'Acta anulada correctamente.' });
+      closeDetails();
+    } catch (err: any) {
+      console.error('Error cancelInternalActa:', err);
+      toast({ tone: 'error', message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo anular el acta.'}` });
+    } finally {
+      setCanceling(false);
     }
   };
 
@@ -683,6 +719,15 @@ const InternalActas: React.FC = () => {
                 <button onClick={closeDetails} className="md-btn md-btn-outlined">
                   Cerrar
                 </button>
+                {isIngeniero && openActa.estado === EstadoActaInterna.ENVIADA && (
+                  <button
+                    onClick={handleCancel}
+                    disabled={canceling}
+                    className="md-btn md-btn-outlined border-red-200 text-red-700 hover:bg-red-50"
+                  >
+                    {canceling ? 'Anulando...' : 'Anular acta'}
+                  </button>
+                )}
                 <button onClick={handlePrint} className="md-btn md-btn-filled">
                   Imprimir / Guardar PDF
                 </button>
@@ -711,12 +756,23 @@ const InternalActas: React.FC = () => {
                         La aceptación es total: al firmar, todos los equipos quedarán habilitados para entrega a pacientes.
                       </p>
                       <div className="mt-3">
-                        <SignaturePad onEnd={setFirmaRecibe} />
+                        <SignatureImageInput
+                          value={firmaRecibe}
+                          onChange={setFirmaRecibe}
+                          required
+                          label="Firma Auxiliar (obligatoria)"
+                          helperText="Sube una imagen PNG o JPG/JPEG con la firma."
+                        />
+                        {!firmaRecibe && (
+                          <div className="mt-2 text-xs text-red-600">
+                            Debes subir la firma para habilitar el boton de aceptar.
+                          </div>
+                        )}
                       </div>
                       <button
                         onClick={handleAccept}
-                        disabled={accepting}
-                        className="md-btn md-btn-filled w-full mt-3"
+                        disabled={accepting || !firmaRecibe}
+                        className="md-btn md-btn-filled w-full mt-3 disabled:opacity-60"
                       >
                         {accepting ? 'Aceptando...' : 'Aceptar acta y habilitar equipos'}
                       </button>
