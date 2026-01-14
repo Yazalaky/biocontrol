@@ -1,6 +1,7 @@
 import {
   addDoc,
   collection,
+  deleteDoc,
   deleteField,
   doc,
   getDocs,
@@ -78,13 +79,24 @@ async function getNextNumber(
 
 async function getNextMbgCode(): Promise<string> {
   const prefix = 'MBG-';
-  const q = query(equiposCol, orderBy('codigoInventario', 'desc'), limit(1));
+  const q = query(equiposCol);
   const snap = await getDocs(q);
-  const last = snap.docs[0]?.data()?.codigoInventario;
-  if (typeof last !== 'string' || !last.startsWith(prefix)) return `${prefix}001`;
-  const maybeNumber = parseInt(last.slice(prefix.length), 10);
-  const next = Number.isFinite(maybeNumber) ? maybeNumber + 1 : 1;
-  return `${prefix}${String(next).padStart(3, '0')}`;
+  const used = new Set<number>();
+  let max = 0;
+  for (const docSnap of snap.docs) {
+    const code = docSnap.data()?.codigoInventario;
+    if (typeof code !== 'string' || !code.startsWith(prefix)) continue;
+    const n = parseInt(code.slice(prefix.length), 10);
+    if (!Number.isFinite(n) || n <= 0) continue;
+    used.add(n);
+    if (n > max) max = n;
+  }
+  for (let i = 1; i <= max + 1; i += 1) {
+    if (!used.has(i)) {
+      return `${prefix}${String(i).padStart(3, '0')}`;
+    }
+  }
+  return `${prefix}001`;
 }
 
 export function subscribePacientes(onData: (pacientes: Paciente[]) => void, onError?: (e: Error) => void) {
@@ -524,6 +536,15 @@ export async function savePaciente(paciente: Paciente) {
 
 export async function saveEquipo(equipo: EquipoBiomedico) {
   assertRoleString(equipo.estado, Object.values(EstadoEquipo), 'estado');
+  const numeroSerie = (equipo.numeroSerie || '').trim();
+  if (numeroSerie) {
+    const duplicadoSerieQ = query(equiposCol, where('numeroSerie', '==', numeroSerie));
+    const duplicadoSerieSnap = await getDocs(duplicadoSerieQ);
+    const duplicatedSerieDoc = duplicadoSerieSnap.docs.find((d) => d.id !== equipo.id);
+    if (duplicatedSerieDoc) {
+      throw new Error(`Error: El serial ${numeroSerie} ya está en uso.`);
+    }
+  }
 
   if (equipo.id) {
     const duplicadoQ = query(equiposCol, where('codigoInventario', '==', equipo.codigoInventario));
@@ -535,7 +556,7 @@ export async function saveEquipo(equipo: EquipoBiomedico) {
 
     const ref = doc(equiposCol, equipo.id);
     const { id, ...rest } = equipo;
-    await updateDoc(ref, stripUndefinedDeep(rest) as any);
+    await updateDoc(ref, stripUndefinedDeep({ ...rest, numeroSerie }) as any);
     return;
   }
 
@@ -546,8 +567,22 @@ export async function saveEquipo(equipo: EquipoBiomedico) {
     typeof equipo.disponibleParaEntrega === 'boolean' ? equipo.disponibleParaEntrega : false;
   await addDoc(
     equiposCol,
-    stripUndefinedDeep({ ...rest, codigoInventario, disponibleParaEntrega }) as any,
+    stripUndefinedDeep({ ...rest, codigoInventario, disponibleParaEntrega, numeroSerie }) as any,
   );
+}
+
+export async function isNumeroSerieDisponible(numeroSerie: string, excludeId?: string) {
+  const serie = (numeroSerie || '').trim();
+  if (!serie) return true;
+  const duplicadoSerieQ = query(equiposCol, where('numeroSerie', '==', serie));
+  const duplicadoSerieSnap = await getDocs(duplicadoSerieQ);
+  const duplicatedSerieDoc = duplicadoSerieSnap.docs.find((d) => d.id !== (excludeId || ''));
+  return !duplicatedSerieDoc;
+}
+
+export async function deleteEquipo(id: string) {
+  const ref = doc(equiposCol, id);
+  await deleteDoc(ref);
 }
 
 export async function asignarEquipo(params: {

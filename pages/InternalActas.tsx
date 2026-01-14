@@ -56,7 +56,7 @@ const InternalActas: React.FC = () => {
   const [createArea] = useState<string>('Biomedica');
   const [createCargoRecibe] = useState<string>('Auxiliar Administrativa');
   const [createRecibeUid, setCreateRecibeUid] = useState<string>('');
-  const [createRecibeEmail, setCreateRecibeEmail] = useState<string>('');
+  const [createRecibeEmail, setCreateRecibeEmail] = useState<string>('coordinacionenfermeriabga2@redinsalud.com');
   const [createObs, setCreateObs] = useState<string>('');
   const [createEquipoQuery, setCreateEquipoQuery] = useState<string>('');
   const [createSelectedEquipoIds, setCreateSelectedEquipoIds] = useState<string[]>([]);
@@ -69,6 +69,7 @@ const InternalActas: React.FC = () => {
   const actaViewportRef = useRef<HTMLDivElement>(null);
   const actaMeasureRef = useRef<HTMLDivElement>(null);
   const [actaPreviewScale, setActaPreviewScale] = useState(1);
+  const [actaPreviewSize, setActaPreviewSize] = useState<{ width: number; height: number } | null>(null);
 
   useEffect(() => {
     setFirestoreError(null);
@@ -110,7 +111,6 @@ const InternalActas: React.FC = () => {
         // Auto-seleccionar el primer auxiliar si aún no hay selección.
         if (!createRecibeUid && parsed.length > 0) {
           setCreateRecibeUid(parsed[0].uid);
-          setCreateRecibeEmail(parsed[0].email || '');
         }
       } catch (e: any) {
         console.error('listAuxiliares error:', e);
@@ -234,7 +234,7 @@ const InternalActas: React.FC = () => {
     selectedAux?.nombre,
   ]);
 
-  // Auto-escalado en la vista previa (sin recortes)
+  // Auto-escalado en la vista previa (prioriza ancho para legibilidad)
   useLayoutEffect(() => {
     const actaData = openActa || openActaDraft;
     if (!actaData) return;
@@ -250,15 +250,14 @@ const InternalActas: React.FC = () => {
       // Margen de seguridad para evitar overflow por redondeos, bordes y zoom del navegador.
       const safe = 12;
       const availableW = Math.max(0, rect.width - safe);
-      const availableH = Math.max(0, rect.height - safe);
-
       const pageEl = measure.querySelector('.acta-page') as HTMLElement | null;
       const pageW = pageEl?.offsetWidth || measure.offsetWidth;
       const pageH = pageEl?.offsetHeight || measure.offsetHeight;
-      if (!availableW || !availableH || !pageW || !pageH) return;
+      if (!availableW || !pageW || !pageH) return;
 
-      const scale = Math.min(availableW / pageW, availableH / pageH, 1);
+      const scale = Math.min(availableW / pageW, 1);
       setActaPreviewScale(Number(scale.toFixed(4)));
+      setActaPreviewSize({ width: pageW * scale, height: pageH * scale });
 
       // Asegura que la vista previa quede arriba (evita quedarse "a la mitad" si había scroll previo).
       if (container && 'scrollTop' in container) {
@@ -285,6 +284,7 @@ const InternalActas: React.FC = () => {
     setOpenActa(null);
     setFirmaRecibe(null);
     setActaPreviewScale(1);
+    setActaPreviewSize(null);
   };
 
   const handlePrint = () => {
@@ -322,7 +322,7 @@ const InternalActas: React.FC = () => {
     setCreateCiudad('');
     setCreateSede('');
     setCreateRecibeUid('');
-    setCreateRecibeEmail('');
+    setCreateRecibeEmail('coordinacionenfermeriabga2@redinsalud.com');
     setCreateObs('');
     setCreateEquipoQuery('');
     setCreateSelectedEquipoIds([]);
@@ -540,8 +540,6 @@ const InternalActas: React.FC = () => {
                       onChange={(e) => {
                         const uid = e.target.value;
                         setCreateRecibeUid(uid);
-                        const found = auxiliares.find((a) => a.uid === uid);
-                        if (found?.email) setCreateRecibeEmail(found.email);
                       }}
                       disabled={auxLoading}
                     >
@@ -685,12 +683,19 @@ const InternalActas: React.FC = () => {
               </div>
 
               {/* Vista previa */}
-              <div className="bg-gray-100 p-4 overflow-hidden" ref={actaViewportRef}>
+              <div className="bg-gray-100 p-4 overflow-auto" ref={actaViewportRef}>
                 <div
                   id="internal-acta-print-container"
-                  className="w-full h-full flex items-start justify-center overflow-hidden"
+                  className="w-full min-h-full flex items-start justify-center"
                 >
-                  <div style={{ transform: `scale(${actaPreviewScale})`, transformOrigin: 'top center' }}>
+                  <div
+                    style={{
+                      transform: `scale(${actaPreviewScale})`,
+                      transformOrigin: 'top center',
+                      width: actaPreviewSize ? `${actaPreviewSize.width}px` : undefined,
+                      height: actaPreviewSize ? `${actaPreviewSize.height}px` : undefined,
+                    }}
+                  >
                     <div ref={actaMeasureRef}>
                       <InternalActaFormat acta={openActaDraft} />
                     </div>
@@ -788,12 +793,19 @@ const InternalActas: React.FC = () => {
               </div>
 
               {/* Vista previa */}
-              <div className="bg-gray-100 p-4 overflow-hidden" ref={actaViewportRef}>
+              <div className="bg-gray-100 p-4 overflow-auto" ref={actaViewportRef}>
                 <div
                   id="internal-acta-print-container"
-                  className="w-full h-full flex items-start justify-center overflow-hidden"
+                  className="w-full min-h-full flex items-start justify-center"
                 >
-                  <div style={{ transform: `scale(${actaPreviewScale})`, transformOrigin: 'top center' }}>
+                  <div
+                    style={{
+                      transform: `scale(${actaPreviewScale})`,
+                      transformOrigin: 'top center',
+                      width: actaPreviewSize ? `${actaPreviewSize.width}px` : undefined,
+                      height: actaPreviewSize ? `${actaPreviewSize.height}px` : undefined,
+                    }}
+                  >
                     <div ref={actaMeasureRef}>
                       <InternalActaFormat acta={openActa} />
                     </div>

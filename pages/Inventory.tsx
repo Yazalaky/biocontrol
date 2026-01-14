@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import Layout from '../components/Layout';
-import { toast } from '../services/feedback';
+import { confirmDialog, toast } from '../services/feedback';
 import {
   EquipoBiomedico,
   EstadoAsignacion,
@@ -16,6 +16,8 @@ import { useAuth } from '../contexts/AuthContext';
 import StatusBadge from '../components/StatusBadge';
 import {
   saveEquipo,
+  isNumeroSerieDisponible,
+  deleteEquipo,
   subscribeAsignaciones,
   subscribeAsignacionesProfesionales,
   subscribeEquipos,
@@ -45,6 +47,8 @@ const Inventory: React.FC = () => {
     fechaIngreso: new Date().toISOString(),
     disponibleParaEntrega: false,
   });
+  const [serialError, setSerialError] = useState<string | null>(null);
+  const [serialChecking, setSerialChecking] = useState(false);
 
   // Modal History State
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
@@ -134,21 +138,49 @@ const Inventory: React.FC = () => {
     return map;
   }, [asignaciones, asignacionesProfesionales]);
 
-  // Filtro de Equipos (Buscador)
-  const filteredEquipos = equipos.filter(e => {
-    if (!searchTerm) return true;
-    const term = searchTerm.toLowerCase();
-    return (
-      e.codigoInventario.toLowerCase().includes(term) ||
-      e.numeroSerie.toLowerCase().includes(term) ||
-      e.nombre.toLowerCase().includes(term) ||
-      e.marca.toLowerCase().includes(term)
-    );
-  });
+  const [statusFilter, setStatusFilter] = useState<EstadoEquipo | 'ALL'>('ALL');
+
+  const getEffectiveStatus = (equipo: EquipoBiomedico) => {
+    const active = activeAsignacionByEquipo.get(equipo.id);
+    const lastFinal = lastFinalEstadoByEquipo.get(equipo.id);
+    return active ? EstadoEquipo.ASIGNADO : (lastFinal?.estadoFinal || equipo.estado);
+  };
+
+  // Filtro de Equipos (Buscador + Estado)
+  const filteredEquipos = useMemo(() => {
+    const term = searchTerm.trim().toLowerCase();
+    return equipos.filter((e) => {
+      const statusOk = statusFilter === 'ALL' || getEffectiveStatus(e) === statusFilter;
+      if (!statusOk) return false;
+      if (!term) return true;
+      return (
+        e.codigoInventario.toLowerCase().includes(term) ||
+        e.numeroSerie.toLowerCase().includes(term) ||
+        e.nombre.toLowerCase().includes(term) ||
+        e.marca.toLowerCase().includes(term)
+      );
+    });
+  }, [equipos, searchTerm, statusFilter, activeAsignacionByEquipo, lastFinalEstadoByEquipo]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canEdit) return;
+    if (serialChecking) {
+      toast({ tone: 'warning', message: 'Espera a que termine la validacion del serial.' });
+      return;
+    }
+    if (serialError) {
+      toast({ tone: 'warning', message: serialError });
+      return;
+    }
+    if (formData.estado === EstadoEquipo.MANTENIMIENTO && !formData.fechaMantenimiento) {
+      toast({ tone: 'warning', message: 'Selecciona la fecha de mantenimiento.' });
+      return;
+    }
+    if (formData.estado === EstadoEquipo.DADO_DE_BAJA && !formData.fechaBaja) {
+      toast({ tone: 'warning', message: 'Selecciona la fecha de baja.' });
+      return;
+    }
 
     const newEquipo: EquipoBiomedico = {
       id: formData.id || '',
@@ -159,6 +191,8 @@ const Inventory: React.FC = () => {
       modelo: formData.modelo || '',
       estado: formData.estado || EstadoEquipo.DISPONIBLE,
       fechaIngreso: formData.fechaIngreso ? formData.fechaIngreso : new Date().toISOString(),
+      fechaMantenimiento: formData.fechaMantenimiento,
+      fechaBaja: formData.fechaBaja,
       // Control (acta interna): equipos nuevos quedan NO disponibles para entrega hasta aceptación.
       disponibleParaEntrega: typeof formData.disponibleParaEntrega === 'boolean' ? formData.disponibleParaEntrega : undefined,
       custodioUid: formData.custodioUid || (formData.id ? undefined : usuario?.id),
@@ -171,9 +205,38 @@ const Inventory: React.FC = () => {
       await saveEquipo(newEquipo);
       setIsModalOpen(false);
       setFormData({ tipoPropiedad: TipoPropiedad.PROPIO, fechaIngreso: new Date().toISOString(), disponibleParaEntrega: false });
+      setSerialError(null);
     } catch (err: any) {
       console.error('Error guardando equipo:', err);
       toast({ tone: 'error', message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo guardar el equipo.'}` });
+    }
+  };
+
+  const handleSerieBlur = async () => {
+    const rawSerie = formData.numeroSerie || '';
+    const serie = rawSerie.trim();
+    if (serie !== rawSerie) {
+      setFormData({ ...formData, numeroSerie: serie });
+    }
+    if (!serie) {
+      setSerialError(null);
+      return;
+    }
+    setSerialChecking(true);
+    try {
+      const ok = await isNumeroSerieDisponible(serie, formData.id);
+      if (!ok) {
+        const msg = `El serial ${serie} ya existe en el inventario.`;
+        setSerialError(msg);
+        toast({ tone: 'warning', message: msg });
+      } else {
+        setSerialError(null);
+      }
+    } catch (err: any) {
+      console.error('Error validando serial:', err);
+      setSerialError('No se pudo validar el serial en este momento.');
+    } finally {
+      setSerialChecking(false);
     }
   };
 
@@ -190,6 +253,7 @@ const Inventory: React.FC = () => {
   const openEdit = (equipo: EquipoBiomedico) => {
     if (!canEdit) return;
     setFormData({ ...equipo, fechaIngreso: equipo.fechaIngreso || new Date().toISOString() });
+    setSerialError(null);
     setIsModalOpen(true);
   };
 
@@ -232,12 +296,67 @@ const Inventory: React.FC = () => {
         };
       });
 
-    const enriched = [...historialPacientes, ...historialProfesionales].sort(
+    const historialEstado = [];
+    if (equipo.fechaMantenimiento) {
+      historialEstado.push({
+        id: `mantenimiento-${equipo.id}`,
+        tipo: 'MANTENIMIENTO' as const,
+        fecha: equipo.fechaMantenimiento,
+        fechaFin: equipo.fechaMantenimiento,
+        nombre: 'Mantenimiento',
+        doc: '-',
+      });
+    }
+    if (equipo.fechaBaja) {
+      historialEstado.push({
+        id: `baja-${equipo.id}`,
+        tipo: 'BAJA' as const,
+        fecha: equipo.fechaBaja,
+        fechaFin: equipo.fechaBaja,
+        nombre: 'Baja del equipo',
+        doc: '-',
+      });
+    }
+
+    const enriched = [...historialPacientes, ...historialProfesionales, ...historialEstado].sort(
       (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime(),
     );
 
     setHistoryEquipo({ equipo, data: enriched });
     setIsHistoryOpen(true);
+  };
+
+  const handleDeleteEquipo = async (equipo: EquipoBiomedico) => {
+    if (!canEdit) return;
+    if (activeAsignacionByEquipo.has(equipo.id)) {
+      toast({ tone: 'warning', message: 'No puedes eliminar un equipo con asignacion activa.' });
+      return;
+    }
+    if ((assignmentCounts[equipo.id] || 0) > 0) {
+      toast({ tone: 'warning', message: 'No puedes eliminar un equipo con historial de asignaciones.' });
+      return;
+    }
+    if (equipo.actaInternaPendienteId) {
+      toast({ tone: 'warning', message: 'Este equipo tiene un acta interna pendiente. Anula el acta primero.' });
+      return;
+    }
+
+    const ok = await confirmDialog({
+      title: 'Eliminar equipo',
+      message: `Se eliminara el equipo ${equipo.codigoInventario} (${equipo.numeroSerie}). Esta accion no se puede deshacer.`,
+      confirmText: 'Eliminar',
+      cancelText: 'Cancelar',
+      tone: 'danger',
+    });
+    if (!ok) return;
+
+    try {
+      await deleteEquipo(equipo.id);
+      toast({ tone: 'success', message: 'Equipo eliminado correctamente.' });
+    } catch (err: any) {
+      console.error('Error eliminando equipo:', err);
+      toast({ tone: 'error', message: err?.message || 'No se pudo eliminar el equipo.' });
+    }
   };
 
   const handleOwnerChange = (field: string, value: string) => {
@@ -390,6 +509,32 @@ const Inventory: React.FC = () => {
               onChange={(e) => setSearchTerm(e.target.value)}
             />
           </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <span className="text-xs text-gray-500">Filtrar por estado:</span>
+            {[
+              { label: 'Todos', value: 'ALL' },
+              { label: 'Disponible', value: EstadoEquipo.DISPONIBLE },
+              { label: 'Asignado', value: EstadoEquipo.ASIGNADO },
+              { label: 'Mantenimiento', value: EstadoEquipo.MANTENIMIENTO },
+              { label: 'De baja', value: EstadoEquipo.DADO_DE_BAJA },
+            ].map((opt) => {
+              const active = statusFilter === opt.value;
+              return (
+                <button
+                  key={opt.label}
+                  type="button"
+                  onClick={() => setStatusFilter(opt.value as EstadoEquipo | 'ALL')}
+                  className={`text-xs px-3 py-1.5 rounded-full border font-semibold transition ${
+                    active
+                      ? 'bg-blue-50 text-blue-700 border-blue-200'
+                      : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {canEdit && (
@@ -431,8 +576,7 @@ const Inventory: React.FC = () => {
         {filteredEquipos.map(equipo => (
           (() => {
             const active = activeAsignacionByEquipo.get(equipo.id);
-            const lastFinal = lastFinalEstadoByEquipo.get(equipo.id);
-            const status = active ? EstadoEquipo.ASIGNADO : (lastFinal?.estadoFinal || equipo.estado);
+            const status = getEffectiveStatus(equipo);
             const ubicacion = (() => {
               if (!active) return equipo.ubicacionActual;
               if (active.tipo === 'PACIENTE') {
@@ -504,12 +648,17 @@ const Inventory: React.FC = () => {
             </div>
 
             {canEdit && (
-              <button 
-                onClick={() => openEdit(equipo)}
-                className="mt-4 w-full md-btn md-btn-outlined"
-              >
-                Editar / Cambiar Estado
-              </button>
+              <div className="mt-4 grid grid-cols-1 gap-2">
+                <button onClick={() => openEdit(equipo)} className="w-full md-btn md-btn-outlined">
+                  Editar / Cambiar Estado
+                </button>
+                <button
+                  onClick={() => handleDeleteEquipo(equipo)}
+                  className="w-full md-btn md-btn-outlined border-red-200 text-red-700 hover:bg-red-50"
+                >
+                  Eliminar equipo
+                </button>
+              </div>
             )}
           </div>
             );
@@ -524,8 +673,8 @@ const Inventory: React.FC = () => {
 
       {/* Modal Crear/Editar */}
       {isModalOpen && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 overflow-y-auto">
-          <div className="bg-white p-6 rounded-lg w-full max-w-lg my-8">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-start justify-center z-50 overflow-y-auto p-4">
+          <div className="bg-white p-6 rounded-lg w-full max-w-lg max-h-[calc(100vh-2rem)] overflow-y-auto">
             <h3 className="text-xl font-bold mb-4">{formData.id ? 'Editar Equipo' : 'Nuevo Equipo'}</h3>
             <form onSubmit={handleSave} className="space-y-4">
               
@@ -543,7 +692,22 @@ const Inventory: React.FC = () => {
                 </div>
                 <div>
                     <label className="block text-sm font-medium">Número de Serie</label>
-                    <input className="w-full border p-2 rounded" value={formData.numeroSerie || ''} onChange={e => setFormData({...formData, numeroSerie: e.target.value})} required />
+                    <input
+                      className="w-full border p-2 rounded"
+                      value={formData.numeroSerie || ''}
+                      onChange={(e) => {
+                        setFormData({ ...formData, numeroSerie: e.target.value });
+                        if (serialError) setSerialError(null);
+                      }}
+                      onBlur={handleSerieBlur}
+                      required
+                    />
+                    {serialChecking && (
+                      <p className="text-xs text-gray-500 mt-1">Validando serial...</p>
+                    )}
+                    {serialError && !serialChecking && (
+                      <p className="text-xs text-red-600 mt-1">{serialError}</p>
+                    )}
                 </div>
               </div>
 
@@ -674,6 +838,46 @@ const Inventory: React.FC = () => {
                 </div>
               )}
 
+              {formData.estado === EstadoEquipo.MANTENIMIENTO && (
+                <div>
+                  <label className="block text-sm font-medium">Fecha de mantenimiento</label>
+                  <input
+                    type="date"
+                    className="w-full border p-2 rounded"
+                    value={isoToDateInput(formData.fechaMantenimiento)}
+                    onChange={(e) => {
+                      const dateStr = e.target.value;
+                      const d = new Date(`${dateStr}T12:00:00`);
+                      setFormData({
+                        ...formData,
+                        fechaMantenimiento: Number.isNaN(d.getTime()) ? undefined : d.toISOString(),
+                      });
+                    }}
+                    required
+                  />
+                </div>
+              )}
+
+              {formData.estado === EstadoEquipo.DADO_DE_BAJA && (
+                <div>
+                  <label className="block text-sm font-medium">Fecha de baja</label>
+                  <input
+                    type="date"
+                    className="w-full border p-2 rounded"
+                    value={isoToDateInput(formData.fechaBaja)}
+                    onChange={(e) => {
+                      const dateStr = e.target.value;
+                      const d = new Date(`${dateStr}T12:00:00`);
+                      setFormData({
+                        ...formData,
+                        fechaBaja: Number.isNaN(d.getTime()) ? undefined : d.toISOString(),
+                      });
+                    }}
+                    required
+                  />
+                </div>
+              )}
+
               <div>
                 <label className="block text-sm font-medium">Observaciones</label>
                 <textarea className="w-full border p-2 rounded" rows={3} value={formData.observaciones || ''} onChange={e => setFormData({...formData, observaciones: e.target.value})} />
@@ -706,12 +910,12 @@ const Inventory: React.FC = () => {
             <div className="p-6 overflow-y-auto flex-1">
                 {historyEquipo.data.length === 0 ? (
                     <div className="text-center text-gray-500 py-8">
-                        <p>Este equipo no tiene historial de asignaciones registrado.</p>
+                        <p>Este equipo no tiene historial registrado.</p>
                     </div>
                 ) : (
                     <div className="space-y-4">
                         <div className="flex justify-between items-center mb-2">
-	                            <h4 className="font-semibold text-gray-700">Historial de Uso ({historyEquipo.data.length} registros)</h4>
+	                            <h4 className="font-semibold text-gray-700">Historial ({historyEquipo.data.length} registros)</h4>
 	                        </div>
 	                        <div className="border rounded-lg overflow-hidden">
 	                            <table className="min-w-full divide-y divide-gray-200">
@@ -735,21 +939,33 @@ const Inventory: React.FC = () => {
 	                                                className={
 	                                                  h.tipo === 'PROFESIONAL'
 	                                                    ? 'px-2 py-0.5 rounded-full border border-indigo-200 bg-indigo-50 text-indigo-800'
-	                                                    : 'px-2 py-0.5 rounded-full border border-emerald-200 bg-emerald-50 text-emerald-800'
+	                                                    : h.tipo === 'MANTENIMIENTO'
+	                                                      ? 'px-2 py-0.5 rounded-full border border-amber-200 bg-amber-50 text-amber-800'
+	                                                      : h.tipo === 'BAJA'
+	                                                        ? 'px-2 py-0.5 rounded-full border border-red-200 bg-red-50 text-red-700'
+	                                                        : 'px-2 py-0.5 rounded-full border border-emerald-200 bg-emerald-50 text-emerald-800'
 	                                                }
 	                                              >
 	                                                {h.tipo}
 	                                              </span>
 	                                            </td>
 	                                            <td className="px-4 py-2 text-sm text-gray-900">
-	                                              <div className="font-medium">{h.nombre}</div>
-	                                              <div className="text-xs text-gray-500">{h.doc}</div>
+	                                              {h.tipo === 'MANTENIMIENTO' || h.tipo === 'BAJA' ? (
+	                                                <div className="text-sm text-gray-600">{h.nombre}</div>
+	                                              ) : (
+	                                                <>
+	                                                  <div className="font-medium">{h.nombre}</div>
+	                                                  <div className="text-xs text-gray-500">{h.doc}</div>
+	                                                </>
+	                                              )}
 	                                            </td>
 	                                            <td className="px-4 py-2 text-sm text-gray-500">
 	                                              {new Date(h.fecha).toLocaleDateString()}
 	                                            </td>
 	                                            <td className="px-4 py-2 text-sm text-gray-500">
-	                                              {h.fechaFin ? (
+	                                              {h.tipo === 'MANTENIMIENTO' || h.tipo === 'BAJA' ? (
+	                                                '-'
+	                                              ) : h.fechaFin ? (
 	                                                new Date(h.fechaFin).toLocaleDateString()
 	                                              ) : (
 	                                                <span className="text-green-600 text-xs font-bold border border-green-200 bg-green-50 px-1 rounded">

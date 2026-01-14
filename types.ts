@@ -98,6 +98,10 @@ export interface EquipoBiomedico {
   estado: EstadoEquipo;
   // Fecha de ingreso del equipo al inventario (ISO string).
   fechaIngreso?: string;
+  // Fecha de mantenimiento (ISO string).
+  fechaMantenimiento?: string;
+  // Fecha de baja (ISO string).
+  fechaBaja?: string;
   // Control de disponibilidad para entregas a pacientes (Legacy: si no existe, se asume true).
   disponibleParaEntrega?: boolean;
   // UID del custodio actual (opcional, Legacy: si no existe, no se filtra por custodio).
