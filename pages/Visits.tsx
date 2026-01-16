@@ -124,21 +124,33 @@ const Visits: React.FC = () => {
       .filter((x) => x.paciente && x.equipo);
   }, [asignaciones, pacientesById, equiposById, isVisitador]);
 
+  const matchesQuery = (q: string, paciente: Paciente, equipo: EquipoBiomedico) => {
+    if (!q) return true;
+    const term = q.toLowerCase();
+    return (
+      paciente.nombreCompleto.toLowerCase().includes(term) ||
+      paciente.numeroDocumento.includes(term) ||
+      equipo.codigoInventario.toLowerCase().includes(term) ||
+      equipo.numeroSerie.toLowerCase().includes(term) ||
+      equipo.nombre.toLowerCase().includes(term)
+    );
+  };
+
+  const [pendingSearch, setPendingSearch] = useState('');
+  const pendingFirmasAll = useMemo(
+    () => asignacionesActivasEnriquecidas.filter(({ a }) => !a.firmaPacienteEntrega),
+    [asignacionesActivasEnriquecidas],
+  );
+  const pendingFirmasFiltered = useMemo(() => {
+    const q = pendingSearch.trim().toLowerCase();
+    return pendingFirmasAll.filter(({ paciente, equipo }) => matchesQuery(q, paciente!, equipo!));
+  }, [pendingFirmasAll, pendingSearch]);
+
   const [search, setSearch] = useState('');
   const filteredAsignaciones = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return asignacionesActivasEnriquecidas;
-    return asignacionesActivasEnriquecidas.filter(({ paciente, equipo }) => {
-      const p = paciente!;
-      const e = equipo!;
-      return (
-        p.nombreCompleto.toLowerCase().includes(q) ||
-        p.numeroDocumento.includes(q) ||
-        e.codigoInventario.toLowerCase().includes(q) ||
-        e.numeroSerie.toLowerCase().includes(q) ||
-        e.nombre.toLowerCase().includes(q)
-      );
-    });
+    return asignacionesActivasEnriquecidas.filter(({ paciente, equipo }) => matchesQuery(q, paciente!, equipo!));
   }, [asignacionesActivasEnriquecidas, search]);
 
   // Tabs y detalle de reportes (VISITADOR y BIOMEDICO)
@@ -474,16 +486,31 @@ const Visits: React.FC = () => {
               </div>
               <div className="text-xs text-gray-500">
                 Pendientes:{' '}
-                {asignacionesActivasEnriquecidas.filter(({ a }) => !a.firmaPacienteEntrega).length}
+                {pendingFirmasFiltered.length}
+                {pendingSearch.trim() ? ` / ${pendingFirmasAll.length}` : ''}
               </div>
             </div>
 
+            <div className="mt-3 md-search max-w-xl">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="11" cy="11" r="7" />
+                <path d="M21 21l-4.3-4.3" />
+              </svg>
+              <input
+                type="text"
+                placeholder="Buscar por paciente, documento, MBG o serie..."
+                value={pendingSearch}
+                onChange={(e) => setPendingSearch(e.target.value)}
+              />
+            </div>
+
             <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
-              {asignacionesActivasEnriquecidas.filter(({ a }) => !a.firmaPacienteEntrega).length === 0 ? (
+              {pendingFirmasAll.length === 0 ? (
                 <div className="text-sm text-gray-500">No hay firmas pendientes.</div>
+              ) : pendingFirmasFiltered.length === 0 ? (
+                <div className="text-sm text-gray-500">No hay firmas pendientes con ese filtro.</div>
               ) : (
-                asignacionesActivasEnriquecidas
-                  .filter(({ a }) => !a.firmaPacienteEntrega)
+                pendingFirmasFiltered
                   .slice(0, 6)
                   .map(({ a, paciente, equipo }) => (
                     <div key={a.id} className="border rounded-lg p-3 bg-white">

@@ -630,7 +630,7 @@ export async function asignarEquipo(params: {
     usuarioAsigna,
   };
 
-  const docRef = await addDoc(asignacionesCol, asignacion as any);
+  const docRef = await addDoc(asignacionesCol, stripUndefinedDeep(asignacion) as any);
   return { id: docRef.id, ...asignacion };
 }
 

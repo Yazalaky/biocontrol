@@ -80,7 +80,7 @@ service cloud.firestore {
         || (
           isVisitador()
           && resource.data.estado == "ACTIVA"
-          && resource.data.firmaPacienteEntrega == null
+          && (resource.data.firmaPacienteEntrega == null || resource.data.firmaPacienteEntrega == "")
           && request.resource.data.firmaPacienteEntrega is string
           && request.resource.data.firmaPacienteEntregaCapturadaAt is string
           && request.resource.data.firmaPacienteEntregaCapturadaPorUid == request.auth.uid
