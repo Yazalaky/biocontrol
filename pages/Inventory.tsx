@@ -1,4 +1,6 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
+import { getDownloadURL, ref as storageRef } from 'firebase/storage';
+import { httpsCallable } from 'firebase/functions';
 import Layout from '../components/Layout';
 import { confirmDialog, toast } from '../services/feedback';
 import {
@@ -11,9 +13,13 @@ import {
   type AsignacionProfesional,
   type Paciente,
   type Profesional,
+  type SolicitudEquipoPaciente,
 } from '../types';
 import { useAuth } from '../contexts/AuthContext';
 import StatusBadge from '../components/StatusBadge';
+import SignatureImageInput from '../components/SignatureImageInput';
+import { firebaseFunctions } from '../services/firebaseFunctions';
+import { storage } from '../services/firebase';
 import {
   saveEquipo,
   isNumeroSerieDisponible,
@@ -23,6 +29,7 @@ import {
   subscribeEquipos,
   subscribePacientes,
   subscribeProfesionales,
+  subscribeSolicitudesEquiposPacientePendientes,
 } from '../services/firestoreData';
 
 const Inventory: React.FC = () => {
@@ -33,6 +40,10 @@ const Inventory: React.FC = () => {
   const [profesionales, setProfesionales] = useState<Profesional[]>([]);
   const [asignacionesProfesionales, setAsignacionesProfesionales] = useState<AsignacionProfesional[]>([]);
   const [firestoreError, setFirestoreError] = useState<string | null>(null);
+  const [solicitudesPendientes, setSolicitudesPendientes] = useState<SolicitudEquipoPaciente[]>([]);
+  const [openSolicitud, setOpenSolicitud] = useState<SolicitudEquipoPaciente | null>(null);
+  const [solicitudFotoUrls, setSolicitudFotoUrls] = useState<Record<string, string>>({});
+  const [solicitudContext, setSolicitudContext] = useState<SolicitudEquipoPaciente | null>(null);
   
   // Search State
   const [searchTerm, setSearchTerm] = useState('');
@@ -43,10 +54,11 @@ const Inventory: React.FC = () => {
   // Modal Edit/Create State
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [formData, setFormData] = useState<Partial<EquipoBiomedico>>({
-    tipoPropiedad: TipoPropiedad.PROPIO,
+    tipoPropiedad: TipoPropiedad.MEDICUC,
     fechaIngreso: new Date().toISOString(),
     disponibleParaEntrega: false,
   });
+  const [autoActaFirma, setAutoActaFirma] = useState<string | null>(null);
   const [serialError, setSerialError] = useState<string | null>(null);
   const [serialChecking, setSerialChecking] = useState(false);
 
@@ -56,6 +68,42 @@ const Inventory: React.FC = () => {
 
   // Stats para contadores
   const [assignmentCounts, setAssignmentCounts] = useState<{[key: string]: number}>({});
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const saved = localStorage.getItem('biocontrol_biomedico_sig');
+    if (saved) setAutoActaFirma(saved);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (autoActaFirma) {
+      localStorage.setItem('biocontrol_biomedico_sig', autoActaFirma);
+    } else {
+      localStorage.removeItem('biocontrol_biomedico_sig');
+    }
+  }, [autoActaFirma]);
+
+  const normalizeTipoPropiedad = (tipo?: TipoPropiedad) => {
+    if (tipo === TipoPropiedad.PROPIO) return TipoPropiedad.MEDICUC;
+    if (tipo === TipoPropiedad.EXTERNO) return TipoPropiedad.ALQUILADO;
+    return tipo || TipoPropiedad.MEDICUC;
+  };
+
+  const propiedadMeta = (tipo?: TipoPropiedad) => {
+    const normalized = normalizeTipoPropiedad(tipo);
+    switch (normalized) {
+      case TipoPropiedad.PACIENTE:
+        return { label: 'PACIENTE', className: 'bg-emerald-50 text-emerald-800 border-emerald-200' };
+      case TipoPropiedad.ALQUILADO:
+        return { label: 'ALQUILADO', className: 'bg-amber-50 text-amber-800 border-amber-200' };
+      case TipoPropiedad.EMPLEADO:
+        return { label: 'EMPLEADO', className: 'bg-indigo-50 text-indigo-800 border-indigo-200' };
+      case TipoPropiedad.MEDICUC:
+      default:
+        return { label: 'MEDICUC', className: 'bg-blue-50 text-blue-800 border-blue-200' };
+    }
+  };
 
   useEffect(() => {
     setFirestoreError(null);
@@ -79,7 +127,6 @@ const Inventory: React.FC = () => {
         `No tienes permisos para leer "asignaciones_profesionales" en Firestore. Detalle: ${e.message}`,
       );
     });
-
     return () => {
       unsubEquipos();
       unsubPacientes();
@@ -88,6 +135,15 @@ const Inventory: React.FC = () => {
       unsubAsignacionesProfesionales();
     };
   }, []);
+
+  useEffect(() => {
+    if (usuario?.rol !== RolUsuario.INGENIERO_BIOMEDICO) return;
+    const unsubSolicitudes = subscribeSolicitudesEquiposPacientePendientes(setSolicitudesPendientes, (e) => {
+      console.error('Firestore subscribeSolicitudesEquiposPacientePendientes error:', e);
+      setFirestoreError(`No tienes permisos para leer solicitudes. Detalle: ${e.message}`);
+    });
+    return () => unsubSolicitudes();
+  }, [usuario?.rol]);
 
   useEffect(() => {
     const counts: { [key: string]: number } = {};
@@ -102,7 +158,33 @@ const Inventory: React.FC = () => {
     setAssignmentCounts(counts);
   }, [asignaciones, asignacionesProfesionales]);
 
+  useEffect(() => {
+    if (!openSolicitud?.fotos?.length) {
+      setSolicitudFotoUrls({});
+      return;
+    }
+    let alive = true;
+    const load = async () => {
+      const next: Record<string, string> = {};
+      for (const f of openSolicitud.fotos || []) {
+        if (!f?.path) continue;
+        try {
+          const url = await getDownloadURL(storageRef(storage, f.path));
+          if (alive) next[f.path] = url;
+        } catch (err) {
+          console.error('Error cargando foto solicitud:', err);
+        }
+      }
+      if (alive) setSolicitudFotoUrls(next);
+    };
+    load();
+    return () => {
+      alive = false;
+    };
+  }, [openSolicitud]);
+
   const canEdit = hasRole([RolUsuario.INGENIERO_BIOMEDICO]);
+  const propiedadLocked = !!solicitudContext;
   const pacientesById = useMemo(() => new Map(pacientes.map((p) => [p.id, p])), [pacientes]);
   const profesionalesById = useMemo(() => new Map(profesionales.map((p) => [p.id, p])), [profesionales]);
   const activeAsignacionByEquipo = useMemo(() => {
@@ -181,6 +263,24 @@ const Inventory: React.FC = () => {
       toast({ tone: 'warning', message: 'Selecciona la fecha de baja.' });
       return;
     }
+    if (formData.tipoPropiedad === TipoPropiedad.ALQUILADO && !formData.empresaAlquiler?.trim()) {
+      toast({ tone: 'warning', message: 'Escribe la empresa de alquiler.' });
+      return;
+    }
+    if (
+      solicitudContext &&
+      formData.tipoPropiedad === TipoPropiedad.ALQUILADO &&
+      !autoActaFirma
+    ) {
+      toast({ tone: 'warning', message: 'La firma del biomédico es obligatoria para crear el acta interna.' });
+      return;
+    }
+
+    const isNew = !formData.id;
+    const baseDisponible =
+      typeof formData.disponibleParaEntrega === 'boolean' ? formData.disponibleParaEntrega : undefined;
+    const disponibleParaEntrega =
+      isNew && formData.tipoPropiedad === TipoPropiedad.PACIENTE ? true : baseDisponible;
 
     const newEquipo: EquipoBiomedico = {
       id: formData.id || '',
@@ -194,17 +294,53 @@ const Inventory: React.FC = () => {
       fechaMantenimiento: formData.fechaMantenimiento,
       fechaBaja: formData.fechaBaja,
       // Control (acta interna): equipos nuevos quedan NO disponibles para entrega hasta aceptación.
-      disponibleParaEntrega: typeof formData.disponibleParaEntrega === 'boolean' ? formData.disponibleParaEntrega : undefined,
+      disponibleParaEntrega,
       custodioUid: formData.custodioUid || (formData.id ? undefined : usuario?.id),
       observaciones: formData.observaciones || '',
       ubicacionActual: formData.ubicacionActual || 'Bodega',
-      tipoPropiedad: formData.tipoPropiedad || TipoPropiedad.PROPIO,
-      datosPropietario: formData.tipoPropiedad === TipoPropiedad.EXTERNO ? formData.datosPropietario : undefined
+      tipoPropiedad: formData.tipoPropiedad || TipoPropiedad.MEDICUC,
+      empresaAlquiler:
+        formData.tipoPropiedad === TipoPropiedad.ALQUILADO ? formData.empresaAlquiler || '' : undefined,
     };
     try {
-      await saveEquipo(newEquipo);
+      const createdId = await saveEquipo(newEquipo);
+      if (solicitudContext && createdId) {
+        try {
+          const fn = httpsCallable(firebaseFunctions, 'approveSolicitudEquipoPaciente');
+          const payload: Record<string, unknown> = {
+            solicitudId: solicitudContext.id,
+            equipoId: createdId,
+          };
+          if (solicitudContext.tipoPropiedad === TipoPropiedad.ALQUILADO) {
+            payload.firmaEntrega = autoActaFirma;
+          }
+          await fn(payload);
+          if (solicitudContext.tipoPropiedad === TipoPropiedad.ALQUILADO) {
+            toast({
+              tone: 'success',
+              message: 'Equipo creado. Acta interna enviada al auxiliar para aceptación.',
+            });
+          } else {
+            toast({
+              tone: 'success',
+              message: 'Equipo creado y asignado automáticamente al paciente.',
+            });
+          }
+          setSolicitudesPendientes((prev) => prev.filter((s) => s.id !== solicitudContext.id));
+          setSolicitudContext(null);
+          setOpenSolicitud(null);
+          setSolicitudFotoUrls({});
+        } catch (err: any) {
+          console.error('Error aprobando solicitud:', err);
+          toast({
+            tone: 'error',
+            message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo aprobar la solicitud.'}`,
+          });
+          return;
+        }
+      }
       setIsModalOpen(false);
-      setFormData({ tipoPropiedad: TipoPropiedad.PROPIO, fechaIngreso: new Date().toISOString(), disponibleParaEntrega: false });
+      setFormData({ tipoPropiedad: TipoPropiedad.MEDICUC, fechaIngreso: new Date().toISOString(), disponibleParaEntrega: false });
       setSerialError(null);
     } catch (err: any) {
       console.error('Error guardando equipo:', err);
@@ -252,7 +388,28 @@ const Inventory: React.FC = () => {
 
   const openEdit = (equipo: EquipoBiomedico) => {
     if (!canEdit) return;
-    setFormData({ ...equipo, fechaIngreso: equipo.fechaIngreso || new Date().toISOString() });
+    setSolicitudContext(null);
+    setFormData({
+      ...equipo,
+      tipoPropiedad: normalizeTipoPropiedad(equipo.tipoPropiedad),
+      fechaIngreso: equipo.fechaIngreso || new Date().toISOString(),
+    });
+    setSerialError(null);
+    setIsModalOpen(true);
+  };
+
+  const openCreateFromSolicitud = (solicitud: SolicitudEquipoPaciente) => {
+    if (!canEdit) return;
+    setSolicitudContext(solicitud);
+    setFormData({
+      nombre: solicitud.equipoNombre || '',
+      numeroSerie: '',
+      tipoPropiedad: solicitud.tipoPropiedad,
+      fechaIngreso: new Date().toISOString(),
+      disponibleParaEntrega:
+        solicitud.tipoPropiedad === TipoPropiedad.PACIENTE || solicitud.tipoPropiedad === TipoPropiedad.MEDICUC,
+      empresaAlquiler: solicitud.tipoPropiedad === TipoPropiedad.ALQUILADO ? '' : undefined,
+    });
     setSerialError(null);
     setIsModalOpen(true);
   };
@@ -359,19 +516,6 @@ const Inventory: React.FC = () => {
     }
   };
 
-  const handleOwnerChange = (field: string, value: string) => {
-    setFormData(prev => ({
-      ...prev,
-      datosPropietario: {
-        nombre: '',
-        nit: '',
-        telefono: '',
-        ...(prev.datosPropietario || {}),
-        [field]: value
-      }
-    }));
-  };
-
   const handleDownloadTemplate = () => {
     // Se eliminó "CodigoInventario" porque ahora es automático
     const headers = [
@@ -379,13 +523,11 @@ const Inventory: React.FC = () => {
       "Nombre",
       "Marca",
       "Modelo",
-      "TipoPropiedad (PROPIO/EXTERNO)",
+      "TipoPropiedad (MEDICUC/PACIENTE/ALQUILADO/EMPLEADO)",
+      "EmpresaAlquiler (solo ALQUILADO)",
       "UbicacionInicial",
       "Observaciones",
-      "Propietario_Nombre",
-      "Propietario_NIT",
-      "Propietario_Telefono",
-      "FechaIngreso (YYYY-MM-DD)"
+      "FechaIngreso (YYYY-MM-DD)",
     ];
 
     const exampleRow = [
@@ -393,11 +535,11 @@ const Inventory: React.FC = () => {
       "Concentrador de Oxigeno",
       "Everflo",
       "Respironics",
-      "PROPIO",
+      "MEDICUC",
+      "",
       "Bodega",
       "Equipo nuevo",
-      "", "", "",
-      "2020-01-15"
+      "2020-01-15",
     ];
 
     const csvContent = "data:text/csv;charset=utf-8," 
@@ -436,8 +578,13 @@ const Inventory: React.FC = () => {
         if (columns.length < 4) continue; // Mínimo serie, nombre, marca, modelo
 
         // Índices ajustados al remover CodigoInventario
-        const tipoPropiedad = columns[4]?.trim().toUpperCase() === 'EXTERNO' ? TipoPropiedad.EXTERNO : TipoPropiedad.PROPIO;
-        const fechaIngresoStr = columns[10]?.trim();
+        const rawTipo = (columns[4] || '').trim().toUpperCase();
+        let tipoPropiedad: TipoPropiedad = TipoPropiedad.MEDICUC;
+        if (rawTipo === 'PACIENTE') tipoPropiedad = TipoPropiedad.PACIENTE;
+        else if (rawTipo === 'ALQUILADO' || rawTipo === 'EXTERNO') tipoPropiedad = TipoPropiedad.ALQUILADO;
+        else if (rawTipo === 'EMPLEADO') tipoPropiedad = TipoPropiedad.EMPLEADO;
+        else if (rawTipo === 'MEDICUC' || rawTipo === 'PROPIO') tipoPropiedad = TipoPropiedad.MEDICUC;
+        const fechaIngresoStr = columns[8]?.trim();
         const fechaIngresoIso = (() => {
           if (!fechaIngresoStr) return new Date().toISOString();
           const d = new Date(`${fechaIngresoStr}T12:00:00`);
@@ -452,17 +599,13 @@ const Inventory: React.FC = () => {
           marca: columns[2]?.trim() || '',
           modelo: columns[3]?.trim() || '',
           tipoPropiedad: tipoPropiedad,
+          empresaAlquiler: tipoPropiedad === TipoPropiedad.ALQUILADO ? columns[5]?.trim() || '' : undefined,
           fechaIngreso: fechaIngresoIso,
-          ubicacionActual: columns[5]?.trim() || 'Bodega',
-          observaciones: columns[6]?.trim() || '',
+          ubicacionActual: columns[6]?.trim() || 'Bodega',
+          observaciones: columns[7]?.trim() || '',
           estado: EstadoEquipo.DISPONIBLE,
-          disponibleParaEntrega: false,
+          disponibleParaEntrega: tipoPropiedad === TipoPropiedad.PACIENTE,
           custodioUid: usuario?.id,
-          datosPropietario: tipoPropiedad === TipoPropiedad.EXTERNO ? {
-             nombre: columns[7]?.trim() || '',
-             nit: columns[8]?.trim() || '',
-             telefono: columns[9]?.trim() || ''
-          } : undefined
         };
 
         try {
@@ -493,6 +636,24 @@ const Inventory: React.FC = () => {
       {firestoreError && (
         <div className="mb-4 bg-red-50 border border-red-200 text-red-800 rounded p-3 text-sm">
           {firestoreError}
+        </div>
+      )}
+      {canEdit && solicitudesPendientes.length > 0 && (
+        <div className="md-card p-3 mb-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+          <div className="text-sm text-gray-700">
+            Tienes <span className="font-semibold">{solicitudesPendientes.length}</span> solicitudes pendientes para
+            crear equipos en inventario.
+          </div>
+          <button
+            type="button"
+            className="md-btn md-btn-outlined"
+            onClick={() => {
+              const target = document.getElementById('solicitudes-paciente');
+              target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }}
+          >
+            Ver solicitudes
+          </button>
         </div>
       )}
       <div className="mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
@@ -562,7 +723,11 @@ const Inventory: React.FC = () => {
                Plantilla
             </button>
             <button 
-              onClick={() => { setFormData({ tipoPropiedad: TipoPropiedad.PROPIO, fechaIngreso: new Date().toISOString() }); setIsModalOpen(true); }}
+              onClick={() => {
+                setSolicitudContext(null);
+                setFormData({ tipoPropiedad: TipoPropiedad.MEDICUC, fechaIngreso: new Date().toISOString() });
+                setIsModalOpen(true);
+              }}
               className="md-btn md-btn-filled"
             >
               <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
@@ -572,11 +737,56 @@ const Inventory: React.FC = () => {
         )}
       </div>
 
+      {canEdit && (
+        <div id="solicitudes-paciente" className="md-card p-4 mb-6">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-bold text-gray-900">Solicitudes de equipos del paciente</div>
+              <div className="text-xs text-gray-500 mt-0.5">
+                Registros enviados por el visitador para crear equipos en el inventario.
+              </div>
+            </div>
+            <div className="text-xs text-gray-500">Pendientes: {solicitudesPendientes.length}</div>
+          </div>
+
+          <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
+            {solicitudesPendientes.length === 0 ? (
+              <div className="text-sm text-gray-500">No hay solicitudes pendientes.</div>
+            ) : (
+              solicitudesPendientes.slice(0, 6).map((s) => (
+                <div key={s.id} className="border rounded-lg p-3 bg-white">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-bold text-gray-900">{s.pacienteNombre}</div>
+                      <div className="text-xs text-gray-500">
+                        Doc: {s.pacienteDocumento} · Tipo: {s.tipoPropiedad}
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        Fotos: {s.fotos?.length || 0}
+                      </div>
+                    </div>
+                    <button
+                      className="md-btn md-btn-outlined"
+                      onClick={() => setOpenSolicitud(s)}
+                      type="button"
+                    >
+                      Revisar
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {filteredEquipos.map(equipo => (
           (() => {
             const active = activeAsignacionByEquipo.get(equipo.id);
             const status = getEffectiveStatus(equipo);
+            const propiedad = propiedadMeta(equipo.tipoPropiedad);
+            const tipoNormalizado = normalizeTipoPropiedad(equipo.tipoPropiedad);
             const ubicacion = (() => {
               if (!active) return equipo.ubicacionActual;
               if (active.tipo === 'PACIENTE') {
@@ -608,15 +818,11 @@ const Inventory: React.FC = () => {
             </div>
             
             <div className="mt-2 flex items-center">
-              {equipo.tipoPropiedad === TipoPropiedad.EXTERNO ? (
-                <span className="px-2 py-0.5 rounded text-[10px] uppercase font-bold bg-orange-100 text-orange-800 border border-orange-200">
-                  Externo
-                </span>
-              ) : (
-                <span className="px-2 py-0.5 rounded text-[10px] uppercase font-bold bg-blue-50 text-blue-800 border border-blue-100">
-                  Propio
-                </span>
-              )}
+              <span
+                className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold border ${propiedad.className}`}
+              >
+                {propiedad.label}
+              </span>
             </div>
 
             <div className="mt-4 pt-4 border-t border-gray-100 text-sm space-y-1">
@@ -627,9 +833,9 @@ const Inventory: React.FC = () => {
                   <span className="font-semibold">Ingreso:</span> {new Date(equipo.fechaIngreso).toLocaleDateString('es-CO')}
                 </p>
               )}
-              {equipo.tipoPropiedad === TipoPropiedad.EXTERNO && equipo.datosPropietario && (
-                 <p className="text-xs text-orange-700 mt-2 bg-orange-50 p-1 rounded">
-                   <strong>Propietario:</strong> {equipo.datosPropietario.nombre}
+              {tipoNormalizado === TipoPropiedad.ALQUILADO && equipo.empresaAlquiler && (
+                 <p className="text-xs text-amber-700 mt-2 bg-amber-50 p-1 rounded">
+                   <strong>Empresa alquiler:</strong> {equipo.empresaAlquiler}
                  </p>
               )}
             </div>
@@ -664,18 +870,125 @@ const Inventory: React.FC = () => {
             );
           })()
         ))}
-        {filteredEquipos.length === 0 && (
-          <div className="col-span-full py-12 text-center text-gray-500">
-             No se encontraron equipos con los criterios de búsqueda.
-          </div>
-        )}
+      {filteredEquipos.length === 0 && (
+        <div className="col-span-full py-12 text-center text-gray-500">
+           No se encontraron equipos con los criterios de búsqueda.
+        </div>
+      )}
       </div>
+
+      {openSolicitud && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[92vh] overflow-auto">
+            <div className="p-4 border-b flex items-center justify-between">
+              <div>
+                <div className="text-lg font-bold text-gray-900">Solicitud de equipo del paciente</div>
+                <div className="text-xs text-gray-500">
+                  {openSolicitud.pacienteNombre} · Doc: {openSolicitud.pacienteDocumento}
+                </div>
+              </div>
+              <button className="md-btn md-btn-outlined" onClick={() => setOpenSolicitud(null)} type="button">
+                Cerrar
+              </button>
+            </div>
+
+            <div className="p-4 space-y-4">
+              <div className="md-card p-4">
+                <div className="text-sm text-gray-700">
+                  <span className="font-semibold">Tipo propiedad:</span> {openSolicitud.tipoPropiedad}
+                </div>
+                {openSolicitud.equipoNombre && (
+                  <div className="text-sm text-gray-700 mt-2">
+                    <span className="font-semibold">Equipo reportado:</span> {openSolicitud.equipoNombre}
+                  </div>
+                )}
+                {openSolicitud.tipoPropiedad === TipoPropiedad.ALQUILADO && openSolicitud.empresaAlquiler && (
+                  <div className="text-sm text-gray-700 mt-2">
+                    <span className="font-semibold">Empresa de alquiler:</span> {openSolicitud.empresaAlquiler}
+                  </div>
+                )}
+                {openSolicitud.observaciones && (
+                  <div className="text-sm text-gray-700 mt-2">
+                    <span className="font-semibold">Observaciones:</span> {openSolicitud.observaciones}
+                  </div>
+                )}
+                {openSolicitud.createdAt && (
+                  <div className="text-xs text-gray-500 mt-2">
+                    Creada: {new Date(openSolicitud.createdAt).toLocaleDateString()}
+                  </div>
+                )}
+              </div>
+
+              <div className="md-card p-4">
+                <div className="text-sm font-semibold text-gray-900 mb-3">Fotos</div>
+                {openSolicitud.fotos?.length ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {openSolicitud.fotos.map((f, idx) => (
+                      <a
+                        key={f.path || idx}
+                        href={f.path ? solicitudFotoUrls[f.path] : undefined}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="block border rounded-lg overflow-hidden bg-gray-50"
+                      >
+                        {f.path && solicitudFotoUrls[f.path] ? (
+                          <img
+                            src={solicitudFotoUrls[f.path]}
+                            alt={`Foto ${idx + 1}`}
+                            className="w-full h-56 object-cover"
+                          />
+                        ) : (
+                          <div className="h-56 flex items-center justify-center text-sm text-gray-400">
+                            Cargando...
+                          </div>
+                        )}
+                        <div className="p-2 text-xs text-gray-500 truncate">{f.name}</div>
+                      </a>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-sm text-gray-500">Sin fotos.</div>
+                )}
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <button
+                  className="md-btn md-btn-outlined"
+                  onClick={() => setOpenSolicitud(null)}
+                  type="button"
+                >
+                  Cerrar
+                </button>
+                <button
+                  className="md-btn md-btn-filled"
+                  onClick={() => {
+                    if (!openSolicitud) return;
+                    openCreateFromSolicitud(openSolicitud);
+                    setOpenSolicitud(null);
+                  }}
+                  type="button"
+                >
+                  Crear equipo
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal Crear/Editar */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-start justify-center z-50 overflow-y-auto p-4">
           <div className="bg-white p-6 rounded-lg w-full max-w-lg max-h-[calc(100vh-2rem)] overflow-y-auto">
             <h3 className="text-xl font-bold mb-4">{formData.id ? 'Editar Equipo' : 'Nuevo Equipo'}</h3>
+            {solicitudContext && (
+              <div className="mb-4 border border-blue-100 bg-blue-50 text-blue-800 rounded-lg p-3 text-xs">
+                Creando equipo desde solicitud de paciente:{' '}
+                <span className="font-semibold">{solicitudContext.pacienteNombre}</span> ·{' '}
+                {solicitudContext.pacienteDocumento} · Tipo: {solicitudContext.tipoPropiedad}
+                <div className="mt-1 text-[11px] text-blue-700">El tipo de propiedad queda fijo según la solicitud.</div>
+              </div>
+            )}
             <form onSubmit={handleSave} className="space-y-4">
               
               <div className="grid grid-cols-2 gap-4">
@@ -683,7 +996,7 @@ const Inventory: React.FC = () => {
                     <label className="block text-sm font-medium">Código Inventario</label>
                     <input 
                       className="w-full border p-2 rounded bg-gray-100 text-gray-600 cursor-not-allowed" 
-                      value={formData.id ? formData.codigoInventario : 'Autogenerado (MBG-XXX)'} 
+                      value={formData.id ? formData.codigoInventario : 'Autogenerado (MBG/MBP/MBA/MBE)'} 
                       disabled 
                     />
                     <p className="text-xs text-gray-400 mt-1">
@@ -761,63 +1074,91 @@ const Inventory: React.FC = () => {
               {/* Selección de Propiedad */}
               <div>
                 <label className="block text-sm font-medium mb-1">Propiedad del Equipo</label>
-                <div className="flex gap-4">
-                  <label className="flex items-center space-x-2 border p-2 rounded w-full cursor-pointer hover:bg-gray-50">
-                    <input 
-                      type="radio" 
+                <div className="grid grid-cols-2 gap-3">
+                  <label
+                    className={`flex items-center space-x-2 border p-2 rounded w-full ${
+                      propiedadLocked ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer hover:bg-gray-50'
+                    }`}
+                  >
+                    <input
+                      type="radio"
                       name="tipoPropiedad"
-                      value={TipoPropiedad.PROPIO}
-                      checked={formData.tipoPropiedad === TipoPropiedad.PROPIO}
-                      onChange={() => setFormData({...formData, tipoPropiedad: TipoPropiedad.PROPIO})}
+                      value={TipoPropiedad.MEDICUC}
+                      checked={formData.tipoPropiedad === TipoPropiedad.MEDICUC}
+                      onChange={() => setFormData({ ...formData, tipoPropiedad: TipoPropiedad.MEDICUC })}
+                      disabled={propiedadLocked}
                     />
-                    <span>Propio (Medicuc)</span>
+                    <span>Medicuc</span>
                   </label>
-                  <label className="flex items-center space-x-2 border p-2 rounded w-full cursor-pointer hover:bg-gray-50">
-                    <input 
-                      type="radio" 
+                  <label
+                    className={`flex items-center space-x-2 border p-2 rounded w-full ${
+                      propiedadLocked ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer hover:bg-gray-50'
+                    }`}
+                  >
+                    <input
+                      type="radio"
                       name="tipoPropiedad"
-                      value={TipoPropiedad.EXTERNO}
-                      checked={formData.tipoPropiedad === TipoPropiedad.EXTERNO}
-                      onChange={() => setFormData({...formData, tipoPropiedad: TipoPropiedad.EXTERNO})}
+                      value={TipoPropiedad.PACIENTE}
+                      checked={formData.tipoPropiedad === TipoPropiedad.PACIENTE}
+                      onChange={() => setFormData({ ...formData, tipoPropiedad: TipoPropiedad.PACIENTE })}
+                      disabled={propiedadLocked}
                     />
-                    <span>Externo</span>
+                    <span>Paciente</span>
+                  </label>
+                  <label
+                    className={`flex items-center space-x-2 border p-2 rounded w-full ${
+                      propiedadLocked ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer hover:bg-gray-50'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="tipoPropiedad"
+                      value={TipoPropiedad.ALQUILADO}
+                      checked={formData.tipoPropiedad === TipoPropiedad.ALQUILADO}
+                      onChange={() => setFormData({ ...formData, tipoPropiedad: TipoPropiedad.ALQUILADO })}
+                      disabled={propiedadLocked}
+                    />
+                    <span>Alquilado</span>
+                  </label>
+                  <label
+                    className={`flex items-center space-x-2 border p-2 rounded w-full ${
+                      propiedadLocked ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer hover:bg-gray-50'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="tipoPropiedad"
+                      value={TipoPropiedad.EMPLEADO}
+                      checked={formData.tipoPropiedad === TipoPropiedad.EMPLEADO}
+                      onChange={() => setFormData({ ...formData, tipoPropiedad: TipoPropiedad.EMPLEADO })}
+                      disabled={propiedadLocked}
+                    />
+                    <span>Empleado</span>
                   </label>
                 </div>
               </div>
 
-              {/* Campos Condicionales para Externos */}
-              {formData.tipoPropiedad === TipoPropiedad.EXTERNO && (
-                <div className="bg-orange-50 p-4 rounded border border-orange-200 space-y-3">
-                  <h4 className="text-sm font-bold text-orange-800">Datos del Propietario</h4>
+              {formData.tipoPropiedad === TipoPropiedad.ALQUILADO && (
+                <div className="bg-amber-50 p-4 rounded border border-amber-200 space-y-3">
+                  <h4 className="text-sm font-bold text-amber-800">Empresa de alquiler</h4>
                   <div>
-                    <label className="block text-xs font-medium text-gray-700">Nombre Completo / Razón Social</label>
-                    <input 
-                      required 
-                      className="w-full border p-2 rounded text-sm focus:ring-orange-500"
-                      value={formData.datosPropietario?.nombre || ''} 
-                      onChange={e => handleOwnerChange('nombre', e.target.value)}
+                    <label className="block text-xs font-medium text-gray-700">Nombre de la empresa</label>
+                    <input
+                      required
+                      className="w-full border p-2 rounded text-sm focus:ring-amber-500"
+                      value={formData.empresaAlquiler || ''}
+                      onChange={(e) => setFormData({ ...formData, empresaAlquiler: e.target.value })}
                     />
                   </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-xs font-medium text-gray-700">Cédula o NIT</label>
-                      <input 
-                        required 
-                        className="w-full border p-2 rounded text-sm focus:ring-orange-500"
-                        value={formData.datosPropietario?.nit || ''} 
-                        onChange={e => handleOwnerChange('nit', e.target.value)}
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-700">Teléfono</label>
-                      <input 
-                        required 
-                        className="w-full border p-2 rounded text-sm focus:ring-orange-500"
-                        value={formData.datosPropietario?.telefono || ''} 
-                        onChange={e => handleOwnerChange('telefono', e.target.value)}
-                      />
-                    </div>
-                  </div>
+                  {solicitudContext && !formData.id && (
+                    <SignatureImageInput
+                      value={autoActaFirma}
+                      onChange={setAutoActaFirma}
+                      required
+                      label="Firma Biomédico (acta interna)"
+                      helperText="Se usará para generar el acta interna automáticamente."
+                    />
+                  )}
                 </div>
               )}
               
@@ -884,7 +1225,16 @@ const Inventory: React.FC = () => {
               </div>
 
               <div className="flex justify-end gap-2 pt-2">
-                <button type="button" onClick={() => setIsModalOpen(false)} className="px-4 py-2 border rounded hover:bg-gray-100">Cancelar</button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsModalOpen(false);
+                    setSolicitudContext(null);
+                  }}
+                  className="px-4 py-2 border rounded hover:bg-gray-100"
+                >
+                  Cancelar
+                </button>
                 <button type="submit" className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700">Guardar</button>
               </div>
             </form>

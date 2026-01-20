@@ -159,7 +159,9 @@ const ActaFormat: React.FC<ActaFormatProps> = ({ paciente, equipo, asignacion, t
         <p className="text-[10px] italic">
             {tipoActa === 'ENTREGA' ? asignacion.observacionesEntrega : asignacion.observacionesDevolucion}
             {equipo.codigoInventario && ` - Código Inventario: ${equipo.codigoInventario}`}
-            {equipo.tipoPropiedad === 'EXTERNO' && ` - PROPIEDAD DE TERCERO: ${equipo.datosPropietario?.nombre}`}
+            {equipo.tipoPropiedad === 'ALQUILADO' && equipo.empresaAlquiler
+              ? ` - ALQUILADO: ${equipo.empresaAlquiler}`
+              : ''}
         </p>
       </div>
 
@@ -190,7 +192,7 @@ const ActaFormat: React.FC<ActaFormatProps> = ({ paciente, equipo, asignacion, t
            <div className="border border-black mt-2">
               <div className="flex border-b border-black">
                  <div className="w-1/3 p-1 bg-gray-100 font-semibold border-r border-black text-[9px]">Nombre y apellidos</div>
-                 <div className="w-2/3 p-1 text-[9px]">{asignacion.usuarioAsigna}</div>
+                 <div className="w-2/3 p-1 text-[9px]">{asignacion.auxiliarNombre || asignacion.usuarioAsigna}</div>
               </div>
               <div className="flex border-b border-black">
                  <div className="w-1/3 p-1 bg-gray-100 font-semibold border-r border-black text-[9px]">Identificacion</div>

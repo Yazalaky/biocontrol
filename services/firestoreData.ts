@@ -22,7 +22,10 @@ import {
   EstadoEquipo,
   EstadoPaciente,
   EstadoReporteEquipo,
+  TipoPropiedad,
+  EstadoSolicitudEquipoPaciente,
   type ReporteEquipo,
+  type SolicitudEquipoPaciente,
   type ActaInterna,
   type Asignacion,
   type AsignacionProfesional,
@@ -38,6 +41,7 @@ const asignacionesCol = collection(db, 'asignaciones');
 const asignacionesProfesionalesCol = collection(db, 'asignaciones_profesionales');
 const actasInternasCol = collection(db, 'actas_internas');
 const reportesEquiposCol = collection(db, 'reportes_equipos');
+const solicitudesEquiposPacienteCol = collection(db, 'solicitudes_equipos_paciente');
 
 function assertRoleString(value: string, allowed: readonly string[], fieldName: string) {
   if (!allowed.includes(value)) {
@@ -77,8 +81,7 @@ async function getNextNumber(
   return (typeof last === 'number' && Number.isFinite(last) ? last : 0) + 1;
 }
 
-async function getNextMbgCode(): Promise<string> {
-  const prefix = 'MBG-';
+async function getNextCode(prefix: string): Promise<string> {
   const q = query(equiposCol);
   const snap = await getDocs(q);
   const used = new Set<number>();
@@ -98,6 +101,27 @@ async function getNextMbgCode(): Promise<string> {
   }
   return `${prefix}001`;
 }
+
+const normalizeTipoPropiedad = (tipo?: TipoPropiedad) => {
+  if (tipo === TipoPropiedad.PROPIO) return TipoPropiedad.MEDICUC;
+  if (tipo === TipoPropiedad.EXTERNO) return TipoPropiedad.ALQUILADO;
+  return tipo || TipoPropiedad.MEDICUC;
+};
+
+const prefixForTipo = (tipo?: TipoPropiedad) => {
+  const normalized = normalizeTipoPropiedad(tipo);
+  switch (normalized) {
+    case TipoPropiedad.PACIENTE:
+      return 'MBP-';
+    case TipoPropiedad.ALQUILADO:
+      return 'MBA-';
+    case TipoPropiedad.EMPLEADO:
+      return 'MBE-';
+    case TipoPropiedad.MEDICUC:
+    default:
+      return 'MBG-';
+  }
+};
 
 export function subscribePacientes(onData: (pacientes: Paciente[]) => void, onError?: (e: Error) => void) {
   const q = query(pacientesCol, orderBy('consecutivo', 'asc'));
@@ -449,6 +473,55 @@ export async function cerrarReporteEquipo(params: {
   );
 }
 
+export async function createSolicitudEquipoPaciente(solicitud: SolicitudEquipoPaciente) {
+  const ref = doc(solicitudesEquiposPacienteCol, solicitud.id);
+  const { id, createdAt, ...rest } = solicitud;
+  await setDoc(
+    ref,
+    stripUndefinedDeep({
+      ...rest,
+      createdAt: createdAt || new Date().toISOString(),
+    }) as any,
+  );
+}
+
+export function subscribeSolicitudesEquiposPacienteByUser(
+  uid: string,
+  onData: (solicitudes: SolicitudEquipoPaciente[]) => void,
+  onError?: (e: Error) => void,
+) {
+  const q = query(solicitudesEquiposPacienteCol, where('creadoPorUid', '==', uid));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const solicitudes = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<SolicitudEquipoPaciente, 'id'>) }));
+      solicitudes.sort(
+        (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime(),
+      );
+      onData(solicitudes);
+    },
+    (err) => onError?.(err as unknown as Error),
+  );
+}
+
+export function subscribeSolicitudesEquiposPacientePendientes(
+  onData: (solicitudes: SolicitudEquipoPaciente[]) => void,
+  onError?: (e: Error) => void,
+) {
+  const q = query(solicitudesEquiposPacienteCol, where('estado', '==', EstadoSolicitudEquipoPaciente.PENDIENTE));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const solicitudes = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<SolicitudEquipoPaciente, 'id'>) }));
+      solicitudes.sort(
+        (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime(),
+      );
+      onData(solicitudes);
+    },
+    (err) => onError?.(err as unknown as Error),
+  );
+}
+
 export function subscribeActasInternasPendientesCount(
   recibeUid: string,
   onCount: (count: number) => void,
@@ -534,7 +607,7 @@ export async function savePaciente(paciente: Paciente) {
   await addDoc(pacientesCol, stripUndefinedDeep({ ...rest, consecutivo }) as any);
 }
 
-export async function saveEquipo(equipo: EquipoBiomedico) {
+export async function saveEquipo(equipo: EquipoBiomedico): Promise<string | undefined> {
   assertRoleString(equipo.estado, Object.values(EstadoEquipo), 'estado');
   const numeroSerie = (equipo.numeroSerie || '').trim();
   if (numeroSerie) {
@@ -556,19 +629,24 @@ export async function saveEquipo(equipo: EquipoBiomedico) {
 
     const ref = doc(equiposCol, equipo.id);
     const { id, ...rest } = equipo;
-    await updateDoc(ref, stripUndefinedDeep({ ...rest, numeroSerie }) as any);
+    const payload = stripUndefinedDeep({ ...rest, numeroSerie }) as any;
+    if (normalizeTipoPropiedad(equipo.tipoPropiedad) !== TipoPropiedad.ALQUILADO) {
+      payload.empresaAlquiler = deleteField();
+    }
+    await updateDoc(ref, payload);
     return;
   }
 
-  const codigoInventario = await getNextMbgCode();
+  const codigoInventario = await getNextCode(prefixForTipo(equipo.tipoPropiedad));
   const { id: _id, ...rest } = equipo;
   // Por defecto, los equipos nuevos no quedan disponibles para entrega (legacy: equipos antiguos no tienen el campo).
   const disponibleParaEntrega =
     typeof equipo.disponibleParaEntrega === 'boolean' ? equipo.disponibleParaEntrega : false;
-  await addDoc(
+  const ref = await addDoc(
     equiposCol,
     stripUndefinedDeep({ ...rest, codigoInventario, disponibleParaEntrega, numeroSerie }) as any,
   );
+  return ref.id;
 }
 
 export async function isNumeroSerieDisponible(numeroSerie: string, excludeId?: string) {
@@ -591,10 +669,20 @@ export async function asignarEquipo(params: {
   observacionesEntrega: string;
   usuarioAsigna: string;
   firmaAuxiliar?: string;
+  auxiliarNombre?: string;
+  auxiliarUid?: string;
   fechaAsignacionIso?: string;
 }): Promise<Asignacion> {
-  const { idPaciente, idEquipo, observacionesEntrega, usuarioAsigna, firmaAuxiliar, fechaAsignacionIso } =
-    params;
+  const {
+    idPaciente,
+    idEquipo,
+    observacionesEntrega,
+    usuarioAsigna,
+    firmaAuxiliar,
+    auxiliarNombre,
+    auxiliarUid,
+    fechaAsignacionIso,
+  } = params;
 
   const activeEquipoQ = query(
     asignacionesCol,
@@ -628,6 +716,8 @@ export async function asignarEquipo(params: {
     observacionesEntrega,
     firmaAuxiliar,
     usuarioAsigna,
+    auxiliarNombre,
+    auxiliarUid,
   };
 
   const docRef = await addDoc(asignacionesCol, stripUndefinedDeep(asignacion) as any);
@@ -688,11 +778,21 @@ export async function guardarFirmaPaciente(params: {
   } as any);
 }
 
-export async function guardarFirmaAuxiliar(params: { idAsignacion: string; dataUrl: string | null }) {
+export async function guardarFirmaAuxiliar(params: {
+  idAsignacion: string;
+  dataUrl: string | null;
+  auxiliarNombre?: string;
+  auxiliarUid?: string;
+}) {
   const ref = doc(asignacionesCol, params.idAsignacion);
-  await updateDoc(ref, {
-    firmaAuxiliar: params.dataUrl ? params.dataUrl : deleteField(),
-  } as any);
+  await updateDoc(
+    ref,
+    stripUndefinedDeep({
+      firmaAuxiliar: params.dataUrl ? params.dataUrl : deleteField(),
+      auxiliarNombre: params.auxiliarNombre || undefined,
+      auxiliarUid: params.auxiliarUid || undefined,
+    }) as any,
+  );
 }
 
 export async function guardarFirmaEntregaVisitador(params: {

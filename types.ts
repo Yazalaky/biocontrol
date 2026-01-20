@@ -23,6 +23,11 @@ export enum EstadoEquipo {
 }
 
 export enum TipoPropiedad {
+  MEDICUC = 'MEDICUC',
+  PACIENTE = 'PACIENTE',
+  ALQUILADO = 'ALQUILADO',
+  EMPLEADO = 'EMPLEADO',
+  // Legacy
   PROPIO = 'PROPIO',
   EXTERNO = 'EXTERNO',
 }
@@ -113,6 +118,8 @@ export interface EquipoBiomedico {
   ubicacionActual?: string; 
   observaciones: string;
   tipoPropiedad: TipoPropiedad;
+  // Empresa de alquiler (solo cuando tipoPropiedad = ALQUILADO).
+  empresaAlquiler?: string;
   datosPropietario?: {
     nombre: string;
     nit: string;
@@ -144,6 +151,9 @@ export interface Asignacion {
   firmaPacienteEntregaCapturadaPorNombre?: string;
   // Firma del auxiliar (DataURL base64) guardada en Firestore para auditoría/consistencia del acta.
   firmaAuxiliar?: string;
+  // Datos del auxiliar para impresión del acta.
+  auxiliarNombre?: string;
+  auxiliarUid?: string;
   usuarioAsigna: string; 
 }
 
@@ -205,6 +215,7 @@ export interface ActaInterna {
   recibeUid: string;
   recibeNombre: string;
   recibeEmail?: string;
+  solicitudIds?: string[];
   estado: EstadoActaInterna;
   items: ActaInternaItem[];
   firmaEntrega?: string;
@@ -214,6 +225,11 @@ export interface ActaInterna {
 export enum EstadoReporteEquipo {
   ABIERTO = 'ABIERTO',
   CERRADO = 'CERRADO',
+}
+
+export enum EstadoSolicitudEquipoPaciente {
+  PENDIENTE = 'PENDIENTE',
+  APROBADA = 'APROBADA',
 }
 
 export interface ReporteFoto {
@@ -251,4 +267,27 @@ export interface ReporteEquipo {
   cerradoPorUid?: string;
   cerradoPorNombre?: string;
   cierreNotas?: string;
+}
+
+export interface SolicitudEquipoPaciente {
+  id: string;
+  estado: EstadoSolicitudEquipoPaciente;
+  idPaciente: string;
+  pacienteNombre: string;
+  pacienteDocumento: string;
+  tipoPropiedad: TipoPropiedad;
+  equipoNombre?: string;
+  empresaAlquiler?: string;
+  observaciones?: string;
+  fotos: ReporteFoto[];
+  creadoPorUid: string;
+  creadoPorNombre: string;
+  createdAt?: string;
+  aprobadoAt?: string;
+  aprobadoPorUid?: string;
+  aprobadoPorNombre?: string;
+  equipoId?: string;
+  asignacionId?: string;
+  actaInternaId?: string;
+  actaInternaEstado?: EstadoActaInterna;
 }

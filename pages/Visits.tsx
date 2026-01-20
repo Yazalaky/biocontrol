@@ -1,36 +1,50 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
 import { collection, doc, getDocs, limit, query, where } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
 import Layout from '../components/Layout';
 import { toast } from '../services/feedback';
 import SignaturePad from '../components/SignaturePad';
 import { useAuth } from '../contexts/AuthContext';
 import { db, storage } from '../services/firebase';
+import { firebaseFunctions } from '../services/firebaseFunctions';
 import {
   cerrarReporteEquipo,
   createReporteEquipo,
-  guardarFirmaEntregaVisitador,
+  createSolicitudEquipoPaciente,
   marcarReporteVistoPorVisitador,
   subscribeAsignacionesActivas,
   subscribeEquiposAsignadosActivos,
   subscribePacientesConAsignacionActiva,
   subscribeReportesEquipos,
   subscribeReportesEquiposByUser,
+  subscribeSolicitudesEquiposPacienteByUser,
 } from '../services/firestoreData';
 import {
   EstadoAsignacion,
+  EstadoActaInterna,
   EstadoReporteEquipo,
+  EstadoSolicitudEquipoPaciente,
   RolUsuario,
+  TipoPropiedad,
   type Asignacion,
   type EquipoBiomedico,
   type Paciente,
   type ReporteEquipo,
   type ReporteFoto,
+  type SolicitudEquipoPaciente,
 } from '../types';
 
 const MAX_FOTOS = 5;
 const MAX_MB = 5;
 const MAX_BYTES = MAX_MB * 1024 * 1024;
+const MIN_SOLICITUD_FOTOS = 3;
+
+type PacienteLite = {
+  id: string;
+  nombreCompleto: string;
+  numeroDocumento: string;
+};
 
 function todayInput() {
   const now = new Date();
@@ -64,6 +78,9 @@ const Visits: React.FC = () => {
   const [pacientes, setPacientes] = useState<Paciente[]>([]);
   const [equipos, setEquipos] = useState<EquipoBiomedico[]>([]);
   const [asignaciones, setAsignaciones] = useState<Asignacion[]>([]);
+  const [pacientesSinAsignacion, setPacientesSinAsignacion] = useState<PacienteLite[]>([]);
+  const [loadingPacientesSinAsignacion, setLoadingPacientesSinAsignacion] = useState(false);
+  const [solicitudes, setSolicitudes] = useState<SolicitudEquipoPaciente[]>([]);
 
   // BIOMEDICO data
   const [reportes, setReportes] = useState<ReporteEquipo[]>([]);
@@ -91,11 +108,45 @@ const Visits: React.FC = () => {
             (e) => setFirestoreError(`No tienes permisos para leer tus reportes. Detalle: ${e.message}`),
           )
         : () => {};
+      const unsubSolicitudes = usuario?.id
+        ? subscribeSolicitudesEquiposPacienteByUser(
+            usuario.id,
+            setSolicitudes,
+            (e) => setFirestoreError(`No tienes permisos para leer tus solicitudes. Detalle: ${e.message}`),
+          )
+        : () => {};
+
+      const loadPacientesSinAsignacion = async () => {
+        setLoadingPacientesSinAsignacion(true);
+        try {
+          const fn = httpsCallable(firebaseFunctions, 'listPacientesSinAsignacion');
+          const res = await fn();
+          const data = res.data as { pacientes?: Array<{ id?: string; nombre?: string; doc?: string }> };
+          const items = (data.pacientes || [])
+            .map((p) => ({
+              id: p.id || '',
+              nombreCompleto: p.nombre || '',
+              numeroDocumento: p.doc || '',
+            }))
+            .filter((p) => p.id);
+          setPacientesSinAsignacion(items);
+        } catch (err: any) {
+          console.error('listPacientesSinAsignacion error:', err);
+          setFirestoreError(
+            `No se pudo cargar pacientes sin asignacion. Detalle: ${err?.message || 'Error desconocido'}`,
+          );
+        } finally {
+          setLoadingPacientesSinAsignacion(false);
+        }
+      };
+
+      loadPacientesSinAsignacion();
       return () => {
         unsubPacientes();
         unsubEquipos();
         unsubAsignaciones();
         unsubReportes();
+        unsubSolicitudes();
       };
     }
 
@@ -136,6 +187,31 @@ const Visits: React.FC = () => {
     );
   };
 
+  const matchesPacienteQuery = (q: string, paciente: PacienteLite) => {
+    if (!q) return true;
+    const term = q.toLowerCase();
+    return (
+      paciente.nombreCompleto.toLowerCase().includes(term) ||
+      paciente.numeroDocumento.includes(term)
+    );
+  };
+
+  const solicitudStatusMeta = (solicitud: SolicitudEquipoPaciente) => {
+    if (solicitud.estado === EstadoSolicitudEquipoPaciente.APROBADA) {
+      if (
+        solicitud.tipoPropiedad === TipoPropiedad.ALQUILADO &&
+        solicitud.actaInternaEstado === EstadoActaInterna.ENVIADA
+      ) {
+        return {
+          label: 'APROBADA · ACTA INTERNA PENDIENTE',
+          className: 'bg-amber-50 text-amber-800 border-amber-200',
+        };
+      }
+      return { label: 'APROBADA', className: 'bg-emerald-50 text-emerald-700 border-emerald-200' };
+    }
+    return { label: 'PENDIENTE', className: 'bg-amber-50 text-amber-700 border-amber-200' };
+  };
+
   const [pendingSearch, setPendingSearch] = useState('');
   const pendingFirmasAll = useMemo(
     () => asignacionesActivasEnriquecidas.filter(({ a }) => !a.firmaPacienteEntrega),
@@ -153,14 +229,22 @@ const Visits: React.FC = () => {
     return asignacionesActivasEnriquecidas.filter(({ paciente, equipo }) => matchesQuery(q, paciente!, equipo!));
   }, [asignacionesActivasEnriquecidas, search]);
 
+  const [pacientesSinAsignacionSearch, setPacientesSinAsignacionSearch] = useState('');
+  const pacientesSinAsignacionFiltered = useMemo(() => {
+    const q = pacientesSinAsignacionSearch.trim().toLowerCase();
+    return pacientesSinAsignacion.filter((p) => matchesPacienteQuery(q, p));
+  }, [pacientesSinAsignacion, pacientesSinAsignacionSearch]);
+
+  const [visitadorTab, setVisitadorTab] = useState<'PENDIENTES' | 'HISTORIAL' | 'REPORTES'>('PENDIENTES');
+
   // Tabs y detalle de reportes (VISITADOR y BIOMEDICO)
-  const [tab, setTab] = useState<'ABIERTO' | 'CERRADO'>('ABIERTO');
+  const [reporteTab, setReporteTab] = useState<'ABIERTO' | 'CERRADO'>('ABIERTO');
   const reportesFiltrados = useMemo(() => {
-    const wanted = tab === 'ABIERTO' ? EstadoReporteEquipo.ABIERTO : EstadoReporteEquipo.CERRADO;
+    const wanted = reporteTab === 'ABIERTO' ? EstadoReporteEquipo.ABIERTO : EstadoReporteEquipo.CERRADO;
     return reportes
       .filter((r) => r.estado === wanted)
       .sort((a, b) => new Date(b.fechaVisita).getTime() - new Date(a.fechaVisita).getTime());
-  }, [reportes, tab]);
+  }, [reportes, reporteTab]);
 
   const [openReporte, setOpenReporte] = useState<ReporteEquipo | null>(null);
   const [fotoUrls, setFotoUrls] = useState<Record<string, string>>({});
@@ -178,12 +262,31 @@ const Visits: React.FC = () => {
   const [descripcion, setDescripcion] = useState('');
   const [files, setFiles] = useState<File[]>([]);
 
+  const [openSolicitud, setOpenSolicitud] = useState<PacienteLite | null>(null);
+  const [solicitudTipo, setSolicitudTipo] = useState<TipoPropiedad>(TipoPropiedad.PACIENTE);
+  const [solicitudEquipoNombre, setSolicitudEquipoNombre] = useState('');
+  const [solicitudEmpresa, setSolicitudEmpresa] = useState('');
+  const [solicitudObservaciones, setSolicitudObservaciones] = useState('');
+  const [solicitudFiles, setSolicitudFiles] = useState<File[]>([]);
+  const [solicitudSaving, setSolicitudSaving] = useState(false);
+  const solicitudCameraRef = useRef<HTMLInputElement>(null);
+
   const previews = useMemo(() => files.map((f) => ({ file: f, url: URL.createObjectURL(f) })), [files]);
   useEffect(() => {
     return () => {
       for (const p of previews) URL.revokeObjectURL(p.url);
     };
   }, [previews]);
+
+  const solicitudPreviews = useMemo(
+    () => solicitudFiles.map((f) => ({ file: f, url: URL.createObjectURL(f) })),
+    [solicitudFiles],
+  );
+  useEffect(() => {
+    return () => {
+      for (const p of solicitudPreviews) URL.revokeObjectURL(p.url);
+    };
+  }, [solicitudPreviews]);
 
   const onPickFiles = (picked: FileList | null) => {
     if (!picked) return;
@@ -217,6 +320,117 @@ const Visits: React.FC = () => {
     setDescripcion('');
     setFiles([]);
     setCreating(false);
+  };
+
+  const onPickSolicitudFiles = (picked: FileList | null) => {
+    if (!picked) return;
+    const list = Array.from(picked);
+    const merged = [...solicitudFiles];
+    for (const f of list) {
+      if (merged.length >= MAX_FOTOS) break;
+      if (!isAllowedImage(f)) {
+        toast({ tone: 'warning', message: `Archivo no soportado: ${f.name}. Usa PNG o JPG/JPEG.` });
+        continue;
+      }
+      if (f.size > MAX_BYTES) {
+        toast({ tone: 'warning', message: `"${f.name}" supera ${MAX_MB}MB. Reduce el tamaño y vuelve a intentar.` });
+        continue;
+      }
+      merged.push(f);
+    }
+    if (merged.length > MAX_FOTOS) merged.length = MAX_FOTOS;
+    setSolicitudFiles(merged);
+  };
+
+  const removeSolicitudFile = (index: number) => {
+    setSolicitudFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const resetSolicitud = () => {
+    setOpenSolicitud(null);
+    setSolicitudTipo(TipoPropiedad.PACIENTE);
+    setSolicitudEquipoNombre('');
+    setSolicitudEmpresa('');
+    setSolicitudObservaciones('');
+    setSolicitudFiles([]);
+    setSolicitudSaving(false);
+  };
+
+  const submitSolicitud = async () => {
+    if (!usuario || !openSolicitud) return;
+    if (!solicitudEquipoNombre.trim()) {
+      toast({ tone: 'warning', message: 'Escribe el nombre del equipo.' });
+      return;
+    }
+    if (solicitudTipo === TipoPropiedad.ALQUILADO && !solicitudEmpresa.trim()) {
+      toast({ tone: 'warning', message: 'Escribe la empresa que alquila el equipo.' });
+      return;
+    }
+    if (solicitudFiles.length < MIN_SOLICITUD_FOTOS) {
+      toast({
+        tone: 'warning',
+        message: `Debes adjuntar al menos ${MIN_SOLICITUD_FOTOS} fotos.`,
+      });
+      return;
+    }
+    if (solicitudFiles.length > MAX_FOTOS) {
+      toast({ tone: 'warning', message: `Máximo ${MAX_FOTOS} fotos.` });
+      return;
+    }
+    const alreadyPending = solicitudes.find(
+      (s) => s.idPaciente === openSolicitud.id && s.estado === EstadoSolicitudEquipoPaciente.PENDIENTE,
+    );
+    if (alreadyPending) {
+      toast({
+        tone: 'warning',
+        message: 'Ya existe una solicitud pendiente para este paciente.',
+      });
+      return;
+    }
+
+    setSolicitudSaving(true);
+    try {
+      const solicitudId = doc(collection(db, 'solicitudes_equipos_paciente')).id;
+      const fotos: ReporteFoto[] = [];
+      for (let i = 0; i < solicitudFiles.length; i += 1) {
+        const f = solicitudFiles[i]!;
+        const safeName = sanitizeFileName(f.name || `foto-${i + 1}.jpg`);
+        const storagePath = `solicitudes_equipos_paciente/${usuario.id}/${solicitudId}/${Date.now()}-${i + 1}-${safeName}`;
+        const refFile = storageRef(storage, storagePath);
+        await uploadBytes(refFile, f, { contentType: f.type });
+        fotos.push({ path: storagePath, name: f.name, size: f.size, contentType: f.type });
+      }
+
+      const solicitud: SolicitudEquipoPaciente = {
+        id: solicitudId,
+        estado: EstadoSolicitudEquipoPaciente.PENDIENTE,
+        idPaciente: openSolicitud.id,
+        pacienteNombre: openSolicitud.nombreCompleto,
+        pacienteDocumento: openSolicitud.numeroDocumento,
+        tipoPropiedad: solicitudTipo,
+        equipoNombre: solicitudEquipoNombre.trim(),
+        empresaAlquiler: solicitudTipo === TipoPropiedad.ALQUILADO ? solicitudEmpresa.trim() : undefined,
+        observaciones: solicitudObservaciones.trim() || undefined,
+        fotos,
+        creadoPorUid: usuario.id,
+        creadoPorNombre: usuario.nombre,
+        createdAt: new Date().toISOString(),
+      };
+
+      await createSolicitudEquipoPaciente(solicitud);
+      toast({
+        tone: 'success',
+        message: 'Solicitud enviada al biomédico.',
+      });
+      resetSolicitud();
+    } catch (e: any) {
+      console.error('submitSolicitud error:', e);
+      toast({
+        tone: 'error',
+        message: `${e?.code ? `${e.code}: ` : ''}${e?.message || 'No se pudo enviar la solicitud.'}`,
+      });
+      setSolicitudSaving(false);
+    }
   };
 
   // Modal firma de ENTREGA (VISITADOR)
@@ -254,13 +468,14 @@ const Visits: React.FC = () => {
       return;
     }
 
+    const nombreCaptura = (usuario.nombre || '').trim() || 'VISITADOR';
     setSavingFirma(true);
     try {
-      await guardarFirmaEntregaVisitador({
+      const fn = httpsCallable(firebaseFunctions, 'guardarFirmaEntregaVisitador');
+      await fn({
         idAsignacion: openFirma.asignacion.id,
-        dataUrl: firmaEntrega,
-        capturadoPorUid: usuario.id,
-        capturadoPorNombre: usuario.nombre,
+        firmaEntrega,
+        capturadoPorNombre: nombreCaptura,
       });
       toast({ tone: 'success', message: 'Firma registrada correctamente.' });
       resetFirma();
@@ -475,239 +690,421 @@ const Visits: React.FC = () => {
 
       {isVisitador && (
         <div className="space-y-4">
-          {/* Firmas de entrega pendientes (VISITADOR) */}
-          <div className="md-card p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-sm font-bold text-gray-900">Firmas de entrega pendientes</div>
-                <div className="text-xs text-gray-500 mt-0.5">
-                  Captura la firma del paciente en el domicilio para dejar evidencia en el acta de entrega.
+          <div className="md-card p-2 flex flex-wrap gap-2">
+            <button
+              className={`md-btn ${visitadorTab === 'PENDIENTES' ? 'md-btn-filled' : 'md-btn-outlined'}`}
+              onClick={() => setVisitadorTab('PENDIENTES')}
+              type="button"
+            >
+              Pendientes
+            </button>
+            <button
+              className={`md-btn ${visitadorTab === 'HISTORIAL' ? 'md-btn-filled' : 'md-btn-outlined'}`}
+              onClick={() => setVisitadorTab('HISTORIAL')}
+              type="button"
+            >
+              Historial
+            </button>
+            <button
+              className={`md-btn ${visitadorTab === 'REPORTES' ? 'md-btn-filled' : 'md-btn-outlined'}`}
+              onClick={() => setVisitadorTab('REPORTES')}
+              type="button"
+            >
+              Reportes
+            </button>
+          </div>
+
+          {visitadorTab === 'PENDIENTES' && (
+            <div className="space-y-4">
+              {/* Firmas de entrega pendientes (VISITADOR) */}
+              <div className="md-card p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-bold text-gray-900">Firmas de entrega pendientes</div>
+                    <div className="text-xs text-gray-500 mt-0.5">
+                      Captura la firma del paciente en el domicilio para dejar evidencia en el acta de entrega.
+                    </div>
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    Pendientes:{' '}
+                    {pendingFirmasFiltered.length}
+                    {pendingSearch.trim() ? ` / ${pendingFirmasAll.length}` : ''}
+                  </div>
                 </div>
-              </div>
-              <div className="text-xs text-gray-500">
-                Pendientes:{' '}
-                {pendingFirmasFiltered.length}
-                {pendingSearch.trim() ? ` / ${pendingFirmasAll.length}` : ''}
-              </div>
-            </div>
 
-            <div className="mt-3 md-search max-w-xl">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="11" cy="11" r="7" />
-                <path d="M21 21l-4.3-4.3" />
-              </svg>
-              <input
-                type="text"
-                placeholder="Buscar por paciente, documento, MBG o serie..."
-                value={pendingSearch}
-                onChange={(e) => setPendingSearch(e.target.value)}
-              />
-            </div>
+                <div className="mt-3 md-search max-w-xl">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="11" cy="11" r="7" />
+                    <path d="M21 21l-4.3-4.3" />
+                  </svg>
+                  <input
+                    type="text"
+                    placeholder="Buscar por paciente, documento, MBG o serie..."
+                    value={pendingSearch}
+                    onChange={(e) => setPendingSearch(e.target.value)}
+                  />
+                </div>
 
-            <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
-              {pendingFirmasAll.length === 0 ? (
-                <div className="text-sm text-gray-500">No hay firmas pendientes.</div>
-              ) : pendingFirmasFiltered.length === 0 ? (
-                <div className="text-sm text-gray-500">No hay firmas pendientes con ese filtro.</div>
-              ) : (
-                pendingFirmasFiltered
-                  .slice(0, 6)
-                  .map(({ a, paciente, equipo }) => (
-                    <div key={a.id} className="border rounded-lg p-3 bg-white">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="text-sm font-bold text-gray-900">{paciente!.nombreCompleto}</div>
-                          <div className="text-xs text-gray-500">
-                            Doc: {paciente!.numeroDocumento} · Equipo:{' '}
-                            <span className="font-mono">{equipo!.codigoInventario}</span>
-                          </div>
-                          <div className="text-xs text-gray-500">
-                            {equipo!.nombre} · Serie: <span className="font-mono">{equipo!.numeroSerie}</span>
+                <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
+                  {pendingFirmasAll.length === 0 ? (
+                    <div className="text-sm text-gray-500">No hay firmas pendientes.</div>
+                  ) : pendingFirmasFiltered.length === 0 ? (
+                    <div className="text-sm text-gray-500">No hay firmas pendientes con ese filtro.</div>
+                  ) : (
+                    pendingFirmasFiltered
+                      .slice(0, 6)
+                      .map(({ a, paciente, equipo }) => (
+                        <div key={a.id} className="border rounded-lg p-3 bg-white">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="text-sm font-bold text-gray-900">{paciente!.nombreCompleto}</div>
+                              <div className="text-xs text-gray-500">
+                                Doc: {paciente!.numeroDocumento} · Equipo:{' '}
+                                <span className="font-mono">{equipo!.codigoInventario}</span>
+                              </div>
+                              <div className="text-xs text-gray-500">
+                                {equipo!.nombre} · Serie: <span className="font-mono">{equipo!.numeroSerie}</span>
+                              </div>
+                            </div>
+                            <button
+                              className="md-btn md-btn-outlined"
+                              onClick={() => {
+                                setOpenFirma({ asignacion: a, paciente: paciente!, equipo: equipo! });
+                                setFirmaEntrega(null);
+                              }}
+                              type="button"
+                            >
+                              Capturar firma
+                            </button>
                           </div>
                         </div>
-                        <button
-                          className="md-btn md-btn-outlined"
+                      ))
+                  )}
+                </div>
+              </div>
+
+              {/* Equipos del paciente por registrar (VISITADOR) */}
+              <div className="md-card p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-bold text-gray-900">Equipos del paciente por registrar</div>
+                    <div className="text-xs text-gray-500 mt-0.5">
+                      Pacientes sin asignación activa. Registra el equipo como propio o alquilado.
+                    </div>
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    Total: {pacientesSinAsignacionFiltered.length}
+                    {pacientesSinAsignacionSearch.trim()
+                      ? ` / ${pacientesSinAsignacion.length}`
+                      : ''}
+                  </div>
+                </div>
+
+                <div className="mt-3 md-search max-w-xl">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="11" cy="11" r="7" />
+                    <path d="M21 21l-4.3-4.3" />
+                  </svg>
+                  <input
+                    type="text"
+                    placeholder="Buscar por paciente o cédula..."
+                    value={pacientesSinAsignacionSearch}
+                    onChange={(e) => setPacientesSinAsignacionSearch(e.target.value)}
+                  />
+                </div>
+
+                <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
+                  {loadingPacientesSinAsignacion ? (
+                    <div className="text-sm text-gray-500">Cargando pacientes...</div>
+                  ) : pacientesSinAsignacion.length === 0 ? (
+                    <div className="text-sm text-gray-500">No hay pacientes sin asignación activa.</div>
+                  ) : pacientesSinAsignacionFiltered.length === 0 ? (
+                    <div className="text-sm text-gray-500">No hay pacientes con ese filtro.</div>
+                  ) : (
+                    pacientesSinAsignacionFiltered.slice(0, 8).map((p) => {
+                      const pendiente = solicitudes.find(
+                        (s) => s.idPaciente === p.id && s.estado === EstadoSolicitudEquipoPaciente.PENDIENTE,
+                      );
+                      return (
+                        <div key={p.id} className="border rounded-lg p-3 bg-white">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="text-sm font-bold text-gray-900">{p.nombreCompleto}</div>
+                              <div className="text-xs text-gray-500">Doc: {p.numeroDocumento}</div>
+                              {pendiente ? (
+                                <div className="text-xs text-amber-700 mt-1">Solicitud pendiente</div>
+                              ) : null}
+                            </div>
+                            <button
+                              className="md-btn md-btn-outlined"
                           onClick={() => {
-                            setOpenFirma({ asignacion: a, paciente: paciente!, equipo: equipo! });
-                            setFirmaEntrega(null);
+                            setOpenSolicitud(p);
+                            setSolicitudTipo(TipoPropiedad.PACIENTE);
+                            setSolicitudEquipoNombre('');
+                            setSolicitudEmpresa('');
+                            setSolicitudObservaciones('');
+                            setSolicitudFiles([]);
                           }}
-                          type="button"
-                        >
-                          Capturar firma
-                        </button>
-                      </div>
-                    </div>
-                  ))
-              )}
-            </div>
-          </div>
-
-          {/* Firmas capturadas (VISITADOR) */}
-          <div className="md-card p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-sm font-bold text-gray-900">Firmas capturadas</div>
-                <div className="text-xs text-gray-500 mt-0.5">
-                  Historial de firmas de entrega registradas por ti.
-                </div>
-              </div>
-              <div className="text-xs text-gray-500">
-                Total:{' '}
-                {
-                  asignacionesActivasEnriquecidas.filter(
-                    ({ a }) => !!a.firmaPacienteEntrega && a.firmaPacienteEntregaCapturadaPorUid === usuario.id,
-                  ).length
-                }
-              </div>
-            </div>
-
-            <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
-              {asignacionesActivasEnriquecidas.filter(
-                ({ a }) => !!a.firmaPacienteEntrega && a.firmaPacienteEntregaCapturadaPorUid === usuario.id,
-              ).length === 0 ? (
-                <div className="text-sm text-gray-500">Aún no has capturado firmas.</div>
-              ) : (
-                asignacionesActivasEnriquecidas
-                  .filter(({ a }) => !!a.firmaPacienteEntrega && a.firmaPacienteEntregaCapturadaPorUid === usuario.id)
-                  .slice(0, 6)
-                  .map(({ a, paciente, equipo }) => (
-                    <div key={a.id} className="border rounded-lg p-3 bg-white">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="text-sm font-bold text-gray-900">{paciente!.nombreCompleto}</div>
-                          <div className="text-xs text-gray-500">
-                            Equipo: <span className="font-mono">{equipo!.codigoInventario}</span> ·{' '}
-                            {a.firmaPacienteEntregaCapturadaAt
-                              ? `Capturada: ${new Date(a.firmaPacienteEntregaCapturadaAt).toLocaleDateString()}`
-                              : 'Capturada'}
+                              type="button"
+                              disabled={!!pendiente}
+                            >
+                              Registrar equipo
+                            </button>
                           </div>
                         </div>
-                        <button
-                          className="md-btn md-btn-outlined"
-                          onClick={() => setOpenFirmaView({ asignacion: a, paciente: paciente!, equipo: equipo! })}
-                          type="button"
-                        >
-                          Ver firma
-                        </button>
-                      </div>
-                    </div>
-                  ))
-              )}
-            </div>
-          </div>
-
-          {/* Resumen/historial del visitador */}
-          <div className="md-card p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="text-sm font-bold text-gray-900">Mis reportes</div>
-                <div className="text-xs text-gray-500">
-                  Abiertos: {reportes.filter((r) => r.estado === EstadoReporteEquipo.ABIERTO).length} · Cerrados:{' '}
-                  {reportes.filter((r) => r.estado === EstadoReporteEquipo.CERRADO).length}
+                      );
+                    })
+                  )}
                 </div>
               </div>
-              <div className="flex gap-2">
-                <button
-                  className={`md-btn ${tab === 'ABIERTO' ? 'md-btn-filled' : 'md-btn-outlined'}`}
-                  onClick={() => setTab('ABIERTO')}
-                  type="button"
-                >
-                  Abiertos
-                </button>
-                <button
-                  className={`md-btn ${tab === 'CERRADO' ? 'md-btn-filled' : 'md-btn-outlined'}`}
-                  onClick={() => setTab('CERRADO')}
-                  type="button"
-                >
-                  Cerrados
-                </button>
+            </div>
+          )}
+
+          {visitadorTab === 'HISTORIAL' && (
+            <div className="space-y-4">
+              {/* Solicitudes enviadas (VISITADOR) */}
+              <div className="md-card p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-bold text-gray-900">Solicitudes enviadas</div>
+                    <div className="text-xs text-gray-500 mt-0.5">
+                      Historial de registros enviados al biomédico.
+                    </div>
+                  </div>
+                  <div className="text-xs text-gray-500">Total: {solicitudes.length}</div>
+                </div>
+
+                <div className="mt-3 space-y-2">
+                  {solicitudes.length === 0 ? (
+                    <div className="text-sm text-gray-500">Aún no has creado solicitudes.</div>
+                  ) : (
+                solicitudes.slice(0, 6).map((s) => {
+                  const meta = solicitudStatusMeta(s);
+                  return (
+                        <div key={s.id} className="border rounded-lg p-3 bg-white">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="text-sm font-bold text-gray-900">{s.pacienteNombre}</div>
+                          <div className="text-xs text-gray-500">
+                            Doc: {s.pacienteDocumento} · Tipo: {s.tipoPropiedad}
+                          </div>
+                          {s.equipoNombre && (
+                            <div className="text-xs text-gray-500">Equipo: {s.equipoNombre}</div>
+                          )}
+                          {s.tipoPropiedad === TipoPropiedad.ALQUILADO && s.empresaAlquiler && (
+                            <div className="text-xs text-gray-500">
+                              Empresa: <span className="font-medium">{s.empresaAlquiler}</span>
+                            </div>
+                          )}
+                              {s.aprobadoAt ? (
+                                <div className="text-xs text-gray-500 mt-1">
+                                  Aprobada: {new Date(s.aprobadoAt).toLocaleDateString()}
+                                </div>
+                              ) : null}
+                            </div>
+                            <span className={`px-2 py-1 rounded-full text-xs border ${meta.className}`}>
+                              {meta.label}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              {/* Firmas capturadas (VISITADOR) */}
+              <div className="md-card p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-bold text-gray-900">Firmas capturadas</div>
+                    <div className="text-xs text-gray-500 mt-0.5">
+                      Historial de firmas de entrega registradas por ti.
+                    </div>
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    Total:{' '}
+                    {
+                      asignacionesActivasEnriquecidas.filter(
+                        ({ a }) => !!a.firmaPacienteEntrega && a.firmaPacienteEntregaCapturadaPorUid === usuario.id,
+                      ).length
+                    }
+                  </div>
+                </div>
+
+                <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
+                  {asignacionesActivasEnriquecidas.filter(
+                    ({ a }) => !!a.firmaPacienteEntrega && a.firmaPacienteEntregaCapturadaPorUid === usuario.id,
+                  ).length === 0 ? (
+                    <div className="text-sm text-gray-500">Aún no has capturado firmas.</div>
+                  ) : (
+                    asignacionesActivasEnriquecidas
+                      .filter(({ a }) => !!a.firmaPacienteEntrega && a.firmaPacienteEntregaCapturadaPorUid === usuario.id)
+                      .slice(0, 6)
+                      .map(({ a, paciente, equipo }) => (
+                        <div key={a.id} className="border rounded-lg p-3 bg-white">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="text-sm font-bold text-gray-900">{paciente!.nombreCompleto}</div>
+                              <div className="text-xs text-gray-500">
+                                Equipo: <span className="font-mono">{equipo!.codigoInventario}</span> ·{' '}
+                                {a.firmaPacienteEntregaCapturadaAt
+                                  ? `Capturada: ${new Date(a.firmaPacienteEntregaCapturadaAt).toLocaleDateString()}`
+                                  : 'Capturada'}
+                              </div>
+                            </div>
+                            <button
+                              className="md-btn md-btn-outlined"
+                              onClick={() => setOpenFirmaView({ asignacion: a, paciente: paciente!, equipo: equipo! })}
+                              type="button"
+                            >
+                              Ver firma
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                  )}
+                </div>
               </div>
             </div>
+          )}
 
-            <div className="mt-4 space-y-2">
-              {reportesFiltrados.length === 0 ? (
-                <div className="text-sm text-gray-500">Sin reportes {tab === 'ABIERTO' ? 'abiertos' : 'cerrados'}.</div>
-              ) : (
-                reportesFiltrados.slice(0, 8).map((r) => (
-                  <button
-                    key={r.id}
-                    className="w-full text-left border rounded-lg p-3 hover:bg-gray-50"
-                    onClick={() => setOpenReporte(r)}
-                    type="button"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="text-sm font-semibold text-gray-900">
-                          {r.equipoCodigoInventario} · {r.pacienteNombre}
-                        </div>
-                        <div className="text-xs text-gray-500">
-                          {new Date(r.fechaVisita).toLocaleDateString()} · {r.estado}
-                          {r.cerradoAt ? ` · Cerrado: ${new Date(r.cerradoAt).toLocaleDateString()}` : ''}
-                        </div>
-                        {r.cierreNotas ? <div className="text-xs text-gray-600 mt-1">{r.cierreNotas}</div> : null}
-                      </div>
-                      <span className="text-xs font-semibold text-indigo-600 underline">Ver</span>
+          {visitadorTab === 'REPORTES' && (
+            <div className="space-y-4">
+              {/* Resumen/historial del visitador */}
+              <div className="md-card p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-bold text-gray-900">Mis reportes</div>
+                    <div className="text-xs text-gray-500">
+                      Abiertos: {reportes.filter((r) => r.estado === EstadoReporteEquipo.ABIERTO).length} · Cerrados:{' '}
+                      {reportes.filter((r) => r.estado === EstadoReporteEquipo.CERRADO).length}
                     </div>
-                  </button>
-                ))
-              )}
-            </div>
-          </div>
-
-          <div className="md-search max-w-xl">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="11" cy="11" r="7" />
-              <path d="M21 21l-4.3-4.3" />
-            </svg>
-            <input
-              type="text"
-              placeholder="Buscar por paciente, documento, MBG o serie..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-          </div>
-
-          {filteredAsignaciones.length === 0 ? (
-            <div className="md-card p-6 text-sm text-gray-600">
-              No hay asignaciones activas visibles para tu usuario.
-              <div className="text-xs text-gray-500 mt-2">
-                Si ya existen asignaciones en el sistema, pide al administrador que ejecute la función de “recalcular flags VISITADOR”.
-              </div>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              {filteredAsignaciones.map(({ a, paciente, equipo }) => (
-                <div key={a.id} className="md-card p-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <div className="text-sm font-bold text-gray-900">{paciente!.nombreCompleto}</div>
-                      <div className="text-xs text-gray-500">
-                        Doc: {paciente!.numeroDocumento} · Equipo: <span className="font-mono">{equipo!.codigoInventario}</span>
-                      </div>
-                      <div className="text-xs text-gray-500">
-                        {equipo!.nombre} · Serie: <span className="font-mono">{equipo!.numeroSerie}</span>
-                      </div>
-                    </div>
-	                  <button
-	                      className="md-btn md-btn-filled"
-	                      onClick={() => {
-	                        // Bloqueo de duplicados por idAsignacion: si ya existe reporte abierto, mostramos el existente.
-	                        if (openReporteByAsignacion(a.id)) return;
-	                        setOpenCreate({ asignacion: a, paciente: paciente!, equipo: equipo! });
-	                        setFechaVisita(todayInput());
-	                        setDescripcion('');
-	                        setFiles([]);
-	                      }}
-	                    >
-                      Reportar
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      className={`md-btn ${reporteTab === 'ABIERTO' ? 'md-btn-filled' : 'md-btn-outlined'}`}
+                      onClick={() => setReporteTab('ABIERTO')}
+                      type="button"
+                    >
+                      Abiertos
+                    </button>
+                    <button
+                      className={`md-btn ${reporteTab === 'CERRADO' ? 'md-btn-filled' : 'md-btn-outlined'}`}
+                      onClick={() => setReporteTab('CERRADO')}
+                      type="button"
+                    >
+                      Cerrados
                     </button>
                   </div>
                 </div>
-              ))}
+
+                <div className="mt-4 space-y-2">
+                  {reportesFiltrados.length === 0 ? (
+                    <div className="text-sm text-gray-500">
+                      Sin reportes {reporteTab === 'ABIERTO' ? 'abiertos' : 'cerrados'}.
+                    </div>
+                  ) : (
+                    reportesFiltrados.slice(0, 8).map((r) => (
+                      <button
+                        key={r.id}
+                        className="w-full text-left border rounded-lg p-3 hover:bg-gray-50"
+                        onClick={() => setOpenReporte(r)}
+                        type="button"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="text-sm font-semibold text-gray-900">
+                              {r.equipoCodigoInventario} · {r.pacienteNombre}
+                            </div>
+                            <div className="text-xs text-gray-500">
+                              {new Date(r.fechaVisita).toLocaleDateString()} · {r.estado}
+                              {r.cerradoAt ? ` · Cerrado: ${new Date(r.cerradoAt).toLocaleDateString()}` : ''}
+                            </div>
+                            {r.cierreNotas ? <div className="text-xs text-gray-600 mt-1">{r.cierreNotas}</div> : null}
+                          </div>
+                          <span className="text-xs font-semibold text-indigo-600 underline">Ver</span>
+                        </div>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div className="md-card p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-bold text-gray-900">Crear reporte</div>
+                    <div className="text-xs text-gray-500 mt-0.5">
+                      Selecciona una asignación activa para reportar hallazgos o fallas del equipo.
+                    </div>
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    Total: {filteredAsignaciones.length}
+                    {search.trim() ? ` / ${asignacionesActivasEnriquecidas.length}` : ''}
+                  </div>
+                </div>
+
+                <div className="mt-3 md-search max-w-xl">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="11" cy="11" r="7" />
+                    <path d="M21 21l-4.3-4.3" />
+                  </svg>
+                  <input
+                    type="text"
+                    placeholder="Buscar por paciente, documento, MBG o serie..."
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                  />
+                </div>
+
+                <div className="mt-4">
+                  {filteredAsignaciones.length === 0 ? (
+                    <div className="text-sm text-gray-600">
+                      No hay asignaciones activas visibles para tu usuario.
+                      <div className="text-xs text-gray-500 mt-2">
+                        Si ya existen asignaciones en el sistema, pide al administrador que ejecute la función de “recalcular flags VISITADOR”.
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                      {filteredAsignaciones.map(({ a, paciente, equipo }) => (
+                        <div key={a.id} className="border rounded-lg p-3 bg-white">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="text-sm font-bold text-gray-900">{paciente!.nombreCompleto}</div>
+                              <div className="text-xs text-gray-500">
+                                Doc: {paciente!.numeroDocumento} · Equipo: <span className="font-mono">{equipo!.codigoInventario}</span>
+                              </div>
+                              <div className="text-xs text-gray-500">
+                                {equipo!.nombre} · Serie: <span className="font-mono">{equipo!.numeroSerie}</span>
+                              </div>
+                            </div>
+                            <button
+                              className="md-btn md-btn-filled"
+                              onClick={() => {
+                                // Bloqueo de duplicados por idAsignacion: si ya existe reporte abierto, mostramos el existente.
+                                if (openReporteByAsignacion(a.id)) return;
+                                setOpenCreate({ asignacion: a, paciente: paciente!, equipo: equipo! });
+                                setFechaVisita(todayInput());
+                                setDescripcion('');
+                                setFiles([]);
+                              }}
+                              type="button"
+                            >
+                              Reportar
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           )}
-	        </div>
-	      )}
+        </div>
+      )}
 
 	      {/* Modal firma de entrega (VISITADOR) */}
       {openFirma && (
@@ -752,14 +1149,14 @@ const Visits: React.FC = () => {
 	        <div className="space-y-4">
           <div className="flex items-center gap-2">
             <button
-              className={`md-btn ${tab === 'ABIERTO' ? 'md-btn-filled' : 'md-btn-outlined'}`}
-              onClick={() => setTab('ABIERTO')}
+              className={`md-btn ${reporteTab === 'ABIERTO' ? 'md-btn-filled' : 'md-btn-outlined'}`}
+              onClick={() => setReporteTab('ABIERTO')}
             >
               Abiertos
             </button>
             <button
-              className={`md-btn ${tab === 'CERRADO' ? 'md-btn-filled' : 'md-btn-outlined'}`}
-              onClick={() => setTab('CERRADO')}
+              className={`md-btn ${reporteTab === 'CERRADO' ? 'md-btn-filled' : 'md-btn-outlined'}`}
+              onClick={() => setReporteTab('CERRADO')}
             >
               Cerrados
             </button>
@@ -780,7 +1177,7 @@ const Visits: React.FC = () => {
                 {reportesFiltrados.length === 0 ? (
                   <tr>
                     <td colSpan={5} className="py-8 text-center text-gray-500">
-                      No hay reportes {tab.toLowerCase()}.
+                      No hay reportes {reporteTab.toLowerCase()}.
                     </td>
                   </tr>
                 ) : (
@@ -926,6 +1323,143 @@ const Visits: React.FC = () => {
                 </button>
                 <button className="md-btn md-btn-filled" onClick={submitReporte} disabled={creating}>
                   {creating ? 'Guardando...' : 'Guardar reporte'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal solicitud equipo paciente (VISITADOR) */}
+      {openSolicitud && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[92vh] overflow-auto">
+            <div className="p-4 border-b flex items-center justify-between">
+              <div>
+                <div className="text-lg font-bold text-gray-900">Registrar equipo del paciente</div>
+                <div className="text-xs text-gray-500">
+                  {openSolicitud.nombreCompleto} · Doc: {openSolicitud.numeroDocumento}
+                </div>
+              </div>
+              <button className="md-btn md-btn-outlined" onClick={resetSolicitud} disabled={solicitudSaving}>
+                Cerrar
+              </button>
+            </div>
+
+            <div className="p-4 space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Tipo de propiedad</label>
+                  <select
+                    className="w-full border p-2.5 rounded-md"
+                    value={solicitudTipo}
+                    onChange={(e) => {
+                      const next = e.target.value as TipoPropiedad;
+                      setSolicitudTipo(next);
+                      if (next !== TipoPropiedad.ALQUILADO) {
+                        setSolicitudEmpresa('');
+                      }
+                    }}
+                    disabled={solicitudSaving}
+                  >
+                    <option value={TipoPropiedad.PACIENTE}>Paciente</option>
+                    <option value={TipoPropiedad.ALQUILADO}>Alquilado</option>
+                    <option value={TipoPropiedad.MEDICUC}>Medicuc</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Nombre del equipo</label>
+                  <input
+                    className="w-full border p-2.5 rounded-md"
+                    value={solicitudEquipoNombre}
+                    onChange={(e) => setSolicitudEquipoNombre(e.target.value)}
+                    placeholder="Ej: Concentrador de oxígeno"
+                    disabled={solicitudSaving}
+                  />
+                </div>
+                {solicitudTipo === TipoPropiedad.ALQUILADO && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">Empresa que alquila</label>
+                    <input
+                      className="w-full border p-2.5 rounded-md"
+                      value={solicitudEmpresa}
+                      onChange={(e) => setSolicitudEmpresa(e.target.value)}
+                      placeholder="Ej: Empresa X"
+                      disabled={solicitudSaving}
+                    />
+                  </div>
+                )}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">
+                    Fotos del equipo (mín {MIN_SOLICITUD_FOTOS}, máx {MAX_FOTOS})
+                  </label>
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg"
+                    multiple
+                    className="w-full border p-2.5 rounded-md bg-white"
+                    onChange={(e) => onPickSolicitudFiles(e.target.files)}
+                    disabled={solicitudSaving}
+                  />
+                  <input
+                    ref={solicitudCameraRef}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    className="hidden"
+                    onChange={(e) => onPickSolicitudFiles(e.target.files)}
+                    disabled={solicitudSaving}
+                  />
+                  <div className="text-xs text-gray-500 mt-1">Máximo {MAX_MB}MB por foto.</div>
+                  <button
+                    type="button"
+                    className="md-btn md-btn-outlined mt-2"
+                    onClick={() => solicitudCameraRef.current?.click()}
+                    disabled={solicitudSaving}
+                  >
+                    Tomar foto
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Observaciones (opcional)</label>
+                <textarea
+                  className="w-full border p-2.5 rounded-md"
+                  rows={3}
+                  value={solicitudObservaciones}
+                  onChange={(e) => setSolicitudObservaciones(e.target.value)}
+                  placeholder="Ej: equipo propio del paciente, modelo visible en etiqueta, etc."
+                  disabled={solicitudSaving}
+                />
+              </div>
+
+              {solicitudFiles.length > 0 && (
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                  {solicitudPreviews.map((p, idx) => (
+                    <div key={idx} className="border rounded-lg overflow-hidden bg-gray-50">
+                      <img src={p.url} alt={`Foto ${idx + 1}`} className="w-full h-32 object-cover" />
+                      <div className="p-2 flex items-center justify-between gap-2">
+                        <div className="text-xs text-gray-500 truncate">{p.file.name}</div>
+                        <button
+                          className="text-xs text-red-600 hover:underline"
+                          onClick={() => removeSolicitudFile(idx)}
+                          type="button"
+                        >
+                          Quitar
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button className="md-btn md-btn-outlined" onClick={resetSolicitud} disabled={solicitudSaving}>
+                  Cancelar
+                </button>
+                <button className="md-btn md-btn-filled" onClick={submitSolicitud} disabled={solicitudSaving}>
+                  {solicitudSaving ? 'Enviando...' : 'Enviar solicitud'}
                 </button>
               </div>
             </div>

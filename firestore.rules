@@ -168,6 +168,57 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // --- SOLICITUDES EQUIPOS PACIENTE (VISITADOR -> BIOMEDICO) ---
+    match /solicitudes_equipos_paciente/{id} {
+      allow create: if isSignedIn()
+        && isVisitador()
+        && request.resource.data.estado == "PENDIENTE"
+        && request.resource.data.creadoPorUid == request.auth.uid
+        && request.resource.data.creadoPorNombre is string
+        && request.resource.data.idPaciente is string
+        && request.resource.data.pacienteNombre is string
+        && request.resource.data.pacienteDocumento is string
+        && request.resource.data.tipoPropiedad in ["PACIENTE", "ALQUILADO", "MEDICUC"]
+        && request.resource.data.equipoNombre is string
+        && (
+          request.resource.data.tipoPropiedad != "ALQUILADO"
+          || request.resource.data.empresaAlquiler is string
+        )
+        && request.resource.data.fotos.size() >= 3
+        && request.resource.data.fotos.size() <= 5;
+
+      allow read: if isSignedIn() && (
+        isBiomedico()
+        || isGerencia()
+        || (isVisitador() && resource.data.creadoPorUid == request.auth.uid)
+      );
+
+      allow update: if isSignedIn()
+        && isBiomedico()
+        && resource.data.estado == "PENDIENTE"
+        && request.resource.data.estado == "APROBADA"
+        && request.resource.data.aprobadoPorUid == request.auth.uid
+        && request.resource.data.aprobadoPorNombre is string
+        && request.resource.data.aprobadoAt is string
+        && request.resource.data.equipoId is string
+        && request.resource.data.creadoPorUid == resource.data.creadoPorUid
+        && request.resource.data.idPaciente == resource.data.idPaciente
+        && request.resource.data.tipoPropiedad == resource.data.tipoPropiedad
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          "estado",
+          "aprobadoAt",
+          "aprobadoPorUid",
+          "aprobadoPorNombre",
+          "equipoId",
+          "asignacionId",
+          "actaInternaId",
+          "actaInternaEstado",
+          "updatedAt"
+        ]);
+
+      allow delete: if false;
+    }
+
     // --- DENY DEFAULT ---
     match /{document=**} {
       allow read, write: if false;

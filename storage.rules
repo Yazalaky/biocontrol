@@ -29,10 +29,22 @@ service firebase.storage {
           || hasRole('GERENCIA'));
     }
 
+    // Fotos de solicitudes de equipos del paciente (VISITADOR)
+    match /solicitudes_equipos_paciente/{uid}/{solicitudId}/{fileName} {
+      allow write: if isSignedIn()
+        && request.auth.uid == uid
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/(png|jpeg)');
+
+      allow read: if isSignedIn()
+        && (request.auth.uid == uid
+          || hasRole('INGENIERO_BIOMEDICO')
+          || hasRole('GERENCIA'));
+    }
+
     // Deny by default
     match /{allPaths=**} {
       allow read, write: if false;
     }
   }
 }
-

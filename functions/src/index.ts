@@ -7,7 +7,11 @@ import {
 import {auth as authTriggers} from "firebase-functions/v1";
 import {initializeApp} from "firebase-admin/app";
 import {getAuth} from "firebase-admin/auth";
-import {FieldValue, getFirestore} from "firebase-admin/firestore";
+import {
+  FieldValue,
+  getFirestore,
+  type QueryDocumentSnapshot,
+} from "firebase-admin/firestore";
 
 setGlobalOptions({maxInstances: 10, region: "us-central1"});
 
@@ -267,6 +271,74 @@ export const listAuxiliares = onCall(async (request) => {
 });
 
 /**
+ * 3.2) LISTAR PACIENTES SIN ASIGNACION ACTIVA (VISITADOR).
+ * Retorna id, nombreCompleto y numeroDocumento.
+ *
+ * Se expone como callable para evitar abrir lectura masiva en rules.
+ */
+export const listPacientesSinAsignacion = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
+  }
+
+  await assertCallerHasRole(request.auth.uid, "VISITADOR");
+
+  const [falseSnap, nullSnap, activeSnap, pacientesSnap] = await Promise.all([
+    db.collection("pacientes")
+      .where("tieneAsignacionActiva", "==", false)
+      .limit(500)
+      .get(),
+    db.collection("pacientes")
+      .where("tieneAsignacionActiva", "==", null)
+      .limit(500)
+      .get(),
+    db.collection("asignaciones")
+      .where("estado", "==", "ACTIVA")
+      .limit(2000)
+      .get(),
+    db.collection("pacientes")
+      .limit(2000)
+      .get(),
+  ]);
+
+  const activeSet = new Set<string>();
+  for (const docSnap of activeSnap.docs) {
+    const data = docSnap.data() as Record<string, unknown>;
+    const idPaciente =
+      typeof data.idPaciente === "string" ? data.idPaciente : "";
+    if (idPaciente) activeSet.add(idPaciente);
+  }
+
+  const map = new Map<string, {id: string; nombre: string; doc: string}>();
+  const addPaciente = (docSnap: QueryDocumentSnapshot) => {
+    const data = docSnap.data() as Record<string, unknown>;
+    const nombre =
+      typeof data.nombreCompleto === "string" ? data.nombreCompleto : "";
+    const doc =
+      typeof data.numeroDocumento === "string" ? data.numeroDocumento : "";
+    map.set(docSnap.id, {id: docSnap.id, nombre, doc});
+  };
+
+  for (const docSnap of falseSnap.docs) addPaciente(docSnap);
+  for (const docSnap of nullSnap.docs) addPaciente(docSnap);
+
+  for (const docSnap of pacientesSnap.docs) {
+    if (activeSet.has(docSnap.id)) continue;
+    if (map.has(docSnap.id)) continue;
+    addPaciente(docSnap);
+  }
+
+  const pacientes = Array.from(map.values()).sort((a, b) =>
+    a.nombre.localeCompare(b.nombre, "es"),
+  );
+
+  return {pacientes};
+});
+
+/**
  * Recalcula flags para VISITADOR basándose en asignaciones activas.
  * Útil como paso de migración inicial (cuando ya existen asignaciones previas).
  *
@@ -376,6 +448,99 @@ export const rebuildVisitadorFlags = onCall(async (request) => {
     pacientesActivos: pacientesSet.size,
     equiposActivos: equiposSet.size,
   };
+});
+
+/**
+ * 3.3) VISITADOR: guardar firma de entrega del paciente.
+ * Actualiza la asignación activa con firma y auditoría.
+ */
+export const guardarFirmaEntregaVisitador = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
+  }
+
+  const callerUid = request.auth.uid;
+  await assertCallerHasRole(callerUid, "VISITADOR");
+
+  const data = request.data as {
+    idAsignacion?: unknown;
+    firmaEntrega?: unknown;
+    capturadoPorNombre?: unknown;
+  };
+  const idAsignacion = assertNonEmptyString(data.idAsignacion, "idAsignacion");
+  const firmaEntrega = assertNonEmptyString(data.firmaEntrega, "firmaEntrega");
+  const capturadoPorNombre =
+    typeof data.capturadoPorNombre === "string" ?
+      data.capturadoPorNombre.trim() :
+      "";
+  if (!capturadoPorNombre) {
+    throw new HttpsError(
+      "invalid-argument",
+      "capturadoPorNombre es requerido.",
+    );
+  }
+
+  const asignacionRef = db.doc(`asignaciones/${idAsignacion}`);
+  const asignacionSnap = await asignacionRef.get();
+  if (!asignacionSnap.exists) {
+    throw new HttpsError("not-found", "La asignación no existe.");
+  }
+
+  const asignacion = asignacionSnap.data() as Record<string, unknown>;
+  const estado = typeof asignacion.estado === "string" ? asignacion.estado : "";
+  if (estado !== "ACTIVA") {
+    throw new HttpsError(
+      "failed-precondition",
+      "La asignación no está en estado ACTIVA.",
+    );
+  }
+
+  const firmaActual =
+    typeof asignacion.firmaPacienteEntrega === "string" ?
+      asignacion.firmaPacienteEntrega.trim() :
+      "";
+  if (firmaActual) {
+    throw new HttpsError(
+      "failed-precondition",
+      "La asignación ya tiene firma registrada.",
+    );
+  }
+
+  let auxiliarNombre = "";
+  let auxiliarUid = "";
+  const auxActual =
+    typeof asignacion.auxiliarNombre === "string" ?
+      asignacion.auxiliarNombre.trim() :
+      "";
+  if (!auxActual) {
+    const auxSnap = await db
+      .collection("users")
+      .where("rol", "==", "AUXILIAR_ADMINISTRATIVA")
+      .limit(1)
+      .get();
+    if (!auxSnap.empty) {
+      const auxDoc = auxSnap.docs[0];
+      const auxData = auxDoc.data() as Record<string, unknown>;
+      auxiliarUid = auxDoc.id;
+      auxiliarNombre =
+        typeof auxData.nombre === "string" ? auxData.nombre : "";
+    }
+  }
+
+  await asignacionRef.update({
+    firmaPacienteEntrega: firmaEntrega,
+    firmaPacienteEntregaCapturadaAt: new Date().toISOString(),
+    firmaPacienteEntregaCapturadaPorUid: callerUid,
+    firmaPacienteEntregaCapturadaPorNombre: capturadoPorNombre,
+    ...(auxiliarNombre ? {auxiliarNombre} : {}),
+    ...(auxiliarUid ? {auxiliarUid} : {}),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+
+  return {ok: true};
 });
 
 /**
@@ -813,6 +978,17 @@ export const acceptInternalActa = onCall(async (request) => {
     });
   }
 
+  const solicitudIds = Array.isArray(acta.solicitudIds) ?
+    acta.solicitudIds.filter((x) => typeof x === "string") :
+    [];
+  for (const solicitudId of solicitudIds) {
+    const solicitudRef = db.doc(`solicitudes_equipos_paciente/${solicitudId}`);
+    batch.update(solicitudRef, {
+      actaInternaEstado: "ACEPTADA",
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  }
+
   await batch.commit();
   return {ok: true};
 });
@@ -881,6 +1057,263 @@ export const cancelInternalActa = onCall(async (request) => {
 });
 
 /**
+ * 8) SOLICITUDES: aprobar solicitud de equipo del paciente.
+ * Crea asignación automática si la propiedad es PACIENTE.
+ */
+export const approveSolicitudEquipoPaciente = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
+  }
+
+  const callerUid = request.auth.uid;
+  await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
+
+  const data = request.data as {
+    solicitudId?: unknown;
+    equipoId?: unknown;
+    firmaEntrega?: unknown;
+  };
+  const solicitudId = assertNonEmptyString(data.solicitudId, "solicitudId");
+  const equipoId = assertNonEmptyString(data.equipoId, "equipoId");
+  const firmaEntrega =
+    typeof data.firmaEntrega === "string" ? data.firmaEntrega.trim() : "";
+
+  const solicitudRef = db.doc(`solicitudes_equipos_paciente/${solicitudId}`);
+  const equipoRef = db.doc(`equipos/${equipoId}`);
+
+  const [solicitudSnap, equipoSnap, userSnap] = await Promise.all([
+    solicitudRef.get(),
+    equipoRef.get(),
+    db.doc(`users/${callerUid}`).get(),
+  ]);
+
+  if (!solicitudSnap.exists) {
+    throw new HttpsError("not-found", "La solicitud no existe.");
+  }
+  if (!equipoSnap.exists) {
+    throw new HttpsError("not-found", "El equipo no existe.");
+  }
+
+  const solicitud = solicitudSnap.data() as Record<string, unknown>;
+  const estado = typeof solicitud.estado === "string" ? solicitud.estado : "";
+  if (estado !== "PENDIENTE") {
+    throw new HttpsError(
+      "failed-precondition",
+      "La solicitud no está en estado PENDIENTE.",
+    );
+  }
+
+  const idPaciente =
+    typeof solicitud.idPaciente === "string" ? solicitud.idPaciente : "";
+  const tipoPropiedad =
+    typeof solicitud.tipoPropiedad === "string" ? solicitud.tipoPropiedad : "";
+  const observaciones =
+    typeof solicitud.observaciones === "string" ? solicitud.observaciones : "";
+  if (!idPaciente) {
+    throw new HttpsError(
+      "failed-precondition",
+      "La solicitud no tiene paciente válido.",
+    );
+  }
+  if (
+    tipoPropiedad !== "PACIENTE" &&
+    tipoPropiedad !== "ALQUILADO" &&
+    tipoPropiedad !== "MEDICUC"
+  ) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Tipo de propiedad inválido en la solicitud.",
+    );
+  }
+
+  const equipoData = equipoSnap.data() as Record<string, unknown>;
+  const equipoTipo =
+    typeof equipoData.tipoPropiedad === "string" ?
+      equipoData.tipoPropiedad :
+      "";
+  if (equipoTipo && equipoTipo !== tipoPropiedad) {
+    throw new HttpsError(
+      "failed-precondition",
+      "La propiedad del equipo no coincide con la solicitud.",
+    );
+  }
+
+  const userData = userSnap.data() as Record<string, unknown>;
+  const aprobadoPorNombre =
+    typeof userData.nombre === "string" ? userData.nombre : "Biomedico";
+
+  const auxSnap = await db
+    .collection("users")
+    .where("rol", "==", "AUXILIAR_ADMINISTRATIVA")
+    .limit(1)
+    .get();
+  const auxDoc = auxSnap.empty ? null : auxSnap.docs[0];
+  const auxData = auxDoc ? (auxDoc.data() as Record<string, unknown>) : {};
+  const auxUid = auxDoc ? auxDoc.id : "";
+  const auxNombre =
+    typeof auxData.nombre === "string" ? auxData.nombre : "";
+  const auxEmail =
+    typeof auxData.email === "string" ? auxData.email : "";
+
+  let asignacionId = "";
+  let actaInternaId = "";
+  if (tipoPropiedad === "PACIENTE" || tipoPropiedad === "MEDICUC") {
+    const activeSnap = await db.collection("asignaciones")
+      .where("idEquipo", "==", equipoId)
+      .where("estado", "==", "ACTIVA")
+      .limit(1)
+      .get();
+    if (!activeSnap.empty) {
+      throw new HttpsError(
+        "failed-precondition",
+        "El equipo ya tiene una asignación activa.",
+      );
+    }
+    const pacienteSnap = await db.collection("asignaciones")
+      .where("idPaciente", "==", idPaciente)
+      .where("estado", "==", "ACTIVA")
+      .limit(1)
+      .get();
+    if (!pacienteSnap.empty) {
+      throw new HttpsError(
+        "failed-precondition",
+        "El paciente ya tiene una asignación activa.",
+      );
+    }
+
+    const lastSnap = await db.collection("asignaciones")
+      .orderBy("consecutivo", "desc")
+      .limit(1)
+      .get();
+    const last = lastSnap.docs[0]?.data()?.consecutivo;
+    const consecutivo =
+      typeof last === "number" && Number.isFinite(last) ? last + 1 : 1;
+
+    const nowIso = new Date().toISOString();
+    const asignacion = {
+      consecutivo,
+      idPaciente,
+      idEquipo: equipoId,
+      fechaAsignacion: nowIso,
+      fechaActualizacionEntrega: nowIso,
+      estado: "ACTIVA",
+      observacionesEntrega: observaciones || "Registro por visitador.",
+      usuarioAsigna: aprobadoPorNombre,
+      auxiliarNombre: auxNombre || undefined,
+      auxiliarUid: auxUid || undefined,
+    };
+    const ref = await db.collection("asignaciones").add(asignacion);
+    asignacionId = ref.id;
+  }
+
+  if (tipoPropiedad === "ALQUILADO") {
+    if (!firmaEntrega) {
+      throw new HttpsError(
+        "invalid-argument",
+        "firmaEntrega es requerida para crear el acta interna.",
+      );
+    }
+
+    if (!auxDoc) {
+      throw new HttpsError(
+        "failed-precondition",
+        "No hay auxiliares disponibles para recibir el acta interna.",
+      );
+    }
+    const recibeUid = auxUid;
+    const recibeNombre = auxNombre || "AUXILIAR ADMINISTRATIVA";
+    const recibeEmail = auxEmail;
+
+    const pendiente = equipoData.actaInternaPendienteId;
+    if (typeof pendiente === "string" && pendiente.trim()) {
+      throw new HttpsError(
+        "failed-precondition",
+        "El equipo ya está en un acta interna pendiente.",
+      );
+    }
+
+    const lastSnap = await db
+      .collection("actas_internas")
+      .orderBy("consecutivo", "desc")
+      .limit(1)
+      .get();
+    const last = lastSnap.docs[0]?.data()?.consecutivo;
+    const consecutivo =
+      typeof last === "number" && Number.isFinite(last) ? last + 1 : 1;
+
+    const actaRef = db.collection("actas_internas").doc();
+    actaInternaId = actaRef.id;
+    const actaItems = [
+      {
+        idEquipo: equipoId,
+        codigoInventario: String(equipoData.codigoInventario || ""),
+        numeroSerie: String(equipoData.numeroSerie || ""),
+        nombre: String(equipoData.nombre || ""),
+        marca: String(equipoData.marca || ""),
+        modelo: String(equipoData.modelo || ""),
+        estado: typeof equipoData.estado === "string" ? equipoData.estado : "",
+      },
+    ];
+
+    const batch = db.batch();
+    batch.set(actaRef, {
+      consecutivo,
+      fecha: new Date().toISOString(),
+      ciudad: "",
+      sede: "",
+      area: "Biomedica",
+      cargoRecibe: "Auxiliar Administrativa",
+      observaciones,
+      entregaUid: callerUid,
+      entregaNombre: aprobadoPorNombre,
+      recibeUid,
+      recibeNombre,
+      ...(recibeEmail ? {recibeEmail} : {}),
+      estado: "ENVIADA",
+      items: actaItems,
+      firmaEntrega,
+      solicitudIds: [solicitudId],
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    batch.update(equipoRef, {
+      disponibleParaEntrega: false,
+      custodioUid: callerUid,
+      actaInternaPendienteId: actaRef.id,
+      actaInternaPendienteRecibeUid: recibeUid,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    batch.update(solicitudRef, {
+      estado: "APROBADA",
+      aprobadoAt: new Date().toISOString(),
+      aprobadoPorUid: callerUid,
+      aprobadoPorNombre,
+      equipoId,
+      actaInternaId: actaRef.id,
+      actaInternaEstado: "ENVIADA",
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    await batch.commit();
+
+    return {ok: true, actaInternaId};
+  }
+
+  await solicitudRef.update({
+    estado: "APROBADA",
+    aprobadoAt: new Date().toISOString(),
+    aprobadoPorUid: callerUid,
+    aprobadoPorNombre,
+    equipoId,
+    ...(asignacionId ? {asignacionId} : {}),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+
+  return {ok: true, asignacionId, actaInternaId};
+});
+
+/**
  * Reportes de visita/falla (VISITADOR -> Biomedico)
  * Al crear un reporte, insertamos un doc en /mail (Trigger Email Extension).
  */
@@ -945,6 +1378,71 @@ export const onReporteEquipoCreatedNotify = onDocumentCreated(
       createdAt: FieldValue.serverTimestamp(),
       source: "reportes_equipos",
       reporteId: snap.id,
+    });
+  },
+);
+
+/**
+ * Solicitudes de equipos del paciente (VISITADOR -> Biomedico)
+ * Al crear una solicitud, insertamos un doc en /mail (Trigger Email).
+ */
+export const onSolicitudEquipoPacienteCreatedNotify = onDocumentCreated(
+  "solicitudes_equipos_paciente/{solicitudId}",
+  async (event) => {
+    const snap = event.data;
+    if (!snap) return;
+    const d = snap.data() as Record<string, unknown>;
+
+    const pacienteNombre =
+      typeof d.pacienteNombre === "string" ? d.pacienteNombre : "";
+    const pacienteDocumento =
+      typeof d.pacienteDocumento === "string" ? d.pacienteDocumento : "";
+    const tipoPropiedad =
+      typeof d.tipoPropiedad === "string" ? d.tipoPropiedad : "";
+    const equipoNombre =
+      typeof d.equipoNombre === "string" ? d.equipoNombre : "";
+    const empresaAlquiler =
+      typeof d.empresaAlquiler === "string" ? d.empresaAlquiler : "";
+    const observaciones =
+      typeof d.observaciones === "string" ? d.observaciones : "";
+
+    const usersSnap = await db
+      .collection("users")
+      .where("rol", "==", "INGENIERO_BIOMEDICO")
+      .get();
+    const recipients = usersSnap.docs
+      .map((u) => u.data()?.email)
+      .filter((e) => typeof e === "string" && e.includes("@")) as string[];
+
+    if (recipients.length === 0) return;
+
+    const tipoLabel = tipoPropiedad || "PACIENTE";
+    const pacienteLine = pacienteDocumento ?
+      `${pacienteNombre} (${pacienteDocumento})` :
+      pacienteNombre;
+    const textLines = [
+      "Nueva solicitud de equipo del paciente.",
+      "",
+      `Paciente: ${pacienteLine}`,
+      `Tipo propiedad: ${tipoLabel}`,
+      `Equipo reportado: ${equipoNombre || "Sin nombre"}`,
+      tipoPropiedad === "ALQUILADO" && empresaAlquiler ?
+        `Empresa: ${empresaAlquiler}` :
+        "",
+      observaciones ? `Observaciones: ${observaciones}` : "",
+      "",
+      "Ingresa a BioControl para revisar la solicitud.",
+    ].filter((l) => l !== "");
+
+    await db.collection("mail").add({
+      to: recipients,
+      message: {
+        subject: `BioControl: Solicitud equipo ${tipoLabel}`,
+        text: textLines.join("\n"),
+      },
+      createdAt: FieldValue.serverTimestamp(),
+      source: "solicitudes_equipos_paciente",
+      solicitudId: snap.id,
     });
   },
 );

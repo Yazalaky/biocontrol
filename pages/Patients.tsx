@@ -448,6 +448,8 @@ const Patients: React.FC = () => {
         observacionesEntrega: obsAsignacion,
         usuarioAsigna: usuario?.nombre || 'Admin',
         firmaAuxiliar: adminSignature || undefined,
+        auxiliarNombre: usuario?.nombre || undefined,
+        auxiliarUid: usuario?.id || undefined,
         fechaAsignacionIso: isoFromDate(fechaAsignacion),
       });
       toast({
@@ -545,7 +547,12 @@ const Patients: React.FC = () => {
 
     setSavingAdminSig(true);
     try {
-      await guardarFirmaAuxiliar({ idAsignacion: actaData.asig.id, dataUrl: adminSignature });
+      await guardarFirmaAuxiliar({
+        idAsignacion: actaData.asig.id,
+        dataUrl: adminSignature,
+        auxiliarNombre: usuario?.nombre || undefined,
+        auxiliarUid: usuario?.id || undefined,
+      });
       setActaData((prev) => {
         if (!prev) return prev;
         return { ...prev, asig: { ...prev.asig, firmaAuxiliar: adminSignature } };
@@ -573,7 +580,12 @@ const Patients: React.FC = () => {
       // Si estamos en una acta y aún no hay firma guardada para esta asignación, la persistimos en Firestore.
       if (actaData && !actaData.asig.firmaAuxiliar) {
         try {
-          await guardarFirmaAuxiliar({ idAsignacion: actaData.asig.id, dataUrl: res });
+          await guardarFirmaAuxiliar({
+            idAsignacion: actaData.asig.id,
+            dataUrl: res,
+            auxiliarNombre: usuario?.nombre || undefined,
+            auxiliarUid: usuario?.id || undefined,
+          });
           setActaData((prev) => {
             if (!prev) return prev;
             return { ...prev, asig: { ...prev.asig, firmaAuxiliar: res } };

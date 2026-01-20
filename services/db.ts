@@ -86,9 +86,9 @@ class MockDatabase {
     ];
     // Se actualiza prefijo a MBG
     this.equipos = [
-      { id: '101', codigoInventario: 'MBG-001', numeroSerie: 'SN-M10-9988', nombre: 'Monitor Signos Vitales', marca: 'Mindray', modelo: 'iMEC 10', estado: EstadoEquipo.DISPONIBLE, observaciones: 'Buen estado', ubicacionActual: 'Bodega', tipoPropiedad: TipoPropiedad.PROPIO },
-      { id: '102', codigoInventario: 'MBG-002', numeroSerie: 'SN-BB-7766', nombre: 'Bomba de Infusión', marca: 'B. Braun', modelo: 'Infusomat', estado: EstadoEquipo.DISPONIBLE, observaciones: 'Calibración pendiente', ubicacionActual: 'Bodega', tipoPropiedad: TipoPropiedad.PROPIO },
-      { id: '103', codigoInventario: 'MBG-003', numeroSerie: 'SN-DR-5544', nombre: 'Ventilador Mecánico', marca: 'Dräger', modelo: 'Savina', estado: EstadoEquipo.MANTENIMIENTO, observaciones: 'En revisión técnica', ubicacionActual: 'Taller', tipoPropiedad: TipoPropiedad.PROPIO },
+      { id: '101', codigoInventario: 'MBG-001', numeroSerie: 'SN-M10-9988', nombre: 'Monitor Signos Vitales', marca: 'Mindray', modelo: 'iMEC 10', estado: EstadoEquipo.DISPONIBLE, observaciones: 'Buen estado', ubicacionActual: 'Bodega', tipoPropiedad: TipoPropiedad.MEDICUC },
+      { id: '102', codigoInventario: 'MBG-002', numeroSerie: 'SN-BB-7766', nombre: 'Bomba de Infusión', marca: 'B. Braun', modelo: 'Infusomat', estado: EstadoEquipo.DISPONIBLE, observaciones: 'Calibración pendiente', ubicacionActual: 'Bodega', tipoPropiedad: TipoPropiedad.MEDICUC },
+      { id: '103', codigoInventario: 'MBG-003', numeroSerie: 'SN-DR-5544', nombre: 'Ventilador Mecánico', marca: 'Dräger', modelo: 'Savina', estado: EstadoEquipo.MANTENIMIENTO, observaciones: 'En revisión técnica', ubicacionActual: 'Taller', tipoPropiedad: TipoPropiedad.MEDICUC },
     ];
     this.save();
   }
@@ -137,10 +137,17 @@ class MockDatabase {
       }
       this.equipos[idx] = equipo;
     } else {
-      // CREACIÓN: Generación Automática de MBG-XXX
+      // CREACIÓN: Generación Automática por tipo de propiedad
       
-      // Filtrar solo los que siguen el patrón MBG
-      const prefix = 'MBG-';
+      const tipo = equipo.tipoPropiedad === TipoPropiedad.PROPIO ? TipoPropiedad.MEDICUC
+        : equipo.tipoPropiedad === TipoPropiedad.EXTERNO ? TipoPropiedad.ALQUILADO
+        : equipo.tipoPropiedad;
+      const prefix =
+        tipo === TipoPropiedad.PACIENTE ? 'MBP-'
+        : tipo === TipoPropiedad.ALQUILADO ? 'MBA-'
+        : tipo === TipoPropiedad.EMPLEADO ? 'MBE-'
+        : 'MBG-';
+      // Filtrar solo los que siguen el patrón
       const mbgEquipos = this.equipos.filter(e => e.codigoInventario.startsWith(prefix));
       
       // Encontrar el número máximo actual

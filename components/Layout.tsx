@@ -6,6 +6,7 @@ import {
   subscribeActasInternasPendientesCount,
   subscribeReportesCerradosSinLeerCount,
   subscribeReportesEquiposAbiertosCount,
+  subscribeSolicitudesEquiposPacientePendientes,
 } from '../services/firestoreData';
 
 interface LayoutProps {
@@ -91,6 +92,7 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
   const [pendingActasInternas, setPendingActasInternas] = React.useState(0);
   const [pendingReportesAbiertos, setPendingReportesAbiertos] = React.useState(0);
   const [pendingCerradosSinLeer, setPendingCerradosSinLeer] = React.useState(0);
+  const [pendingSolicitudesEquipos, setPendingSolicitudesEquipos] = React.useState(0);
 
   React.useEffect(() => {
     setPendingActasInternas(0);
@@ -113,6 +115,18 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
     const unsub = subscribeReportesEquiposAbiertosCount(
       (count) => setPendingReportesAbiertos(count),
       () => setPendingReportesAbiertos(0),
+    );
+    return () => unsub();
+  }, [usuario?.id, usuario?.rol]);
+
+  React.useEffect(() => {
+    setPendingSolicitudesEquipos(0);
+    if (!usuario?.id) return;
+    if (usuario.rol !== RolUsuario.INGENIERO_BIOMEDICO) return;
+
+    const unsub = subscribeSolicitudesEquiposPacientePendientes(
+      (items) => setPendingSolicitudesEquipos(items.length),
+      () => setPendingSolicitudesEquipos(0),
     );
     return () => unsub();
   }, [usuario?.id, usuario?.rol]);
@@ -230,6 +244,7 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
             label="Inventario Equipos" 
             path="#/equipos" 
             roles={[RolUsuario.INGENIERO_BIOMEDICO, RolUsuario.AUXILIAR_ADMINISTRATIVA, RolUsuario.GERENCIA]} 
+            badge={usuario?.rol === RolUsuario.INGENIERO_BIOMEDICO ? pendingSolicitudesEquipos : 0}
           />
           <NavItem
             label="Visitas"
