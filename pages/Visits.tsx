@@ -552,7 +552,7 @@ const Visits: React.FC = () => {
       return;
     }
 
-    const nombreCaptura = (usuario.nombre || '').trim() || 'VISITADOR';
+    const nombreCaptura = (usuario.nombre || '').trim().toUpperCase() || 'VISITADOR';
     setSavingFirma(true);
     try {
       const fn = httpsCallable(firebaseFunctions, 'guardarFirmaEntregaVisitador');

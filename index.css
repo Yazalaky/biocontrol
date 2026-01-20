@@ -200,6 +200,19 @@ body {
   color: var(--md-text-3);
 }
 
+/* Uppercase text inputs */
+input[type='text'],
+input[type='search'],
+input[type='tel'],
+input:not([type]),
+textarea {
+  text-transform: uppercase;
+}
+input[type='email'],
+input[type='password'] {
+  text-transform: none;
+}
+
 /* Form fields (aplican aunque uses tailwind en inputs) */
 input,
 select,

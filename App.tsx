@@ -10,6 +10,7 @@ import Admin from './pages/Admin';
 import Reports from './pages/Reports';
 import InternalActas from './pages/InternalActas';
 import Visits from './pages/Visits';
+import Rutero from './pages/Rutero';
 import FeedbackHost from './components/FeedbackHost';
 import { RolUsuario } from './types';
 
@@ -41,9 +42,16 @@ const Router = () => {
     return <Login />;
   }
 
-  // VISITADOR: solo usa la pantalla de visitas/reportes
+  // VISITADOR: rutas especiales
   if (usuario?.rol === RolUsuario.VISITADOR) {
-    return <Visits />;
+    switch (currentHash) {
+      case '#/rutero':
+        return <Rutero />;
+      case '#/visitas':
+      case '#/':
+      default:
+        return <Visits />;
+    }
   }
 
   // Rutas

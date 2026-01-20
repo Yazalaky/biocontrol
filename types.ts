@@ -72,6 +72,10 @@ export interface Paciente {
   tipoDocumento: 'CC' | 'TI' | 'CE' | 'RC';
   numeroDocumento: string;
   direccion: string;
+  // Barrio o municipio (opcional, para rutero).
+  barrio?: string;
+  // Zona del rutero (opcional).
+  zona?: 'GIRON' | 'BGA1' | 'BGA2' | 'PIEDECUESTA' | 'FLORIDABLANCA';
   eps: EPS;
   fechaInicioPrograma: string; // ISO Date
   horasPrestadas: string; // Texto libre

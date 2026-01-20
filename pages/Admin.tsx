@@ -63,7 +63,7 @@ const Admin: React.FC = () => {
       const res = await fn({
         email: email.trim(),
         password,
-        nombre: nombre.trim(),
+        nombre: nombre.trim().toUpperCase(),
         rol,
       });
       const uid = (res.data as any)?.uid;
@@ -89,7 +89,7 @@ const Admin: React.FC = () => {
       await fn({
         uid: targetUid.trim(),
         rol: targetRol,
-        nombre: targetNombre.trim(),
+        nombre: targetNombre.trim().toUpperCase(),
       });
       setAssignOk('Rol actualizado correctamente.');
     } catch (err: any) {

@@ -275,6 +275,8 @@ const Patients: React.FC = () => {
       tipoDocumento: formData.tipoDocumento as any || 'CC',
       numeroDocumento: formData.numeroDocumento || '',
       direccion: formData.direccion || '',
+      barrio: formData.barrio || '',
+      zona: formData.zona as any,
       eps: formData.eps || 'Particular',
       fechaInicioPrograma: formData.fechaInicioPrograma || new Date().toISOString(),
       horasPrestadas: formData.horasPrestadas || '', 
@@ -316,6 +318,7 @@ const Patients: React.FC = () => {
       "TipoDocumento",
       "NumeroDocumento",
       "Direccion",
+      "BarrioMunicipio",
       "TelefonoPaciente",
       "NombreFamiliar",
       "TelefonoFamiliar",
@@ -325,7 +328,8 @@ const Patients: React.FC = () => {
       "FechaInicio (YYYY-MM-DD)",
       "HorasPrestadas (Texto)",
       "TipoServicio",
-      "Diagnostico"
+      "Diagnostico",
+      "Zona"
     ];
 
     // Datos de ejemplo
@@ -334,6 +338,7 @@ const Patients: React.FC = () => {
       "CC",
       "123456789",
       "Calle 123 #45-67",
+      "Caballeros",
       "3001234567",
       "Maria Perez",
       "3109876543",
@@ -343,7 +348,8 @@ const Patients: React.FC = () => {
       "2023-10-01",
       "12 Horas Diarias",
       "Domiciliario",
-      "EPOC"
+      "EPOC",
+      "GIRON"
     ];
 
     const csvContent = "data:text/csv;charset=utf-8," 
@@ -381,7 +387,7 @@ const Patients: React.FC = () => {
 
       for (const [index, line] of dataLines.entries()) {
         const columns = line.split(','); 
-        if (columns.length < 5) continue; 
+        if (columns.length < 6) continue; 
 
         // Actualizado para nuevos campos
         const importedPaciente: Paciente = {
@@ -391,16 +397,18 @@ const Patients: React.FC = () => {
           tipoDocumento: (columns[1]?.trim() as any) || 'CC',
           numeroDocumento: columns[2]?.trim() || '',
           direccion: columns[3]?.trim() || '',
-          telefono: columns[4]?.trim() || '',
-          nombreFamiliar: columns[5]?.trim() || '',
-          telefonoFamiliar: columns[6]?.trim() || '',
-          documentoFamiliar: columns[7]?.trim() || '',
-          parentescoFamiliar: columns[8]?.trim() || '',
-          eps: (columns[9]?.trim() as EPS) || 'Particular',
-          fechaInicioPrograma: columns[10]?.trim() ? new Date(columns[10].trim()).toISOString() : new Date().toISOString(),
-          horasPrestadas: columns[11]?.trim() || '',
-          tipoServicio: columns[12]?.trim() || '',
-          diagnostico: columns[13]?.trim() || '',
+          barrio: columns[4]?.trim() || '',
+          telefono: columns[5]?.trim() || '',
+          nombreFamiliar: columns[6]?.trim() || '',
+          telefonoFamiliar: columns[7]?.trim() || '',
+          documentoFamiliar: columns[8]?.trim() || '',
+          parentescoFamiliar: columns[9]?.trim() || '',
+          eps: (columns[10]?.trim() as EPS) || 'Particular',
+          fechaInicioPrograma: columns[11]?.trim() ? new Date(columns[11].trim()).toISOString() : new Date().toISOString(),
+          horasPrestadas: columns[12]?.trim() || '',
+          tipoServicio: columns[13]?.trim() || '',
+          diagnostico: columns[14]?.trim() || '',
+          zona: (columns[15]?.trim() as any) || undefined,
           estado: EstadoPaciente.ACTIVO
         };
 
@@ -687,6 +695,21 @@ const Patients: React.FC = () => {
                   <label className="block text-sm font-medium text-gray-700">Teléfono Paciente</label>
                   <input required className="w-full border p-2.5 rounded-md" value={formData.telefono || ''} onChange={e => setFormData({...formData, telefono: e.target.value})} />
                 </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Barrio / Municipio</label>
+                  <input className="w-full border p-2.5 rounded-md" placeholder="Ej: Caballeros / Floridablanca" value={formData.barrio || ''} onChange={e => setFormData({...formData, barrio: e.target.value})} />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Zona (Rutero)</label>
+                  <select className="w-full border p-2.5 rounded-md" value={formData.zona || ''} onChange={e => setFormData({...formData, zona: e.target.value || undefined})}>
+                    <option value="">Sin zona</option>
+                    <option value="GIRON">GIRÓN</option>
+                    <option value="BGA1">BGA1</option>
+                    <option value="BGA2">BGA2</option>
+                    <option value="PIEDECUESTA">PIEDECUESTA</option>
+                    <option value="FLORIDABLANCA">FLORIDABLANCA</option>
+                  </select>
+                </div>
               </div>
             </div>
 
@@ -791,6 +814,8 @@ const Patients: React.FC = () => {
                 <div>
                     <p><strong>Identificación:</strong> {selectedPaciente.tipoDocumento} {selectedPaciente.numeroDocumento}</p>
                     <p><strong>Dirección:</strong> {selectedPaciente.direccion}</p>
+                    <p><strong>Barrio/Municipio:</strong> {selectedPaciente.barrio || '—'}</p>
+                    <p><strong>Zona:</strong> {selectedPaciente.zona || '—'}</p>
                     <p><strong>Tel. Paciente:</strong> {selectedPaciente.telefono}</p>
                     <p><strong>Fecha Inicio:</strong> {new Date(selectedPaciente.fechaInicioPrograma).toLocaleDateString()}</p>
                     {selectedPaciente.fechaSalida && <p><strong>Salida:</strong> {new Date(selectedPaciente.fechaSalida).toLocaleDateString()}</p>}

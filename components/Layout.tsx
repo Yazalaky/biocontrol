@@ -60,6 +60,15 @@ const Icons = {
       <path d="M7 14l4-4 3 3 6-6" />
     </svg>
   ),
+  rutero: (
+    <svg className="app-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <circle cx="6" cy="6" r="2.5" />
+      <circle cx="18" cy="18" r="2.5" />
+      <path d="M8.5 6h4a4 4 0 0 1 4 4v2" />
+      <path d="M18 12v4" />
+      <path d="M12 16h4" />
+    </svg>
+  ),
   visits: (
     <svg className="app-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <path d="M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" />
@@ -172,6 +181,7 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
         {path === '#/' ? Icons.dashboard : null}
         {path === '#/pacientes' ? Icons.patients : null}
         {path === '#/profesionales' ? Icons.professionals : null}
+        {path === '#/rutero' ? Icons.rutero : null}
         {path === '#/equipos' ? Icons.inventory : null}
         {path === '#/informes' ? Icons.reports : null}
         {path === '#/visitas' ? Icons.visits : null}
@@ -239,6 +249,11 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
             label="Profesionales"
             path="#/profesionales"
             roles={[RolUsuario.AUXILIAR_ADMINISTRATIVA, RolUsuario.GERENCIA, RolUsuario.INGENIERO_BIOMEDICO]}
+          />
+          <NavItem
+            label="Rutero"
+            path="#/rutero"
+            roles={[RolUsuario.VISITADOR]}
           />
           <NavItem 
             label="Inventario Equipos" 

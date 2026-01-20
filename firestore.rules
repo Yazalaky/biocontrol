@@ -48,10 +48,27 @@ service cloud.firestore {
 
     // --- PACIENTES ---
     match /pacientes/{id} {
-      // VISITADOR: solo puede ver pacientes con asignación activa
-      allow read: if isSignedIn() && (!isVisitador() || resource.data.tieneAsignacionActiva == true);
-      // escritura solo auxiliar
-      allow create, update, delete: if isSignedIn() && isAuxiliar();
+      // VISITADOR: puede ver pacientes activos (para rutero)
+      allow read: if isSignedIn() && (!isVisitador() || resource.data.estado == "ACTIVO");
+      // escritura
+      allow create, delete: if isSignedIn() && isAuxiliar();
+      allow update: if isSignedIn() && (
+        isAuxiliar()
+        || (
+          isVisitador()
+          && resource.data.estado == "ACTIVO"
+          && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+            "zona",
+            "direccion",
+            "telefono",
+            "barrio"
+          ])
+          && (
+            !(request.resource.data.zona is string)
+            || request.resource.data.zona in ["GIRON", "BGA1", "BGA2", "PIEDECUESTA", "FLORIDABLANCA"]
+          )
+        )
+      );
     }
 
     // --- PROFESIONALES ---
