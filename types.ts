@@ -224,6 +224,7 @@ export interface ActaInterna {
 
 export enum EstadoReporteEquipo {
   ABIERTO = 'ABIERTO',
+  EN_PROCESO = 'EN_PROCESO',
   CERRADO = 'CERRADO',
 }
 
@@ -237,6 +238,14 @@ export interface ReporteFoto {
   name: string; // Nombre original
   size: number; // bytes
   contentType: string;
+}
+
+export interface ReporteEquipoHistorial {
+  fecha: string; // ISO
+  estado: EstadoReporteEquipo;
+  nota: string;
+  porUid: string;
+  porNombre: string;
 }
 
 export interface ReporteEquipo {
@@ -261,6 +270,14 @@ export interface ReporteEquipo {
   equipoCodigoInventario: string;
   equipoNombre: string;
   equipoSerie: string;
+
+  // Proceso de reparación (biomédico)
+  diagnostico?: string;
+  planReparacion?: string;
+  enProcesoAt?: string;
+  enProcesoPorUid?: string;
+  enProcesoPorNombre?: string;
+  historial?: ReporteEquipoHistorial[];
 
   // Campos de cierre (solo biomédico)
   cerradoAt?: string;

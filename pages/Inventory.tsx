@@ -13,6 +13,7 @@ import {
   type AsignacionProfesional,
   type Paciente,
   type Profesional,
+  type ReporteEquipo,
   type SolicitudEquipoPaciente,
 } from '../types';
 import { useAuth } from '../contexts/AuthContext';
@@ -29,6 +30,7 @@ import {
   subscribeEquipos,
   subscribePacientes,
   subscribeProfesionales,
+  subscribeReportesEquipos,
   subscribeSolicitudesEquiposPacientePendientes,
 } from '../services/firestoreData';
 
@@ -41,6 +43,7 @@ const Inventory: React.FC = () => {
   const [asignacionesProfesionales, setAsignacionesProfesionales] = useState<AsignacionProfesional[]>([]);
   const [firestoreError, setFirestoreError] = useState<string | null>(null);
   const [solicitudesPendientes, setSolicitudesPendientes] = useState<SolicitudEquipoPaciente[]>([]);
+  const [reportesEquipos, setReportesEquipos] = useState<ReporteEquipo[]>([]);
   const [openSolicitud, setOpenSolicitud] = useState<SolicitudEquipoPaciente | null>(null);
   const [solicitudFotoUrls, setSolicitudFotoUrls] = useState<Record<string, string>>({});
   const [solicitudContext, setSolicitudContext] = useState<SolicitudEquipoPaciente | null>(null);
@@ -64,10 +67,16 @@ const Inventory: React.FC = () => {
 
   // Modal History State
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
-  const [historyEquipo, setHistoryEquipo] = useState<{ equipo: EquipoBiomedico, data: any[] } | null>(null);
+  const [historyEquipo, setHistoryEquipo] = useState<{
+    equipo: EquipoBiomedico;
+    data: any[];
+    reportes: any[];
+  } | null>(null);
 
   // Stats para contadores
   const [assignmentCounts, setAssignmentCounts] = useState<{[key: string]: number}>({});
+  const canEdit = hasRole([RolUsuario.INGENIERO_BIOMEDICO]);
+  const canReadReportes = hasRole([RolUsuario.INGENIERO_BIOMEDICO, RolUsuario.GERENCIA]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -137,6 +146,15 @@ const Inventory: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    if (!canReadReportes) return;
+    const unsub = subscribeReportesEquipos(
+      setReportesEquipos,
+      (e) => console.error('Firestore subscribeReportesEquipos error:', e),
+    );
+    return () => unsub();
+  }, [canReadReportes]);
+
+  useEffect(() => {
     if (usuario?.rol !== RolUsuario.INGENIERO_BIOMEDICO) return;
     const unsubSolicitudes = subscribeSolicitudesEquiposPacientePendientes(setSolicitudesPendientes, (e) => {
       console.error('Firestore subscribeSolicitudesEquiposPacientePendientes error:', e);
@@ -183,7 +201,6 @@ const Inventory: React.FC = () => {
     };
   }, [openSolicitud]);
 
-  const canEdit = hasRole([RolUsuario.INGENIERO_BIOMEDICO]);
   const propiedadLocked = !!solicitudContext;
   const pacientesById = useMemo(() => new Map(pacientes.map((p) => [p.id, p])), [pacientes]);
   const profesionalesById = useMemo(() => new Map(profesionales.map((p) => [p.id, p])), [profesionales]);
@@ -475,11 +492,36 @@ const Inventory: React.FC = () => {
       });
     }
 
+    const historialReportes = reportesEquipos
+      .filter((r) => r.idEquipo === equipo.id)
+      .flatMap((r) => {
+        const base = Array.isArray(r.historial) && r.historial.length ? r.historial : null;
+        const fallback = [
+          {
+            fecha: r.fechaVisita,
+            estado: r.estado,
+            nota: r.descripcion,
+            porUid: r.creadoPorUid,
+            porNombre: r.creadoPorNombre,
+          },
+        ];
+        const items = base || fallback;
+        return items.map((h, idx) => ({
+          id: `${r.id}-${idx}`,
+          fecha: h.fecha,
+          estado: h.estado,
+          nota: h.nota,
+          porNombre: h.porNombre,
+          pacienteNombre: r.pacienteNombre,
+        }));
+      })
+      .sort((a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime());
+
     const enriched = [...historialPacientes, ...historialProfesionales, ...historialEstado].sort(
       (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime(),
     );
 
-    setHistoryEquipo({ equipo, data: enriched });
+    setHistoryEquipo({ equipo, data: enriched, reportes: historialReportes });
     setIsHistoryOpen(true);
   };
 
@@ -1327,6 +1369,30 @@ const Inventory: React.FC = () => {
 	                                    ))}
 	                                </tbody>
 	                            </table>
+                        </div>
+
+                        <div className="mt-6">
+                          <h4 className="font-semibold text-gray-700 mb-2">
+                            Reportes de falla ({historyEquipo.reportes.length} registros)
+                          </h4>
+                          {historyEquipo.reportes.length === 0 ? (
+                            <div className="text-sm text-gray-500">Sin reportes registrados.</div>
+                          ) : (
+                            <div className="space-y-2">
+                              {historyEquipo.reportes.map((r) => (
+                                <div key={r.id} className="border rounded-lg p-3 bg-gray-50">
+                                  <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
+                                    <span>{new Date(r.fecha).toLocaleString()}</span>
+                                    <span className="font-semibold text-gray-700">{r.estado}</span>
+                                  </div>
+                                  <div className="text-sm text-gray-800 whitespace-pre-wrap">{r.nota}</div>
+                                  <div className="text-xs text-gray-500 mt-2">
+                                    Paciente: {r.pacienteNombre} · Por: {r.porNombre}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                     </div>
                 )}

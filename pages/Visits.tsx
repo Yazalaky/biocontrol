@@ -12,6 +12,8 @@ import {
   cerrarReporteEquipo,
   createReporteEquipo,
   createSolicitudEquipoPaciente,
+  iniciarReporteEnProceso,
+  agregarNotaReporte,
   marcarReporteVistoPorVisitador,
   subscribeAsignacionesActivas,
   subscribeEquiposAsignadosActivos,
@@ -238,18 +240,78 @@ const Visits: React.FC = () => {
   const [visitadorTab, setVisitadorTab] = useState<'PENDIENTES' | 'HISTORIAL' | 'REPORTES'>('PENDIENTES');
 
   // Tabs y detalle de reportes (VISITADOR y BIOMEDICO)
-  const [reporteTab, setReporteTab] = useState<'ABIERTO' | 'CERRADO'>('ABIERTO');
+  const [reporteTab, setReporteTab] = useState<'ABIERTO' | 'EN_PROCESO' | 'CERRADO'>('ABIERTO');
   const reportesFiltrados = useMemo(() => {
-    const wanted = reporteTab === 'ABIERTO' ? EstadoReporteEquipo.ABIERTO : EstadoReporteEquipo.CERRADO;
+    const wanted =
+      reporteTab === 'ABIERTO'
+        ? EstadoReporteEquipo.ABIERTO
+        : reporteTab === 'EN_PROCESO'
+          ? EstadoReporteEquipo.EN_PROCESO
+          : EstadoReporteEquipo.CERRADO;
     return reportes
       .filter((r) => r.estado === wanted)
       .sort((a, b) => new Date(b.fechaVisita).getTime() - new Date(a.fechaVisita).getTime());
   }, [reportes, reporteTab]);
+  const reportesCountAbiertos = useMemo(
+    () => reportes.filter((r) => r.estado === EstadoReporteEquipo.ABIERTO).length,
+    [reportes],
+  );
+  const reportesCountProceso = useMemo(
+    () => reportes.filter((r) => r.estado === EstadoReporteEquipo.EN_PROCESO).length,
+    [reportes],
+  );
+  const reportesCountCerrados = useMemo(
+    () => reportes.filter((r) => r.estado === EstadoReporteEquipo.CERRADO).length,
+    [reportes],
+  );
+  const reporteTabLabel = reporteTab === 'EN_PROCESO' ? 'en proceso' : reporteTab.toLowerCase();
 
   const [openReporte, setOpenReporte] = useState<ReporteEquipo | null>(null);
   const [fotoUrls, setFotoUrls] = useState<Record<string, string>>({});
   const [cierreNotas, setCierreNotas] = useState('');
+  const [diagnostico, setDiagnostico] = useState('');
+  const [planReparacion, setPlanReparacion] = useState('');
+  const [notaProceso, setNotaProceso] = useState('');
   const [closing, setClosing] = useState(false);
+  const [startingProceso, setStartingProceso] = useState(false);
+  const [addingNota, setAddingNota] = useState(false);
+
+  const historialReporte = useMemo(() => {
+    if (!openReporte) return [];
+    if (Array.isArray(openReporte.historial) && openReporte.historial.length) {
+      return [...openReporte.historial].sort(
+        (a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime(),
+      );
+    }
+    const fallback = [];
+    if (openReporte.fechaVisita && openReporte.descripcion) {
+      fallback.push({
+        fecha: openReporte.fechaVisita,
+        estado: EstadoReporteEquipo.ABIERTO,
+        nota: openReporte.descripcion,
+        porNombre: openReporte.creadoPorNombre,
+      });
+    }
+    if (openReporte.enProcesoAt && (openReporte.diagnostico || openReporte.planReparacion)) {
+      fallback.push({
+        fecha: openReporte.enProcesoAt,
+        estado: EstadoReporteEquipo.EN_PROCESO,
+        nota: `Inicio de proceso: ${openReporte.diagnostico || ''}${
+          openReporte.planReparacion ? `\nPlan: ${openReporte.planReparacion}` : ''
+        }`,
+        porNombre: openReporte.enProcesoPorNombre || 'Biomedico',
+      });
+    }
+    if (openReporte.cerradoAt && openReporte.cierreNotas) {
+      fallback.push({
+        fecha: openReporte.cerradoAt,
+        estado: EstadoReporteEquipo.CERRADO,
+        nota: openReporte.cierreNotas,
+        porNombre: openReporte.cerradoPorNombre || 'Biomedico',
+      });
+    }
+    return fallback.sort((a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime());
+  }, [openReporte]);
 
   // Modal crear reporte (VISITADOR)
   const [creating, setCreating] = useState(false);
@@ -287,6 +349,28 @@ const Visits: React.FC = () => {
       for (const p of solicitudPreviews) URL.revokeObjectURL(p.url);
     };
   }, [solicitudPreviews]);
+
+  useEffect(() => {
+    if (!openReporte) {
+      setDiagnostico('');
+      setPlanReparacion('');
+      setCierreNotas('');
+      setNotaProceso('');
+      return;
+    }
+    setDiagnostico(openReporte.diagnostico || '');
+    setPlanReparacion(openReporte.planReparacion || '');
+    setCierreNotas(openReporte.cierreNotas || '');
+    setNotaProceso('');
+  }, [openReporte?.id]);
+
+  useEffect(() => {
+    if (!openReporte) return;
+    const latest = reportes.find((r) => r.id === openReporte.id);
+    if (latest && latest !== openReporte) {
+      setOpenReporte(latest);
+    }
+  }, [reportes, openReporte?.id]);
 
   const onPickFiles = (picked: FileList | null) => {
     if (!picked) return;
@@ -487,7 +571,9 @@ const Visits: React.FC = () => {
   };
 
   const openReporteByAsignacion = (idAsignacion: string) => {
-    const r = reportes.find((x) => x.idAsignacion === idAsignacion && x.estado === EstadoReporteEquipo.ABIERTO);
+    const r = reportes.find(
+      (x) => x.idAsignacion === idAsignacion && x.estado !== EstadoReporteEquipo.CERRADO,
+    );
     if (r) {
       setOpenReporte(r);
       return true;
@@ -514,13 +600,13 @@ const Visits: React.FC = () => {
     // Bloqueo de duplicados: 1 reporte ABIERTO por idAsignacion (para evitar reportes repetidos de la misma falla).
     // Hacemos doble validación: (1) memoria y (2) consulta a Firestore (por si aún no cargó la suscripción).
     const alreadyOpenLocal = reportes.find(
-      (r) => r.idAsignacion === openCreate.asignacion.id && r.estado === EstadoReporteEquipo.ABIERTO,
+      (r) => r.idAsignacion === openCreate.asignacion.id && r.estado !== EstadoReporteEquipo.CERRADO,
     );
     if (alreadyOpenLocal) {
       toast({
         tone: 'warning',
         title: 'Reporte duplicado',
-        message: 'Ya existe un reporte ABIERTO para esta asignacion. Revisa el detalle del reporte para ver el estado y evitar duplicados.',
+        message: 'Ya existe un reporte ABIERTO o EN PROCESO para esta asignacion. Revisa el detalle para evitar duplicados.',
       });
       setOpenReporte(alreadyOpenLocal);
       resetCreate();
@@ -530,7 +616,7 @@ const Visits: React.FC = () => {
       const q = query(
         collection(db, 'reportes_equipos'),
         where('idAsignacion', '==', openCreate.asignacion.id),
-        where('estado', '==', EstadoReporteEquipo.ABIERTO),
+        where('estado', 'in', [EstadoReporteEquipo.ABIERTO, EstadoReporteEquipo.EN_PROCESO]),
         where('creadoPorUid', '==', usuario.id),
         limit(1),
       );
@@ -541,7 +627,7 @@ const Visits: React.FC = () => {
         toast({
           tone: 'warning',
           title: 'Reporte duplicado',
-          message: 'Ya existe un reporte ABIERTO para esta asignacion. Revisa el detalle del reporte para ver el estado y evitar duplicados.',
+          message: 'Ya existe un reporte ABIERTO o EN PROCESO para esta asignacion. Revisa el detalle para evitar duplicados.',
         });
         setOpenReporte(existing);
         resetCreate();
@@ -639,9 +725,63 @@ const Visits: React.FC = () => {
     };
   }, [openReporte]);
 
+  const startProcesoReporte = async () => {
+    if (!usuario) return;
+    if (!openReporte) return;
+    if (!diagnostico.trim() || !planReparacion.trim()) {
+      toast({ tone: 'warning', message: 'Completa diagnóstico y plan de reparación antes de continuar.' });
+      return;
+    }
+    setStartingProceso(true);
+    try {
+      await iniciarReporteEnProceso({
+        idReporte: openReporte.id,
+        diagnostico: diagnostico.trim(),
+        planReparacion: planReparacion.trim(),
+        porUid: usuario.id,
+        porNombre: usuario.nombre,
+      });
+      toast({ tone: 'success', message: 'Reporte actualizado a EN PROCESO.' });
+    } catch (e: any) {
+      console.error('startProcesoReporte error:', e);
+      toast({ tone: 'error', message: `${e?.code ? `${e.code}: ` : ''}${e?.message || 'No se pudo iniciar el proceso.'}` });
+    } finally {
+      setStartingProceso(false);
+    }
+  };
+
+  const addNotaProceso = async () => {
+    if (!usuario) return;
+    if (!openReporte) return;
+    if (!notaProceso.trim()) {
+      toast({ tone: 'warning', message: 'Escribe una nota de avance.' });
+      return;
+    }
+    setAddingNota(true);
+    try {
+      await agregarNotaReporte({
+        idReporte: openReporte.id,
+        nota: notaProceso.trim(),
+        porUid: usuario.id,
+        porNombre: usuario.nombre,
+      });
+      toast({ tone: 'success', message: 'Avance registrado.' });
+      setNotaProceso('');
+    } catch (e: any) {
+      console.error('addNotaProceso error:', e);
+      toast({ tone: 'error', message: `${e?.code ? `${e.code}: ` : ''}${e?.message || 'No se pudo registrar el avance.'}` });
+    } finally {
+      setAddingNota(false);
+    }
+  };
+
   const closeReporte = async () => {
     if (!usuario) return;
     if (!openReporte) return;
+    if (openReporte.estado !== EstadoReporteEquipo.EN_PROCESO) {
+      toast({ tone: 'warning', message: 'Primero debes pasar el reporte a EN PROCESO.' });
+      return;
+    }
     if (!cierreNotas.trim()) {
       toast({ tone: 'warning', message: 'Agrega una nota de cierre (que se encontro/que se hizo).' });
       return;
@@ -681,7 +821,7 @@ const Visits: React.FC = () => {
   }
 
   return (
-    <Layout title={isVisitador ? 'Visitas domiciliarias' : 'Reportes de visita'}>
+    <Layout title={isVisitador ? 'Visitas domiciliarias' : 'Reportes de Mantenimiento'}>
       {firestoreError && (
         <div className="mb-4 bg-red-50 border border-red-200 text-red-800 rounded p-3 text-sm">
           {firestoreError}
@@ -977,8 +1117,7 @@ const Visits: React.FC = () => {
                   <div>
                     <div className="text-sm font-bold text-gray-900">Mis reportes</div>
                     <div className="text-xs text-gray-500">
-                      Abiertos: {reportes.filter((r) => r.estado === EstadoReporteEquipo.ABIERTO).length} · Cerrados:{' '}
-                      {reportes.filter((r) => r.estado === EstadoReporteEquipo.CERRADO).length}
+                      Abiertos: {reportesCountAbiertos} · En proceso: {reportesCountProceso} · Cerrados: {reportesCountCerrados}
                     </div>
                   </div>
                   <div className="flex gap-2">
@@ -988,6 +1127,13 @@ const Visits: React.FC = () => {
                       type="button"
                     >
                       Abiertos
+                    </button>
+                    <button
+                      className={`md-btn ${reporteTab === 'EN_PROCESO' ? 'md-btn-filled' : 'md-btn-outlined'}`}
+                      onClick={() => setReporteTab('EN_PROCESO')}
+                      type="button"
+                    >
+                      En proceso
                     </button>
                     <button
                       className={`md-btn ${reporteTab === 'CERRADO' ? 'md-btn-filled' : 'md-btn-outlined'}`}
@@ -1002,7 +1148,7 @@ const Visits: React.FC = () => {
                 <div className="mt-4 space-y-2">
                   {reportesFiltrados.length === 0 ? (
                     <div className="text-sm text-gray-500">
-                      Sin reportes {reporteTab === 'ABIERTO' ? 'abiertos' : 'cerrados'}.
+                      Sin reportes {reporteTabLabel}.
                     </div>
                   ) : (
                     reportesFiltrados.slice(0, 8).map((r) => (
@@ -1155,6 +1301,12 @@ const Visits: React.FC = () => {
               Abiertos
             </button>
             <button
+              className={`md-btn ${reporteTab === 'EN_PROCESO' ? 'md-btn-filled' : 'md-btn-outlined'}`}
+              onClick={() => setReporteTab('EN_PROCESO')}
+            >
+              En proceso
+            </button>
+            <button
               className={`md-btn ${reporteTab === 'CERRADO' ? 'md-btn-filled' : 'md-btn-outlined'}`}
               onClick={() => setReporteTab('CERRADO')}
             >
@@ -1177,7 +1329,7 @@ const Visits: React.FC = () => {
                 {reportesFiltrados.length === 0 ? (
                   <tr>
                     <td colSpan={5} className="py-8 text-center text-gray-500">
-                      No hay reportes {reporteTab.toLowerCase()}.
+                      No hay reportes {reporteTabLabel}.
                     </td>
                   </tr>
                 ) : (
@@ -1511,56 +1663,174 @@ const Visits: React.FC = () => {
                     <div className="text-sm text-gray-500">Sin fotos.</div>
                   )}
                 </div>
+
+                <div className="md-card p-4">
+                  <div className="text-sm font-semibold text-gray-900 mb-2">Historial de reparación</div>
+                  {historialReporte.length ? (
+                    <div className="space-y-2">
+                      {historialReporte.map((h, idx) => (
+                        <div key={`${h.fecha}-${idx}`} className="border rounded-lg p-3 bg-gray-50">
+                          <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
+                            <span>{new Date(h.fecha).toLocaleString()}</span>
+                            <span className="font-semibold text-gray-700">{h.estado}</span>
+                          </div>
+                          <div className="text-sm text-gray-800 whitespace-pre-wrap">{h.nota}</div>
+                          <div className="text-xs text-gray-500 mt-2">Por: {h.porNombre}</div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-sm text-gray-500">Sin historial registrado.</div>
+                  )}
+                </div>
               </div>
 
               <div className="space-y-4">
-	                {openReporte.estado === EstadoReporteEquipo.ABIERTO ? (
-	                  isBiomedico ? (
-	                    <div className="md-card p-4">
-	                      <div className="text-sm font-semibold text-gray-900">Cerrar reporte</div>
-	                      <div className="text-xs text-gray-500 mt-1">
-	                        Al cerrar, el reporte queda en estado <b>CERRADO</b> y no se puede modificar.
-	                      </div>
-	                      <div className="mt-3">
-	                        <label className="block text-sm font-medium text-gray-700">Nota de cierre</label>
-	                        <textarea
-	                          className="w-full border p-2.5 rounded-md"
-	                          rows={4}
-	                          value={cierreNotas}
-	                          onChange={(e) => setCierreNotas(e.target.value)}
-	                          placeholder="Ej: Se reemplazó cable / equipo enviado a mantenimiento / se realizó prueba funcional..."
-	                        />
-	                      </div>
-	                      <button className="md-btn md-btn-filled w-full mt-3" onClick={closeReporte} disabled={closing}>
-	                        {closing ? 'Cerrando...' : 'Cerrar reporte'}
-	                      </button>
-	                    </div>
-	                  ) : (
-	                    <div className="md-card p-4 text-sm text-gray-600">
-	                      <div className="font-semibold text-gray-900">Reporte en revisión</div>
-	                      <div className="text-xs text-gray-500 mt-1">
-	                        Este reporte está <b>ABIERTO</b>. Cuando el biomédico lo cierre, aquí verás la respuesta.
-	                      </div>
-	                      <div className="mt-3 text-xs text-gray-500">
-	                        Evita crear otro reporte para la misma asignación mientras esté abierto.
-	                      </div>
-	                    </div>
-	                  )
-	                ) : (
-	                  <div className="md-card p-4 text-sm text-gray-600">
-	                    <div className="font-semibold text-gray-900">Reporte cerrado</div>
-	                    <div className="text-xs text-gray-500 mt-1">
-	                      Cerrado por: {openReporte.cerradoPorNombre || '—'} ·{' '}
-	                      {openReporte.cerradoAt ? new Date(openReporte.cerradoAt).toLocaleDateString() : '—'}
-	                    </div>
-	                    {openReporte.cierreNotas ? (
-	                      <div className="mt-3 whitespace-pre-wrap text-gray-700">{openReporte.cierreNotas}</div>
-	                    ) : (
-	                      <div className="mt-3 text-gray-500">Sin nota de cierre.</div>
-	                    )}
-	                  </div>
-	                )}
-	              </div>
+                {isBiomedico ? (
+                  openReporte.estado === EstadoReporteEquipo.ABIERTO ? (
+                    <div className="md-card p-4">
+                      <div className="text-sm font-semibold text-gray-900">Iniciar proceso</div>
+                      <div className="text-xs text-gray-500 mt-1">
+                        Registra diagnóstico y plan de reparación para pasar a <b>EN PROCESO</b>.
+                      </div>
+                      <div className="mt-3">
+                        <label className="block text-sm font-medium text-gray-700">Diagnóstico</label>
+                        <textarea
+                          className="w-full border p-2.5 rounded-md"
+                          rows={3}
+                          value={diagnostico}
+                          onChange={(e) => setDiagnostico(e.target.value)}
+                          placeholder="Ej: Falla en fuente de poder / sensor sin lectura..."
+                        />
+                      </div>
+                      <div className="mt-3">
+                        <label className="block text-sm font-medium text-gray-700">Plan de reparación</label>
+                        <textarea
+                          className="w-full border p-2.5 rounded-md"
+                          rows={3}
+                          value={planReparacion}
+                          onChange={(e) => setPlanReparacion(e.target.value)}
+                          placeholder="Ej: Cambiar cable, revisar batería, pruebas funcionales..."
+                        />
+                      </div>
+                      <button
+                        className="md-btn md-btn-filled w-full mt-3"
+                        onClick={startProcesoReporte}
+                        disabled={startingProceso}
+                      >
+                        {startingProceso ? 'Guardando...' : 'Pasar a EN PROCESO'}
+                      </button>
+                    </div>
+                  ) : openReporte.estado === EstadoReporteEquipo.EN_PROCESO ? (
+                    <>
+                      <div className="md-card p-4">
+                        <div className="text-sm font-semibold text-gray-900">En proceso</div>
+                        <div className="text-xs text-gray-500 mt-1">
+                          Diagnóstico y plan registrados para este reporte.
+                        </div>
+                        <div className="mt-3">
+                          <div className="text-xs font-semibold text-gray-600 mb-1">Diagnóstico</div>
+                          <div className="text-sm text-gray-800 whitespace-pre-wrap">
+                            {openReporte.diagnostico || diagnostico || '—'}
+                          </div>
+                        </div>
+                        <div className="mt-3">
+                          <div className="text-xs font-semibold text-gray-600 mb-1">Plan de reparación</div>
+                          <div className="text-sm text-gray-800 whitespace-pre-wrap">
+                            {openReporte.planReparacion || planReparacion || '—'}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="md-card p-4">
+                        <div className="text-sm font-semibold text-gray-900">Registrar avance</div>
+                        <div className="mt-2">
+                          <textarea
+                            className="w-full border p-2.5 rounded-md"
+                            rows={3}
+                            value={notaProceso}
+                            onChange={(e) => setNotaProceso(e.target.value)}
+                            placeholder="Ej: Se realizó limpieza interna / se cambió cable / se probaron sensores..."
+                          />
+                        </div>
+                        <button
+                          className="md-btn md-btn-outlined w-full mt-3"
+                          onClick={addNotaProceso}
+                          disabled={addingNota}
+                        >
+                          {addingNota ? 'Guardando...' : 'Guardar avance'}
+                        </button>
+                      </div>
+
+                      <div className="md-card p-4">
+                        <div className="text-sm font-semibold text-gray-900">Cerrar reporte</div>
+                        <div className="text-xs text-gray-500 mt-1">
+                          Al cerrar, el reporte queda en estado <b>CERRADO</b> y no se puede modificar.
+                        </div>
+                        <div className="mt-3">
+                          <label className="block text-sm font-medium text-gray-700">Nota de cierre</label>
+                          <textarea
+                            className="w-full border p-2.5 rounded-md"
+                            rows={4}
+                            value={cierreNotas}
+                            onChange={(e) => setCierreNotas(e.target.value)}
+                            placeholder="Ej: Se reemplazó cable / equipo enviado a mantenimiento / prueba funcional OK..."
+                          />
+                        </div>
+                        <button className="md-btn md-btn-filled w-full mt-3" onClick={closeReporte} disabled={closing}>
+                          {closing ? 'Cerrando...' : 'Cerrar reporte'}
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="md-card p-4 text-sm text-gray-600">
+                      <div className="font-semibold text-gray-900">Reporte cerrado</div>
+                      <div className="text-xs text-gray-500 mt-1">
+                        Cerrado por: {openReporte.cerradoPorNombre || '—'} ·{' '}
+                        {openReporte.cerradoAt ? new Date(openReporte.cerradoAt).toLocaleDateString() : '—'}
+                      </div>
+                      {openReporte.cierreNotas ? (
+                        <div className="mt-3 whitespace-pre-wrap text-gray-700">{openReporte.cierreNotas}</div>
+                      ) : (
+                        <div className="mt-3 text-gray-500">Sin nota de cierre.</div>
+                      )}
+                    </div>
+                  )
+                ) : openReporte.estado === EstadoReporteEquipo.CERRADO ? (
+                  <div className="md-card p-4 text-sm text-gray-600">
+                    <div className="font-semibold text-gray-900">Reporte cerrado</div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      Cerrado por: {openReporte.cerradoPorNombre || '—'} ·{' '}
+                      {openReporte.cerradoAt ? new Date(openReporte.cerradoAt).toLocaleDateString() : '—'}
+                    </div>
+                    {openReporte.cierreNotas ? (
+                      <div className="mt-3 whitespace-pre-wrap text-gray-700">{openReporte.cierreNotas}</div>
+                    ) : (
+                      <div className="mt-3 text-gray-500">Sin nota de cierre.</div>
+                    )}
+                  </div>
+                ) : openReporte.estado === EstadoReporteEquipo.EN_PROCESO ? (
+                  <div className="md-card p-4 text-sm text-gray-600">
+                    <div className="font-semibold text-gray-900">Reporte en proceso</div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      El biomédico está trabajando el reporte. Aquí verás la respuesta cuando lo cierre.
+                    </div>
+                    {openReporte.diagnostico ? (
+                      <div className="mt-3 whitespace-pre-wrap text-gray-700">{openReporte.diagnostico}</div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="md-card p-4 text-sm text-gray-600">
+                    <div className="font-semibold text-gray-900">Reporte en revisión</div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      Este reporte está <b>ABIERTO</b>. Cuando el biomédico lo avance/cierre, aquí verás la respuesta.
+                    </div>
+                    <div className="mt-3 text-xs text-gray-500">
+                      Evita crear otro reporte para la misma asignación mientras esté abierto.
+                    </div>
+                  </div>
+                )}
+              </div>
 	            </div>
 	          </div>
 	        </div>

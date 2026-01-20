@@ -1,5 +1,6 @@
 import {
   addDoc,
+  arrayUnion,
   collection,
   deleteDoc,
   deleteField,
@@ -412,7 +413,10 @@ export function subscribeReportesEquiposAbiertosCount(
   onCount: (count: number) => void,
   onError?: (e: Error) => void,
 ) {
-  const q = query(reportesEquiposCol, where('estado', '==', EstadoReporteEquipo.ABIERTO));
+  const q = query(
+    reportesEquiposCol,
+    where('estado', 'in', [EstadoReporteEquipo.ABIERTO, EstadoReporteEquipo.EN_PROCESO]),
+  );
   return onSnapshot(
     q,
     (snap) => onCount(snap.size),
@@ -450,8 +454,71 @@ export async function marcarReporteVistoPorVisitador(params: { idReporte: string
 
 export async function createReporteEquipo(reporte: ReporteEquipo) {
   const ref = doc(reportesEquiposCol, reporte.id);
-  const { id, ...rest } = reporte;
-  await setDoc(ref, stripUndefinedDeep({ ...rest, createdAt: serverTimestamp() }) as any);
+  const { id, historial, ...rest } = reporte;
+  const nowIso = new Date().toISOString();
+  const historialFinal =
+    historial && historial.length
+      ? historial
+      : [
+          {
+            fecha: nowIso,
+            estado: reporte.estado,
+            nota: reporte.descripcion,
+            porUid: reporte.creadoPorUid,
+            porNombre: reporte.creadoPorNombre,
+          },
+        ];
+  const payload = stripUndefinedDeep({
+    ...rest,
+    historial: historialFinal,
+  }) as any;
+  payload.createdAt = serverTimestamp();
+  await setDoc(ref, payload);
+}
+
+export async function iniciarReporteEnProceso(params: {
+  idReporte: string;
+  diagnostico: string;
+  planReparacion: string;
+  porUid: string;
+  porNombre: string;
+}) {
+  const nowIso = new Date().toISOString();
+  const ref = doc(reportesEquiposCol, params.idReporte);
+  await updateDoc(ref, {
+    estado: EstadoReporteEquipo.EN_PROCESO,
+    diagnostico: params.diagnostico,
+    planReparacion: params.planReparacion,
+    enProcesoAt: nowIso,
+    enProcesoPorUid: params.porUid,
+    enProcesoPorNombre: params.porNombre,
+    historial: arrayUnion({
+      fecha: nowIso,
+      estado: EstadoReporteEquipo.EN_PROCESO,
+      nota: `Inicio de proceso: ${params.diagnostico}\nPlan: ${params.planReparacion}`,
+      porUid: params.porUid,
+      porNombre: params.porNombre,
+    }),
+  } as any);
+}
+
+export async function agregarNotaReporte(params: {
+  idReporte: string;
+  nota: string;
+  porUid: string;
+  porNombre: string;
+}) {
+  const nowIso = new Date().toISOString();
+  const ref = doc(reportesEquiposCol, params.idReporte);
+  await updateDoc(ref, {
+    historial: arrayUnion({
+      fecha: nowIso,
+      estado: EstadoReporteEquipo.EN_PROCESO,
+      nota: params.nota,
+      porUid: params.porUid,
+      porNombre: params.porNombre,
+    }),
+  } as any);
 }
 
 export async function cerrarReporteEquipo(params: {
@@ -460,17 +527,22 @@ export async function cerrarReporteEquipo(params: {
   cerradoPorUid: string;
   cerradoPorNombre: string;
 }) {
+  const nowIso = new Date().toISOString();
   const ref = doc(reportesEquiposCol, params.idReporte);
-  await updateDoc(
-    ref,
-    stripUndefinedDeep({
+  await updateDoc(ref, {
+    estado: EstadoReporteEquipo.CERRADO,
+    cierreNotas: params.cierreNotas,
+    cerradoAt: nowIso,
+    cerradoPorUid: params.cerradoPorUid,
+    cerradoPorNombre: params.cerradoPorNombre,
+    historial: arrayUnion({
+      fecha: nowIso,
       estado: EstadoReporteEquipo.CERRADO,
-      cierreNotas: params.cierreNotas,
-      cerradoAt: new Date().toISOString(),
-      cerradoPorUid: params.cerradoPorUid,
-      cerradoPorNombre: params.cerradoPorNombre,
-    }) as any,
-  );
+      nota: params.cierreNotas,
+      porUid: params.cerradoPorUid,
+      porNombre: params.cerradoPorNombre,
+    }),
+  } as any);
 }
 
 export async function createSolicitudEquipoPaciente(solicitud: SolicitudEquipoPaciente) {

@@ -247,7 +247,7 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
             badge={usuario?.rol === RolUsuario.INGENIERO_BIOMEDICO ? pendingSolicitudesEquipos : 0}
           />
           <NavItem
-            label="Visitas"
+            label={usuario?.rol === RolUsuario.INGENIERO_BIOMEDICO ? 'Mantenimientos' : 'Visitas'}
             path="#/visitas"
             roles={[RolUsuario.VISITADOR, RolUsuario.INGENIERO_BIOMEDICO]}
             badge={

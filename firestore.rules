@@ -136,19 +136,46 @@ service cloud.firestore {
       );
 
       // Update:
-      // - Cierre: solo biomédico, y solo para cerrar (no modificar campos base)
+      // - Proceso: biomédico pasa de ABIERTO -> EN_PROCESO y registra diagnóstico/plan.
+      // - Avances: biomédico agrega notas en EN_PROCESO.
+      // - Cierre: biomédico cierra desde EN_PROCESO.
       // - Leído: visitador marca vistoPorVisitadorAt (solo su propio reporte ya cerrado)
       allow update: if isSignedIn() && (
         (
           isBiomedico()
           && resource.data.estado == "ABIERTO"
+          && request.resource.data.estado == "EN_PROCESO"
+          && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+            "estado",
+            "diagnostico",
+            "planReparacion",
+            "enProcesoAt",
+            "enProcesoPorUid",
+            "enProcesoPorNombre",
+            "historial"
+          ])
+        )
+        || (
+          isBiomedico()
+          && resource.data.estado == "EN_PROCESO"
+          && request.resource.data.estado == "EN_PROCESO"
+          && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+            "diagnostico",
+            "planReparacion",
+            "historial"
+          ])
+        )
+        || (
+          isBiomedico()
+          && resource.data.estado == "EN_PROCESO"
           && request.resource.data.estado == "CERRADO"
           && request.resource.data.diff(resource.data).changedKeys().hasOnly([
             "estado",
             "cerradoAt",
             "cerradoPorUid",
             "cerradoPorNombre",
-            "cierreNotas"
+            "cierreNotas",
+            "historial"
           ])
         )
         || (
