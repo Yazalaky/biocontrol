@@ -30,9 +30,13 @@ import {
   type ActaInterna,
   type Asignacion,
   type AsignacionProfesional,
+  type EquipoFoto,
   type EquipoBiomedico,
+  type HojaVidaDatosEquipo,
+  type HojaVidaFijos,
   type Paciente,
   type Profesional,
+  type TipoEquipo,
 } from '../types';
 
 const pacientesCol = collection(db, 'pacientes');
@@ -43,6 +47,7 @@ const asignacionesProfesionalesCol = collection(db, 'asignaciones_profesionales'
 const actasInternasCol = collection(db, 'actas_internas');
 const reportesEquiposCol = collection(db, 'reportes_equipos');
 const solicitudesEquiposPacienteCol = collection(db, 'solicitudes_equipos_paciente');
+const tiposEquipoCol = collection(db, 'tipos_equipo');
 
 function assertRoleString(value: string, allowed: readonly string[], fieldName: string) {
   if (!allowed.includes(value)) {
@@ -67,6 +72,70 @@ function stripUndefinedDeep<T>(value: T): T {
 
 const upper = (value: string) => value.toUpperCase();
 const upperOptional = (value?: string | null) => (typeof value === 'string' ? value.toUpperCase() : value);
+
+const upperHojaVidaFijos = (value?: HojaVidaFijos) => {
+  if (!value) return undefined;
+  return {
+    definicion: upperOptional(value.definicion),
+    recomendacionesFabricante: upperOptional(value.recomendacionesFabricante),
+    periodicidadMantenimiento: upperOptional(value.periodicidadMantenimiento),
+    calibracion: upperOptional(value.calibracion),
+    tecnicaLimpiezaDesinfeccion: upperOptional(value.tecnicaLimpiezaDesinfeccion),
+    caracteristicasFisicas: value.caracteristicasFisicas
+      ? {
+          altoCm: upperOptional(value.caracteristicasFisicas.altoCm),
+          anchoCm: upperOptional(value.caracteristicasFisicas.anchoCm),
+          profundidadCm: upperOptional(value.caracteristicasFisicas.profundidadCm),
+          pesoKg: upperOptional(value.caracteristicasFisicas.pesoKg),
+          temperaturaC: upperOptional(value.caracteristicasFisicas.temperaturaC),
+          capacidad: upperOptional(value.caracteristicasFisicas.capacidad),
+        }
+      : undefined,
+    caracteristicasElectricas: value.caracteristicasElectricas
+      ? {
+          voltajeV: upperOptional(value.caracteristicasElectricas.voltajeV),
+          corrienteA: upperOptional(value.caracteristicasElectricas.corrienteA),
+          potenciaW: upperOptional(value.caracteristicasElectricas.potenciaW),
+          frecuenciaHz: upperOptional(value.caracteristicasElectricas.frecuenciaHz),
+          tecnologiaPredominante: upperOptional(value.caracteristicasElectricas.tecnologiaPredominante),
+        }
+      : undefined,
+    otrosSuministros: value.otrosSuministros
+      ? {
+          oxigenoO2: upperOptional(value.otrosSuministros.oxigenoO2),
+          aire: upperOptional(value.otrosSuministros.aire),
+          agua: upperOptional(value.otrosSuministros.agua),
+        }
+      : undefined,
+  } as HojaVidaFijos;
+};
+
+const upperHojaVidaDatos = (value?: HojaVidaDatosEquipo) => {
+  if (!value) return undefined;
+  return {
+    empresa: upperOptional(value.empresa),
+    sede: upperOptional(value.sede),
+    direccionEmpresa: upperOptional(value.direccionEmpresa),
+    fabricante: upperOptional(value.fabricante),
+    servicio: upperOptional(value.servicio),
+    tipoEquipo: upperOptional(value.tipoEquipo),
+    registroInvima: upperOptional(value.registroInvima),
+    clasificacionBiomedica: upperOptional(value.clasificacionBiomedica),
+    riesgo: upperOptional(value.riesgo),
+    componentes: upperOptional(value.componentes),
+    formaAdquisicion: upperOptional(value.formaAdquisicion),
+    costoAdquisicion: upperOptional(value.costoAdquisicion),
+    fechaInstalacion: value.fechaInstalacion,
+    vidaUtil: upperOptional(value.vidaUtil),
+    proveedor: upperOptional(value.proveedor),
+    estadoEquipo: upperOptional(value.estadoEquipo),
+    garantia: upperOptional(value.garantia),
+    fechaVencimiento: value.fechaVencimiento,
+    accesorios: upperOptional(value.accesorios),
+    manuales: upperOptional(value.manuales),
+    manualesCuales: upperOptional(value.manualesCuales),
+  } as HojaVidaDatosEquipo;
+};
 
 async function getNextNumber(
   collectionName: 'pacientes' | 'profesionales' | 'asignaciones' | 'asignaciones_profesionales',
@@ -167,6 +236,46 @@ export function subscribeProfesionales(
     },
     (err) => onError?.(err as unknown as Error),
   );
+}
+
+export function subscribeTiposEquipo(onData: (tipos: TipoEquipo[]) => void, onError?: (e: Error) => void) {
+  const q = query(tiposEquipoCol, orderBy('nombre', 'asc'));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const tipos = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<TipoEquipo, 'id'>) }));
+      onData(tipos);
+    },
+    (err) => onError?.(err as unknown as Error),
+  );
+}
+
+export async function saveTipoEquipo(tipo: TipoEquipo) {
+  if (!tipo.nombre) {
+    throw new Error('El tipo de equipo debe tener nombre.');
+  }
+
+  const payload: Omit<TipoEquipo, 'id'> = {
+    nombre: upper(tipo.nombre),
+    fijos: upperHojaVidaFijos(tipo.fijos) || {},
+    updatedAt: new Date().toISOString(),
+  };
+
+  if (tipo.id) {
+    const ref = doc(tiposEquipoCol, tipo.id);
+    await updateDoc(ref, stripUndefinedDeep(payload) as any);
+    return;
+  }
+
+  await addDoc(
+    tiposEquipoCol,
+    stripUndefinedDeep({ ...payload, createdAt: new Date().toISOString() }) as any,
+  );
+}
+
+export async function deleteTipoEquipo(id: string) {
+  const ref = doc(tiposEquipoCol, id);
+  await deleteDoc(ref);
 }
 
 export function subscribeEquipos(onData: (equipos: EquipoBiomedico[]) => void, onError?: (e: Error) => void) {
@@ -780,6 +889,9 @@ export async function saveEquipo(equipo: EquipoBiomedico): Promise<string | unde
     modelo: upper(equipo.modelo),
     ubicacionActual: upperOptional(equipo.ubicacionActual),
     observaciones: upper(equipo.observaciones),
+    tipoEquipoId: equipo.tipoEquipoId,
+    hojaVidaDatos: upperHojaVidaDatos(equipo.hojaVidaDatos),
+    hojaVidaOverrides: upperHojaVidaFijos(equipo.hojaVidaOverrides),
     empresaAlquiler: upperOptional(equipo.empresaAlquiler),
     datosPropietario: equipo.datosPropietario
       ? {
@@ -823,6 +935,16 @@ export async function saveEquipo(equipo: EquipoBiomedico): Promise<string | unde
     }) as any,
   );
   return ref.id;
+}
+
+export async function updateEquipoFoto(id: string, foto: EquipoFoto) {
+  const ref = doc(equiposCol, id);
+  await updateDoc(ref, stripUndefinedDeep({ fotoEquipo: foto }) as any);
+}
+
+export async function clearEquipoFoto(id: string) {
+  const ref = doc(equiposCol, id);
+  await updateDoc(ref, { fotoEquipo: deleteField() } as any);
 }
 
 export async function isNumeroSerieDisponible(numeroSerie: string, excludeId?: string) {

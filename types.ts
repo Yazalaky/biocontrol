@@ -32,6 +32,72 @@ export enum TipoPropiedad {
   EXTERNO = 'EXTERNO',
 }
 
+export interface HojaVidaCaracteristicasFisicas {
+  altoCm?: string;
+  anchoCm?: string;
+  profundidadCm?: string;
+  pesoKg?: string;
+  temperaturaC?: string;
+  capacidad?: string;
+}
+
+export interface HojaVidaCaracteristicasElectricas {
+  voltajeV?: string;
+  corrienteA?: string;
+  potenciaW?: string;
+  frecuenciaHz?: string;
+  tecnologiaPredominante?: string;
+}
+
+export interface HojaVidaOtrosSuministros {
+  oxigenoO2?: string;
+  aire?: string;
+  agua?: string;
+}
+
+export interface HojaVidaFijos {
+  definicion?: string;
+  recomendacionesFabricante?: string;
+  periodicidadMantenimiento?: string;
+  calibracion?: string;
+  tecnicaLimpiezaDesinfeccion?: string;
+  caracteristicasFisicas?: HojaVidaCaracteristicasFisicas;
+  caracteristicasElectricas?: HojaVidaCaracteristicasElectricas;
+  otrosSuministros?: HojaVidaOtrosSuministros;
+}
+
+export interface HojaVidaDatosEquipo {
+  empresa?: string;
+  sede?: string;
+  direccionEmpresa?: string;
+  fabricante?: string;
+  servicio?: string;
+  tipoEquipo?: string;
+  registroInvima?: string;
+  clasificacionBiomedica?: string;
+  riesgo?: string;
+  componentes?: string;
+  formaAdquisicion?: string;
+  costoAdquisicion?: string;
+  fechaInstalacion?: string;
+  vidaUtil?: string;
+  proveedor?: string;
+  estadoEquipo?: string;
+  garantia?: string;
+  fechaVencimiento?: string;
+  accesorios?: string;
+  manuales?: string;
+  manualesCuales?: string;
+}
+
+export interface TipoEquipo {
+  id: string;
+  nombre: string;
+  fijos: HojaVidaFijos;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 // Estados de Acta Interna (Biomédico -> Auxiliar)
 export enum EstadoActaInterna {
   ENVIADA = 'ENVIADA',
@@ -105,6 +171,11 @@ export interface EquipoBiomedico {
   marca: string;
   modelo: string;
   estado: EstadoEquipo;
+  fotoEquipo?: EquipoFoto;
+  // Plantilla (tipo de equipo) y datos de hoja de vida.
+  tipoEquipoId?: string;
+  hojaVidaDatos?: HojaVidaDatosEquipo;
+  hojaVidaOverrides?: HojaVidaFijos;
   // Fecha de ingreso del equipo al inventario (ISO string).
   fechaIngreso?: string;
   // Fecha de mantenimiento (ISO string).
@@ -242,6 +313,14 @@ export interface ReporteFoto {
   name: string; // Nombre original
   size: number; // bytes
   contentType: string;
+}
+
+export interface EquipoFoto {
+  path: string; // Ruta en Storage
+  name: string; // Nombre original
+  size: number; // bytes
+  contentType: string;
+  url?: string; // URL de descarga (cacheable)
 }
 
 export interface ReporteEquipoHistorial {

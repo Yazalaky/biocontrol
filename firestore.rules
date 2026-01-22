@@ -127,6 +127,12 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
+    // --- TIPOS DE EQUIPO (plantillas de hoja de vida) ---
+    match /tipos_equipo/{id} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isSignedIn() && isBiomedico();
+    }
+
     // --- REPORTES (VISITADOR -> BIOMEDICO) ---
     match /reportes_equipos/{id} {
       function asignacionActivaMatch() {

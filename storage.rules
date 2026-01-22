@@ -42,6 +42,19 @@ service firebase.storage {
           || hasRole('GERENCIA'));
     }
 
+    // Fotos de equipos (BIOMEDICO)
+    match /equipos/{equipoId}/{fileName} {
+      allow write: if isSignedIn()
+        && hasRole('INGENIERO_BIOMEDICO')
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/(png|jpeg)');
+
+      allow read: if isSignedIn()
+        && (hasRole('INGENIERO_BIOMEDICO')
+          || hasRole('AUXILIAR_ADMINISTRATIVA')
+          || hasRole('GERENCIA'));
+    }
+
     // Deny by default
     match /{allPaths=**} {
       allow read, write: if false;
