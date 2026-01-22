@@ -60,6 +60,7 @@ const Inventory: React.FC = () => {
   const [equipoFotoFile, setEquipoFotoFile] = useState<File | null>(null);
   const [equipoFotoPreview, setEquipoFotoPreview] = useState<string | null>(null);
   const [removeEquipoFoto, setRemoveEquipoFoto] = useState(false);
+  const [historyFotoDataUrl, setHistoryFotoDataUrl] = useState<string | null>(null);
   
   // Search State
   const [searchTerm, setSearchTerm] = useState('');
@@ -129,6 +130,39 @@ const Inventory: React.FC = () => {
     setEquipoFotoPreview(url);
     return () => URL.revokeObjectURL(url);
   }, [equipoFotoFile]);
+
+  useEffect(() => {
+    const url = historyEquipo?.equipo?.fotoEquipo?.url;
+    if (!url) {
+      setHistoryFotoDataUrl(null);
+      return;
+    }
+    let alive = true;
+    const load = async () => {
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error('No se pudo cargar la imagen');
+        const blob = await resp.blob();
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (!alive) return;
+          setHistoryFotoDataUrl(typeof reader.result === 'string' ? reader.result : null);
+        };
+        reader.onerror = () => {
+          if (!alive) return;
+          setHistoryFotoDataUrl(null);
+        };
+        reader.readAsDataURL(blob);
+      } catch (err) {
+        console.warn('No se pudo convertir la imagen a data URL:', err);
+        if (alive) setHistoryFotoDataUrl(null);
+      }
+    };
+    load();
+    return () => {
+      alive = false;
+    };
+  }, [historyEquipo?.equipo?.fotoEquipo?.url]);
 
   const normalizeTipoPropiedad = (tipo?: TipoPropiedad) => {
     if (tipo === TipoPropiedad.PROPIO) return TipoPropiedad.MEDICUC;
@@ -758,7 +792,7 @@ const Inventory: React.FC = () => {
   setIsHistoryOpen(true);
 };
 
-  const handlePrintHojaVida = () => {
+  const handlePrintHojaVida = async () => {
     const actaEl = hojaVidaPrintRef.current?.querySelector('.acta-page') as HTMLElement | null;
     if (!actaEl) {
       window.print();
@@ -770,8 +804,50 @@ const Inventory: React.FC = () => {
 
     const printRoot = document.createElement('div');
     printRoot.id = 'acta-print-root';
+    printRoot.style.position = 'fixed';
+    printRoot.style.left = '-9999px';
+    printRoot.style.top = '0';
     printRoot.appendChild(actaEl.cloneNode(true));
     document.body.appendChild(printRoot);
+
+    const waitForImages = (root: HTMLElement, timeoutMs = 2000) => {
+      const images = Array.from(root.querySelectorAll('img'));
+      if (images.length === 0) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        let pending = images.length;
+        let finished = false;
+        const done = () => {
+          if (finished) return;
+          finished = true;
+          resolve();
+        };
+        const check = () => {
+          pending -= 1;
+          if (pending <= 0) done();
+        };
+        for (const img of images) {
+          if (img.complete && img.naturalWidth > 0) {
+            check();
+            continue;
+          }
+          const onLoad = () => {
+            img.removeEventListener('load', onLoad);
+            img.removeEventListener('error', onError);
+            check();
+          };
+          const onError = () => {
+            img.removeEventListener('load', onLoad);
+            img.removeEventListener('error', onError);
+            check();
+          };
+          img.addEventListener('load', onLoad);
+          img.addEventListener('error', onError);
+        }
+        setTimeout(done, timeoutMs);
+      });
+    };
+
+    await waitForImages(printRoot);
     document.body.classList.add('printing-acta');
 
     let cleaned = false;
@@ -835,7 +911,7 @@ const Inventory: React.FC = () => {
     ? asignaciones.find((a) => a.idEquipo === historyEquipo.equipo.id && a.estado === EstadoAsignacion.ACTIVA)
     : undefined;
   const historyPaciente = historyAsignacionActiva ? pacientesById.get(historyAsignacionActiva.idPaciente) : undefined;
-  const historyServicio = historyPaciente?.servicio || historyDatos?.servicio || '—';
+  const historyServicio = historyDatos?.servicio || '—';
   const historyUbicacion =
     historyPaciente?.direccion || historyEquipo?.equipo?.ubicacionActual || 'BODEGA';
 
@@ -1343,7 +1419,7 @@ const Inventory: React.FC = () => {
       {/* Modal Crear/Editar */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-start justify-center z-50 overflow-y-auto p-4">
-          <div className="bg-white p-6 rounded-lg w-full max-w-lg max-h-[calc(100vh-2rem)] overflow-y-auto">
+          <div className="bg-white p-6 rounded-lg w-full max-w-3xl max-h-[calc(100vh-2rem)] overflow-y-auto">
             <h3 className="text-xl font-bold mb-4">{formData.id ? 'Editar Equipo' : 'Nuevo Equipo'}</h3>
             {solicitudContext && (
               <div className="mb-4 border border-blue-100 bg-blue-50 text-blue-800 rounded-lg p-3 text-xs">
@@ -1559,22 +1635,28 @@ const Inventory: React.FC = () => {
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-medium">Servicio (desde acta)</label>
-                    <input
-                      className="w-full border p-2 rounded bg-gray-100 text-gray-600"
-                      value={servicioAsignacionActual || formData.hojaVidaDatos?.servicio || ''}
-                      disabled
-                    />
-                    <p className="text-[11px] text-gray-400 mt-1">Se completa automáticamente al asignar el equipo.</p>
+                    <label className="block text-xs font-medium">Servicio</label>
+                    <select
+                      className="w-full border p-2 rounded"
+                      value={formData.hojaVidaDatos?.servicio || ''}
+                      onChange={(e) => updateHojaVidaDatos({ servicio: e.target.value })}
+                    >
+                      <option value="">Selecciona...</option>
+                      <option value="ATENCION DOMICILIARIA">ATENCION DOMICILIARIA</option>
+                      <option value="CONSULTA EXTERNA">CONSULTA EXTERNA</option>
+                    </select>
                   </div>
                   <div>
                     <label className="block text-xs font-medium">Tipo equipo</label>
-                    <input
+                    <select
                       className="w-full border p-2 rounded"
                       value={formData.hojaVidaDatos?.tipoEquipo || ''}
                       onChange={(e) => updateHojaVidaDatos({ tipoEquipo: e.target.value })}
-                      placeholder="Ej: MOVIL"
-                    />
+                    >
+                      <option value="">Selecciona...</option>
+                      <option value="MOVIL">MOVIL</option>
+                      <option value="FIJO">FIJO</option>
+                    </select>
                   </div>
                   <div>
                     <label className="block text-xs font-medium">Registro INVIMA</label>
@@ -1586,19 +1668,32 @@ const Inventory: React.FC = () => {
                   </div>
                   <div>
                     <label className="block text-xs font-medium">Clasificación biomédica</label>
-                    <input
+                    <select
                       className="w-full border p-2 rounded"
                       value={formData.hojaVidaDatos?.clasificacionBiomedica || ''}
                       onChange={(e) => updateHojaVidaDatos({ clasificacionBiomedica: e.target.value })}
-                    />
+                    >
+                      <option value="">Selecciona...</option>
+                      <option value="DIAGNOSTICO">DIAGNOSTICO</option>
+                      <option value="TRATAMIENTO Y MANTENIMIENTO DE LA VIDA">TRATAMIENTO Y MANTENIMIENTO DE LA VIDA</option>
+                      <option value="PREVENCION">PREVENCION</option>
+                      <option value="REHABILITACION">REHABILITACION</option>
+                      <option value="ANALISIS DE LABORATORIO">ANALISIS DE LABORATORIO</option>
+                    </select>
                   </div>
                   <div>
                     <label className="block text-xs font-medium">Riesgo</label>
-                    <input
+                    <select
                       className="w-full border p-2 rounded"
                       value={formData.hojaVidaDatos?.riesgo || ''}
                       onChange={(e) => updateHojaVidaDatos({ riesgo: e.target.value })}
-                    />
+                    >
+                      <option value="">Selecciona...</option>
+                      <option value="CLASE I">CLASE I</option>
+                      <option value="CLASE IIA">CLASE IIA</option>
+                      <option value="CLASE IIB">CLASE IIB</option>
+                      <option value="CLASE III">CLASE III</option>
+                    </select>
                   </div>
                   <div>
                     <label className="block text-xs font-medium">Componentes</label>
@@ -1696,11 +1791,15 @@ const Inventory: React.FC = () => {
                   </div>
                   <div>
                     <label className="block text-xs font-medium">Manuales (SI/NO)</label>
-                    <input
+                    <select
                       className="w-full border p-2 rounded"
                       value={formData.hojaVidaDatos?.manuales || ''}
                       onChange={(e) => updateHojaVidaDatos({ manuales: e.target.value })}
-                    />
+                    >
+                      <option value="">Selecciona...</option>
+                      <option value="SI">SI</option>
+                      <option value="NO">NO</option>
+                    </select>
                   </div>
                   <div>
                     <label className="block text-xs font-medium">Manuales (cuáles)</label>
@@ -2148,9 +2247,6 @@ const Inventory: React.FC = () => {
                   <button onClick={handlePrintHojaVida} className="md-btn md-btn-filled">
                     Imprimir / Guardar PDF
                   </button>
-                  <button onClick={handleDownloadHojaVidaPdf} className="md-btn md-btn-outlined">
-                    Descargar PDF
-                  </button>
                   <button onClick={() => setIsHistoryOpen(false)} className="text-gray-400 hover:text-gray-600">
                       <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                   </button>
@@ -2339,7 +2435,7 @@ const Inventory: React.FC = () => {
                         ubicacion={historyUbicacion}
                         servicio={historyServicio}
                         tipoNombre={historyTipo?.nombre}
-                        imagenUrl={historyEquipo.equipo.fotoEquipo?.url}
+                        imagenUrl={historyFotoDataUrl || historyEquipo.equipo.fotoEquipo?.url}
                       />
                     </div>
                     </>

@@ -147,13 +147,12 @@ const HojaVidaFormat: React.FC<HojaVidaFormatProps> = ({
               </tbody>
             </table>
           </div>
-          <div className="w-40 border-l border-black p-2 flex items-center justify-center">
+          <div className="w-52 border-l border-black p-2 flex items-center justify-center">
             {imagenUrl ? (
               <img
                 src={imagenUrl}
                 alt="Equipo"
                 className="w-full h-full object-contain"
-                crossOrigin="anonymous"
               />
             ) : (
               <div className="text-[9px] text-gray-500 text-center">SIN IMAGEN</div>
