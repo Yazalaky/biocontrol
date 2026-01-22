@@ -1,29 +1,84 @@
 {
   "indexes": [
     {
-      "collectionGroup": "asignaciones",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "idEquipo", "order": "ASCENDING" },
-        { "fieldPath": "estado", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "asignaciones",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "idPaciente", "order": "ASCENDING" },
-        { "fieldPath": "estado", "order": "ASCENDING" }
-      ]
-    },
-    {
       "collectionGroup": "actas_internas",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "recibeUid", "order": "ASCENDING" },
-        { "fieldPath": "estado", "order": "ASCENDING" },
-        { "fieldPath": "fecha", "order": "DESCENDING" }
-      ]
+        {
+          "fieldPath": "recibeUid",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "fecha",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "DESCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "asignaciones",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "idEquipo",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "asignaciones",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "idPaciente",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "pacientes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "consecutivo",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
     }
   ],
   "fieldOverrides": []

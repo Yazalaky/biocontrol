@@ -352,7 +352,11 @@ export function subscribePacientesConAsignacionActiva(
   onData: (pacientes: Paciente[]) => void,
   onError?: (e: Error) => void,
 ) {
-  const q = query(pacientesCol, where('tieneAsignacionActiva', '==', true));
+  const q = query(
+    pacientesCol,
+    where('tieneAsignacionActiva', '==', true),
+    where('estado', '==', EstadoPaciente.ACTIVO),
+  );
   return onSnapshot(
     q,
     (snap) => {
