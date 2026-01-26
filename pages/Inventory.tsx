@@ -317,11 +317,38 @@ const Inventory: React.FC = () => {
   }, [asignaciones, asignacionesProfesionales]);
 
   const [statusFilter, setStatusFilter] = useState<EstadoEquipo | 'ALL'>('ALL');
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>(() => {
+    if (typeof window === 'undefined') return 'grid';
+    const saved = localStorage.getItem('biocontrol_inventory_view');
+    return saved === 'list' ? 'list' : 'grid';
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem('biocontrol_inventory_view', viewMode);
+  }, [viewMode]);
 
   const getEffectiveStatus = (equipo: EquipoBiomedico) => {
     const active = activeAsignacionByEquipo.get(equipo.id);
     const lastFinal = lastFinalEstadoByEquipo.get(equipo.id);
     return active ? EstadoEquipo.ASIGNADO : (lastFinal?.estadoFinal || equipo.estado);
+  };
+
+  const getEquipoMeta = (equipo: EquipoBiomedico) => {
+    const active = activeAsignacionByEquipo.get(equipo.id);
+    const status = getEffectiveStatus(equipo);
+    const propiedad = propiedadMeta(equipo.tipoPropiedad);
+    const tipoNormalizado = normalizeTipoPropiedad(equipo.tipoPropiedad);
+    const ubicacion = (() => {
+      if (!active) return equipo.ubicacionActual;
+      if (active.tipo === 'PACIENTE') {
+        const a = active.asignacion as Asignacion;
+        return pacientesById.get(a.idPaciente)?.nombreCompleto || equipo.ubicacionActual;
+      }
+      const a = active.asignacion as AsignacionProfesional;
+      return profesionalesById.get(a.idProfesional)?.nombre || equipo.ubicacionActual;
+    })();
+    return { status, propiedad, tipoNormalizado, ubicacion };
   };
 
   // Filtro de Equipos (Buscador + Estado)
@@ -1102,31 +1129,57 @@ const Inventory: React.FC = () => {
               onChange={(e) => setSearchTerm(e.target.value)}
             />
           </div>
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <span className="text-xs text-gray-500">Filtrar por estado:</span>
-            {[
-              { label: 'Todos', value: 'ALL' },
-              { label: 'Disponible', value: EstadoEquipo.DISPONIBLE },
-              { label: 'Asignado', value: EstadoEquipo.ASIGNADO },
-              { label: 'Mantenimiento', value: EstadoEquipo.MANTENIMIENTO },
-              { label: 'De baja', value: EstadoEquipo.DADO_DE_BAJA },
-            ].map((opt) => {
-              const active = statusFilter === opt.value;
-              return (
-                <button
-                  key={opt.label}
-                  type="button"
-                  onClick={() => setStatusFilter(opt.value as EstadoEquipo | 'ALL')}
-                  className={`text-xs px-3 py-1.5 rounded-full border font-semibold transition ${
-                    active
-                      ? 'bg-blue-50 text-blue-700 border-blue-200'
-                      : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              );
-            })}
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-gray-500">Filtrar por estado:</span>
+              {[
+                { label: 'Todos', value: 'ALL' },
+                { label: 'Disponible', value: EstadoEquipo.DISPONIBLE },
+                { label: 'Asignado', value: EstadoEquipo.ASIGNADO },
+                { label: 'Mantenimiento', value: EstadoEquipo.MANTENIMIENTO },
+                { label: 'De baja', value: EstadoEquipo.DADO_DE_BAJA },
+              ].map((opt) => {
+                const active = statusFilter === opt.value;
+                return (
+                  <button
+                    key={opt.label}
+                    type="button"
+                    onClick={() => setStatusFilter(opt.value as EstadoEquipo | 'ALL')}
+                    className={`text-xs px-3 py-1.5 rounded-full border font-semibold transition ${
+                      active
+                        ? 'bg-blue-50 text-blue-700 border-blue-200'
+                        : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setViewMode('grid')}
+                className={`text-xs px-3 py-1.5 rounded-full border font-semibold transition ${
+                  viewMode === 'grid'
+                    ? 'bg-blue-50 text-blue-700 border-blue-200'
+                    : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                }`}
+              >
+                Cuadrícula
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('list')}
+                className={`text-xs px-3 py-1.5 rounded-full border font-semibold transition ${
+                  viewMode === 'list'
+                    ? 'bg-blue-50 text-blue-700 border-blue-200'
+                    : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                }`}
+              >
+                Lista
+              </button>
+            </div>
           </div>
         </div>
 
@@ -1220,102 +1273,173 @@ const Inventory: React.FC = () => {
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {filteredEquipos.map(equipo => (
-          (() => {
-            const active = activeAsignacionByEquipo.get(equipo.id);
-            const status = getEffectiveStatus(equipo);
-            const propiedad = propiedadMeta(equipo.tipoPropiedad);
-            const tipoNormalizado = normalizeTipoPropiedad(equipo.tipoPropiedad);
-            const ubicacion = (() => {
-              if (!active) return equipo.ubicacionActual;
-              if (active.tipo === 'PACIENTE') {
-                const a = active.asignacion as Asignacion;
-                return pacientesById.get(a.idPaciente)?.nombreCompleto || equipo.ubicacionActual;
-              }
-              const a = active.asignacion as AsignacionProfesional;
-              return profesionalesById.get(a.idProfesional)?.nombre || equipo.ubicacionActual;
-            })();
+      {viewMode === 'grid' ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {filteredEquipos.map((equipo) => {
+            const { status, propiedad, tipoNormalizado, ubicacion } = getEquipoMeta(equipo);
             return (
-          <div key={equipo.id} className="md-card p-5 hover:shadow-[var(--md-shadow-2)] transition-shadow relative">
-            <div className="flex justify-between items-start mb-2">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-mono bg-gray-100 px-2 py-1 rounded text-gray-600 border border-gray-200">
-                  {equipo.codigoInventario}
-                </span>
-                {equipo.disponibleParaEntrega === false && (
-                  <span className="text-[10px] uppercase px-2 py-1 rounded-full border border-amber-200 bg-amber-50 text-amber-800">
-                    Pendiente acta interna
+              <div key={equipo.id} className="md-card p-5 hover:shadow-[var(--md-shadow-2)] transition-shadow relative">
+                <div className="flex justify-between items-start mb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-mono bg-gray-100 px-2 py-1 rounded text-gray-600 border border-gray-200">
+                      {equipo.codigoInventario}
+                    </span>
+                    {equipo.disponibleParaEntrega === false && (
+                      <span className="text-[10px] uppercase px-2 py-1 rounded-full border border-amber-200 bg-amber-50 text-amber-800">
+                        Pendiente acta interna
+                      </span>
+                    )}
+                  </div>
+                  <StatusBadge status={status} />
+                </div>
+                <h3 className="text-lg font-bold text-gray-900">{equipo.nombre}</h3>
+                <div className="flex flex-col text-sm text-gray-600 mb-1">
+                  <span>{equipo.marca} - {equipo.modelo}</span>
+                  <span className="text-xs text-gray-400 font-mono mt-0.5">S/N: {equipo.numeroSerie}</span>
+                </div>
+                
+                <div className="mt-2 flex items-center">
+                  <span
+                    className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold border ${propiedad.className}`}
+                  >
+                    {propiedad.label}
                   </span>
+                </div>
+
+                <div className="mt-4 pt-4 border-t border-gray-100 text-sm space-y-1">
+                  <p><span className="font-semibold text-gray-500">Ubicación:</span> {ubicacion}</p>
+                  <p className="truncate"><span className="font-semibold text-gray-500">Obs:</span> {equipo.observaciones}</p>
+                  {equipo.fechaIngreso && (
+                    <p className="text-xs text-gray-500 mt-2">
+                      <span className="font-semibold">Ingreso:</span> {new Date(equipo.fechaIngreso).toLocaleDateString('es-CO')}
+                    </p>
+                  )}
+                  {tipoNormalizado === TipoPropiedad.ALQUILADO && equipo.empresaAlquiler && (
+                     <p className="text-xs text-amber-700 mt-2 bg-amber-50 p-1 rounded">
+                       <strong>Empresa alquiler:</strong> {equipo.empresaAlquiler}
+                     </p>
+                  )}
+                </div>
+
+                <div className="mt-3 flex items-center justify-between">
+                    <span className="text-xs text-gray-500 font-medium bg-gray-50 px-2 py-1 rounded">
+                        Historial: {assignmentCounts[equipo.id] || 0} registros
+                    </span>
+                    <button 
+                        onClick={() => openHistory(equipo)}
+                        className="text-xs text-indigo-600 hover:text-indigo-800 font-semibold underline"
+                    >
+                        Ver Hoja de Vida
+                    </button>
+                </div>
+
+                {canEdit && (
+                  <div className="mt-4 grid grid-cols-1 gap-2">
+                    <button onClick={() => openEdit(equipo)} className="w-full md-btn md-btn-outlined">
+                      Editar / Cambiar Estado
+                    </button>
+                    <button
+                      onClick={() => handleDeleteEquipo(equipo)}
+                      className="w-full md-btn md-btn-outlined border-red-200 text-red-700 hover:bg-red-50"
+                    >
+                      Eliminar equipo
+                    </button>
+                  </div>
                 )}
               </div>
-              <StatusBadge status={status} />
-            </div>
-            <h3 className="text-lg font-bold text-gray-900">{equipo.nombre}</h3>
-            <div className="flex flex-col text-sm text-gray-600 mb-1">
-              <span>{equipo.marca} - {equipo.modelo}</span>
-              <span className="text-xs text-gray-400 font-mono mt-0.5">S/N: {equipo.numeroSerie}</span>
-            </div>
-            
-            <div className="mt-2 flex items-center">
-              <span
-                className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold border ${propiedad.className}`}
-              >
-                {propiedad.label}
-              </span>
-            </div>
-
-            <div className="mt-4 pt-4 border-t border-gray-100 text-sm space-y-1">
-              <p><span className="font-semibold text-gray-500">Ubicación:</span> {ubicacion}</p>
-              <p className="truncate"><span className="font-semibold text-gray-500">Obs:</span> {equipo.observaciones}</p>
-              {equipo.fechaIngreso && (
-                <p className="text-xs text-gray-500 mt-2">
-                  <span className="font-semibold">Ingreso:</span> {new Date(equipo.fechaIngreso).toLocaleDateString('es-CO')}
-                </p>
-              )}
-              {tipoNormalizado === TipoPropiedad.ALQUILADO && equipo.empresaAlquiler && (
-                 <p className="text-xs text-amber-700 mt-2 bg-amber-50 p-1 rounded">
-                   <strong>Empresa alquiler:</strong> {equipo.empresaAlquiler}
-                 </p>
-              )}
-            </div>
-
-            {/* Contador de Historial */}
-            <div className="mt-3 flex items-center justify-between">
-                <span className="text-xs text-gray-500 font-medium bg-gray-50 px-2 py-1 rounded">
-	                    Historial: {assignmentCounts[equipo.id] || 0} registros
-	                </span>
-                <button 
-                    onClick={() => openHistory(equipo)}
-                    className="text-xs text-indigo-600 hover:text-indigo-800 font-semibold underline"
-                >
-                    Ver Hoja de Vida
-                </button>
-            </div>
-
-            {canEdit && (
-              <div className="mt-4 grid grid-cols-1 gap-2">
-                <button onClick={() => openEdit(equipo)} className="w-full md-btn md-btn-outlined">
-                  Editar / Cambiar Estado
-                </button>
-                <button
-                  onClick={() => handleDeleteEquipo(equipo)}
-                  className="w-full md-btn md-btn-outlined border-red-200 text-red-700 hover:bg-red-50"
-                >
-                  Eliminar equipo
-                </button>
-              </div>
-            )}
-          </div>
             );
-          })()
-        ))}
-      {filteredEquipos.length === 0 && (
-        <div className="col-span-full py-12 text-center text-gray-500">
-           No se encontraron equipos con los criterios de búsqueda.
+          })}
+          {filteredEquipos.length === 0 && (
+            <div className="col-span-full py-12 text-center text-gray-500">
+              No se encontraron equipos con los criterios de búsqueda.
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="md-card p-0 overflow-auto">
+          {filteredEquipos.length === 0 ? (
+            <div className="py-12 text-center text-gray-500">
+              No se encontraron equipos con los criterios de búsqueda.
+            </div>
+          ) : (
+            <table className="min-w-full text-sm">
+              <thead className="bg-gray-50 text-xs uppercase text-gray-500">
+                <tr>
+                  <th className="px-4 py-3 text-left">Código</th>
+                  <th className="px-4 py-3 text-left">Equipo</th>
+                  <th className="px-4 py-3 text-left">Serie</th>
+                  <th className="px-4 py-3 text-left">Ubicación</th>
+                  <th className="px-4 py-3 text-left">Estado</th>
+                  <th className="px-4 py-3 text-left">Propiedad</th>
+                  <th className="px-4 py-3 text-left">Ingreso</th>
+                  <th className="px-4 py-3 text-left">Acciones</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200 bg-white">
+                {filteredEquipos.map((equipo) => {
+                  const { status, propiedad, tipoNormalizado, ubicacion } = getEquipoMeta(equipo);
+                  return (
+                    <tr key={equipo.id} className="hover:bg-gray-50">
+                      <td className="px-4 py-3 align-top">
+                        <div className="text-xs font-mono bg-gray-100 px-2 py-1 rounded text-gray-600 inline-block border border-gray-200">
+                          {equipo.codigoInventario}
+                        </div>
+                        {equipo.disponibleParaEntrega === false && (
+                          <div className="mt-2 text-[10px] uppercase px-2 py-1 rounded-full border border-amber-200 bg-amber-50 text-amber-800 inline-block">
+                            Pendiente acta interna
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="font-semibold text-gray-900">{equipo.nombre}</div>
+                        <div className="text-xs text-gray-500">{equipo.marca} - {equipo.modelo}</div>
+                        {tipoNormalizado === TipoPropiedad.ALQUILADO && equipo.empresaAlquiler && (
+                          <div className="text-[11px] text-amber-700 mt-1">{equipo.empresaAlquiler}</div>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-xs font-mono text-gray-500">
+                        {equipo.numeroSerie}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-700">{ubicacion}</td>
+                      <td className="px-4 py-3">
+                        <StatusBadge status={status} />
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold border ${propiedad.className}`}>
+                          {propiedad.label}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-xs text-gray-500">
+                        {equipo.fechaIngreso ? new Date(equipo.fechaIngreso).toLocaleDateString('es-CO') : '—'}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex flex-wrap gap-2">
+                          <button onClick={() => openHistory(equipo)} className="md-btn md-btn-outlined">
+                            Hoja de Vida
+                          </button>
+                          {canEdit && (
+                            <>
+                              <button onClick={() => openEdit(equipo)} className="md-btn md-btn-outlined">
+                                Editar
+                              </button>
+                              <button
+                                onClick={() => handleDeleteEquipo(equipo)}
+                                className="md-btn md-btn-outlined border-red-200 text-red-700 hover:bg-red-50"
+                              >
+                                Eliminar
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
         </div>
       )}
-      </div>
 
       {openSolicitud && (
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
