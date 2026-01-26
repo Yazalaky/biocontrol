@@ -821,7 +821,7 @@ const Visits: React.FC = () => {
   }
 
   return (
-    <Layout title={isVisitador ? 'Visitas domiciliarias' : 'Reportes de Mantenimiento'}>
+    <Layout title={isVisitador ? 'Visitas domiciliarias' : 'Reportes de Visitas'}>
       {firestoreError && (
         <div className="mb-4 bg-red-50 border border-red-200 text-red-800 rounded p-3 text-sm">
           {firestoreError}

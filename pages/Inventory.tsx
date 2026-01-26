@@ -2460,7 +2460,6 @@ const Inventory: React.FC = () => {
                         <p>Este equipo no tiene historial registrado.</p>
                     </div>
                 ) : (
-                    <>
                     <div className="space-y-4">
                         <div className="flex justify-between items-center mb-2">
 	                            <h4 className="font-semibold text-gray-700">Historial ({historyEquipo.data.length} registros)</h4>
@@ -2551,19 +2550,18 @@ const Inventory: React.FC = () => {
                           )}
                         </div>
                     </div>
-                    <div id="hoja-vida-print-container" ref={hojaVidaPrintRef} className="fixed -left-[9999px] top-0">
-                      <HojaVidaFormat
-                        equipo={historyEquipo.equipo}
-                        datos={historyDatos}
-                        fijos={historyFijos}
-                        ubicacion={historyUbicacion}
-                        servicio={historyServicio}
-                        tipoNombre={historyTipo?.nombre}
-                        imagenUrl={historyFotoDataUrl || historyEquipo.equipo.fotoEquipo?.url}
-                      />
-                    </div>
-                    </>
                 )}
+                <div id="hoja-vida-print-container" ref={hojaVidaPrintRef} className="fixed -left-[9999px] top-0">
+                  <HojaVidaFormat
+                    equipo={historyEquipo.equipo}
+                    datos={historyDatos}
+                    fijos={historyFijos}
+                    ubicacion={historyUbicacion}
+                    servicio={historyServicio}
+                    tipoNombre={historyTipo?.nombre}
+                    imagenUrl={historyFotoDataUrl || historyEquipo.equipo.fotoEquipo?.url}
+                  />
+                </div>
             </div>
 
             <div className="p-4 border-t border-gray-100 bg-gray-50 rounded-b-lg flex justify-end">
