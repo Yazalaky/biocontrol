@@ -94,6 +94,7 @@ export interface TipoEquipo {
   id: string;
   nombre: string;
   fijos: HojaVidaFijos;
+  trabajoRealizadoDefault?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -102,6 +103,18 @@ export interface TipoEquipo {
 export enum EstadoActaInterna {
   ENVIADA = 'ENVIADA',
   ACEPTADA = 'ACEPTADA',
+}
+
+// Tipos y estados de mantenimiento (preventivo/correctivo)
+export enum TipoMantenimiento {
+  PREVENTIVO = 'PREVENTIVO',
+  CORRECTIVO = 'CORRECTIVO',
+}
+
+export enum EstadoMantenimiento {
+  EN_PROCESO = 'EN_PROCESO',
+  CERRADO_PENDIENTE_ACEPTACION = 'CERRADO_PENDIENTE_ACEPTACION',
+  ACEPTADO = 'ACEPTADO',
 }
 
 // Estados de la Asignación
@@ -367,6 +380,56 @@ export interface ReporteEquipo {
   cerradoPorUid?: string;
   cerradoPorNombre?: string;
   cierreNotas?: string;
+}
+
+export interface MantenimientoRepuesto {
+  cantidad: number;
+  descripcion: string;
+}
+
+export interface MantenimientoHistorial {
+  fecha: string; // ISO
+  estado: EstadoMantenimiento;
+  nota: string;
+  porUid: string;
+  porNombre: string;
+}
+
+export interface Mantenimiento {
+  id: string;
+  consecutivo: number;
+  tipo: TipoMantenimiento;
+  estado: EstadoMantenimiento;
+  fecha: string; // ISO
+  fechaCierre?: string; // ISO
+  fechaAceptacion?: string; // ISO
+  equipoId: string;
+  codigoInventario: string;
+  equipoNombre: string;
+  marca: string;
+  modelo: string;
+  serie: string;
+  ubicacion?: string;
+  sede?: string;
+  ciudad?: string;
+  direccion?: string;
+  telefono?: string;
+  email?: string;
+  trabajoRealizado?: string;
+  fallaReportada?: string;
+  fallaEncontrada?: string;
+  repuestos?: MantenimientoRepuesto[];
+  hh?: string;
+  hp?: string;
+  costo?: string;
+  observaciones?: string;
+  firmaBiomedico?: string;
+  firmaAuxiliar?: string;
+  creadoPorUid: string;
+  creadoPorNombre: string;
+  aceptadoPorUid?: string;
+  aceptadoPorNombre?: string;
+  historial?: MantenimientoHistorial[];
 }
 
 export interface SolicitudEquipoPaciente {

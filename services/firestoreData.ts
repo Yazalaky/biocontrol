@@ -23,8 +23,11 @@ import {
   EstadoEquipo,
   EstadoPaciente,
   EstadoReporteEquipo,
+  EstadoMantenimiento,
   TipoPropiedad,
   EstadoSolicitudEquipoPaciente,
+  type Mantenimiento,
+  type MantenimientoHistorial,
   type ReporteEquipo,
   type SolicitudEquipoPaciente,
   type ActaInterna,
@@ -46,6 +49,7 @@ const asignacionesCol = collection(db, 'asignaciones');
 const asignacionesProfesionalesCol = collection(db, 'asignaciones_profesionales');
 const actasInternasCol = collection(db, 'actas_internas');
 const reportesEquiposCol = collection(db, 'reportes_equipos');
+const mantenimientosCol = collection(db, 'mantenimientos');
 const solicitudesEquiposPacienteCol = collection(db, 'solicitudes_equipos_paciente');
 const tiposEquipoCol = collection(db, 'tipos_equipo');
 
@@ -138,7 +142,7 @@ const upperHojaVidaDatos = (value?: HojaVidaDatosEquipo) => {
 };
 
 async function getNextNumber(
-  collectionName: 'pacientes' | 'profesionales' | 'asignaciones' | 'asignaciones_profesionales',
+  collectionName: 'pacientes' | 'profesionales' | 'asignaciones' | 'asignaciones_profesionales' | 'mantenimientos',
 ): Promise<number> {
   const col =
     collectionName === 'pacientes'
@@ -147,7 +151,9 @@ async function getNextNumber(
         ? profesionalesCol
         : collectionName === 'asignaciones_profesionales'
           ? asignacionesProfesionalesCol
-          : asignacionesCol;
+          : collectionName === 'mantenimientos'
+            ? mantenimientosCol
+            : asignacionesCol;
   const q = query(col, orderBy('consecutivo', 'desc'), limit(1));
   const snap = await getDocs(q);
   const last = snap.docs[0]?.data()?.consecutivo;
@@ -258,6 +264,7 @@ export async function saveTipoEquipo(tipo: TipoEquipo) {
   const payload: Omit<TipoEquipo, 'id'> = {
     nombre: upper(tipo.nombre),
     fijos: upperHojaVidaFijos(tipo.fijos) || {},
+    trabajoRealizadoDefault: upperOptional(tipo.trabajoRealizadoDefault),
     updatedAt: new Date().toISOString(),
   };
 
@@ -533,6 +540,49 @@ export function subscribeReportesEquipos(
   );
 }
 
+export function subscribeMantenimientos(
+  onData: (mantenimientos: Mantenimiento[]) => void,
+  onError?: (e: Error) => void,
+) {
+  const q = query(mantenimientosCol, orderBy('consecutivo', 'desc'));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const mantenimientos = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Mantenimiento, 'id'>) }));
+      onData(mantenimientos);
+    },
+    (err) => onError?.(err as unknown as Error),
+  );
+}
+
+export function subscribeMantenimientosByEstado(
+  estado: EstadoMantenimiento,
+  onData: (mantenimientos: Mantenimiento[]) => void,
+  onError?: (e: Error) => void,
+) {
+  const q = query(mantenimientosCol, where('estado', '==', estado), orderBy('consecutivo', 'desc'));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const mantenimientos = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Mantenimiento, 'id'>) }));
+      onData(mantenimientos);
+    },
+    (err) => onError?.(err as unknown as Error),
+  );
+}
+
+export function subscribeMantenimientosPendientesCount(
+  onCount: (count: number) => void,
+  onError?: (e: Error) => void,
+) {
+  const q = query(mantenimientosCol, where('estado', '==', EstadoMantenimiento.CERRADO_PENDIENTE_ACEPTACION));
+  return onSnapshot(
+    q,
+    (snap) => onCount(snap.size),
+    (err) => onError?.(err as unknown as Error),
+  );
+}
+
 export function subscribeReportesEquiposByUser(
   uid: string,
   onData: (reportes: ReporteEquipo[]) => void,
@@ -702,6 +752,105 @@ export async function cerrarReporteEquipo(params: {
       nota: upper(params.cierreNotas),
       porUid: params.cerradoPorUid,
       porNombre: upper(params.cerradoPorNombre),
+    }),
+  } as any);
+}
+
+const normalizeMantenimientoPayload = (value: Omit<Mantenimiento, 'id'>): Omit<Mantenimiento, 'id'> => {
+  return stripUndefinedDeep({
+    ...value,
+    codigoInventario: upper(value.codigoInventario),
+    equipoNombre: upper(value.equipoNombre),
+    marca: upperOptional(value.marca),
+    modelo: upperOptional(value.modelo),
+    serie: upperOptional(value.serie),
+    ubicacion: upperOptional(value.ubicacion),
+    sede: upperOptional(value.sede),
+    ciudad: upperOptional(value.ciudad),
+    direccion: upperOptional(value.direccion),
+    telefono: upperOptional(value.telefono),
+    email: upperOptional(value.email),
+    trabajoRealizado: upperOptional(value.trabajoRealizado),
+    fallaReportada: upperOptional(value.fallaReportada),
+    fallaEncontrada: upperOptional(value.fallaEncontrada),
+    observaciones: upperOptional(value.observaciones),
+    repuestos: value.repuestos?.map((r) => ({
+      cantidad: r.cantidad,
+      descripcion: upperOptional(r.descripcion) || '',
+    })),
+    creadoPorNombre: upper(value.creadoPorNombre),
+    aceptadoPorNombre: upperOptional(value.aceptadoPorNombre),
+    historial: value.historial?.map((h) => ({
+      ...h,
+      nota: upper(h.nota),
+      porNombre: upper(h.porNombre),
+    })),
+  }) as Omit<Mantenimiento, 'id'>;
+};
+
+const normalizeMantenimientoUpdate = (value: Partial<Mantenimiento>): Partial<Mantenimiento> => {
+  const normalized: Partial<Mantenimiento> = {
+    ...value,
+    codigoInventario: value.codigoInventario !== undefined ? upper(value.codigoInventario) : undefined,
+    equipoNombre: value.equipoNombre !== undefined ? upper(value.equipoNombre) : undefined,
+    marca: value.marca !== undefined ? upperOptional(value.marca) : undefined,
+    modelo: value.modelo !== undefined ? upperOptional(value.modelo) : undefined,
+    serie: value.serie !== undefined ? upperOptional(value.serie) : undefined,
+    ubicacion: value.ubicacion !== undefined ? upperOptional(value.ubicacion) : undefined,
+    sede: value.sede !== undefined ? upperOptional(value.sede) : undefined,
+    ciudad: value.ciudad !== undefined ? upperOptional(value.ciudad) : undefined,
+    direccion: value.direccion !== undefined ? upperOptional(value.direccion) : undefined,
+    telefono: value.telefono !== undefined ? upperOptional(value.telefono) : undefined,
+    email: value.email !== undefined ? upperOptional(value.email) : undefined,
+    trabajoRealizado: value.trabajoRealizado !== undefined ? upperOptional(value.trabajoRealizado) : undefined,
+    fallaReportada: value.fallaReportada !== undefined ? upperOptional(value.fallaReportada) : undefined,
+    fallaEncontrada: value.fallaEncontrada !== undefined ? upperOptional(value.fallaEncontrada) : undefined,
+    observaciones: value.observaciones !== undefined ? upperOptional(value.observaciones) : undefined,
+    repuestos: value.repuestos
+      ? value.repuestos.map((r) => ({
+          cantidad: r.cantidad,
+          descripcion: upperOptional(r.descripcion) || '',
+        }))
+      : undefined,
+    creadoPorNombre: value.creadoPorNombre !== undefined ? upperOptional(value.creadoPorNombre) : undefined,
+    aceptadoPorNombre: value.aceptadoPorNombre !== undefined ? upperOptional(value.aceptadoPorNombre) : undefined,
+    historial: value.historial
+      ? value.historial.map((h) => ({
+          ...h,
+          nota: upper(h.nota),
+          porNombre: upper(h.porNombre),
+        }))
+      : undefined,
+  };
+  return stripUndefinedDeep(normalized);
+};
+
+export async function createMantenimiento(mantenimiento: Omit<Mantenimiento, 'id' | 'consecutivo'>) {
+  const consecutivo = await getNextNumber('mantenimientos');
+  const ref = doc(mantenimientosCol);
+  const payload = normalizeMantenimientoPayload({
+    ...mantenimiento,
+    consecutivo,
+  });
+  await setDoc(ref, payload as any);
+  return { id: ref.id, ...payload };
+}
+
+export async function updateMantenimiento(id: string, patch: Partial<Mantenimiento>) {
+  const ref = doc(mantenimientosCol, id);
+  await updateDoc(ref, normalizeMantenimientoUpdate(patch) as any);
+}
+
+export async function addMantenimientoHistorial(
+  id: string,
+  entry: MantenimientoHistorial,
+) {
+  const ref = doc(mantenimientosCol, id);
+  await updateDoc(ref, {
+    historial: arrayUnion({
+      ...entry,
+      nota: upper(entry.nota),
+      porNombre: upper(entry.porNombre),
     }),
   } as any);
 }

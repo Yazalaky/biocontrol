@@ -269,6 +269,13 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // --- MANTENIMIENTOS (BIOMEDICO -> AUXILIAR) ---
+    match /mantenimientos/{id} {
+      allow read: if isSignedIn() && (isBiomedico() || isAuxiliar() || isGerencia());
+      allow create, update: if isSignedIn() && (isBiomedico() || isAuxiliar());
+      allow delete: if false;
+    }
+
     // --- DENY DEFAULT ---
     match /{document=**} {
       allow read, write: if false;

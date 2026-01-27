@@ -11,6 +11,7 @@ import Reports from './pages/Reports';
 import InternalActas from './pages/InternalActas';
 import Visits from './pages/Visits';
 import Rutero from './pages/Rutero';
+import Mantenimientos from './pages/Mantenimientos';
 import FeedbackHost from './components/FeedbackHost';
 import { RolUsuario } from './types';
 
@@ -68,6 +69,8 @@ const Router = () => {
       return <InternalActas />;
     case '#/visitas':
       return <Visits />;
+    case '#/mantenimientos':
+      return <Mantenimientos />;
     case '#/admin':
       return <Admin />;
     case '#/':

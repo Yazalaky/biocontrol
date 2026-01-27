@@ -188,6 +188,26 @@ body {
   background: var(--md-surface);
   box-shadow: var(--md-shadow-1);
 }
+
+.md-filter-chip {
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 9999px;
+  border: 1px solid var(--md-outline);
+  background: var(--md-surface);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--md-text-2);
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.md-filter-chip:hover {
+  background: rgba(148, 163, 184, 0.08);
+}
+.md-filter-chip.active {
+  background: rgba(37, 99, 235, 0.15);
+  color: var(--md-primary);
+  border-color: rgba(37, 99, 235, 0.3);
+}
 .md-search input {
   border: none !important;
   background: transparent !important;

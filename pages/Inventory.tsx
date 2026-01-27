@@ -88,6 +88,7 @@ const Inventory: React.FC = () => {
     id: '',
     nombre: '',
     fijos: {},
+    trabajoRealizadoDefault: '',
   });
   const [tipoSaving, setTipoSaving] = useState(false);
 
@@ -675,16 +676,17 @@ const Inventory: React.FC = () => {
       setTipoForm({
         ...tipo,
         fijos: tipo.fijos || {},
+        trabajoRealizadoDefault: tipo.trabajoRealizadoDefault || '',
       });
     } else {
-      setTipoForm({ id: '', nombre: '', fijos: {} });
+      setTipoForm({ id: '', nombre: '', fijos: {}, trabajoRealizadoDefault: '' });
     }
     setIsTiposOpen(true);
   };
 
   const closeTiposEquipo = () => {
     setIsTiposOpen(false);
-    setTipoForm({ id: '', nombre: '', fijos: {} });
+    setTipoForm({ id: '', nombre: '', fijos: {}, trabajoRealizadoDefault: '' });
   };
 
   const handleSaveTipoEquipo = async () => {
@@ -2642,6 +2644,16 @@ const Inventory: React.FC = () => {
                     rows={2}
                     value={tipoForm.fijos?.definicion || ''}
                     onChange={(e) => updateTipoFijos({ definicion: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium">Trabajo realizado (default mantenimiento)</label>
+                  <textarea
+                    className="w-full border p-2 rounded"
+                    rows={2}
+                    value={tipoForm.trabajoRealizadoDefault || ''}
+                    onChange={(e) => setTipoForm({ ...tipoForm, trabajoRealizadoDefault: e.target.value })}
+                    placeholder="Texto sugerido para mantenimiento preventivo/correctivo."
                   />
                 </div>
                 <div>

@@ -7,6 +7,7 @@ import {
   subscribeReportesCerradosSinLeerCount,
   subscribeReportesEquiposAbiertosCount,
   subscribeSolicitudesEquiposPacientePendientes,
+  subscribeMantenimientosPendientesCount,
 } from '../services/firestoreData';
 
 interface LayoutProps {
@@ -78,6 +79,11 @@ const Icons = {
       <path d="M8 14a6 6 0 0 1 8 0" />
     </svg>
   ),
+  maintenance: (
+    <svg className="app-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M14.7 6.3a3 3 0 0 0-4.24 4.24l-6.22 6.22a2 2 0 1 0 2.83 2.83l6.22-6.22a3 3 0 0 0 4.24-4.24l-2.83 2.83-2.83-2.83 2.83-2.83Z" />
+    </svg>
+  ),
   admin: (
     <svg className="app-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <path d="M12 3l8 4v6c0 5-3.5 9-8 9s-8-4-8-9V7l8-4Z" />
@@ -102,6 +108,7 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
   const [pendingReportesAbiertos, setPendingReportesAbiertos] = React.useState(0);
   const [pendingCerradosSinLeer, setPendingCerradosSinLeer] = React.useState(0);
   const [pendingSolicitudesEquipos, setPendingSolicitudesEquipos] = React.useState(0);
+  const [pendingMantenimientos, setPendingMantenimientos] = React.useState(0);
 
   React.useEffect(() => {
     setPendingActasInternas(0);
@@ -124,6 +131,18 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
     const unsub = subscribeReportesEquiposAbiertosCount(
       (count) => setPendingReportesAbiertos(count),
       () => setPendingReportesAbiertos(0),
+    );
+    return () => unsub();
+  }, [usuario?.id, usuario?.rol]);
+
+  React.useEffect(() => {
+    setPendingMantenimientos(0);
+    if (!usuario?.id) return;
+    if (usuario.rol !== RolUsuario.AUXILIAR_ADMINISTRATIVA) return;
+
+    const unsub = subscribeMantenimientosPendientesCount(
+      (count) => setPendingMantenimientos(count),
+      () => setPendingMantenimientos(0),
     );
     return () => unsub();
   }, [usuario?.id, usuario?.rol]);
@@ -185,6 +204,7 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
         {path === '#/equipos' ? Icons.inventory : null}
         {path === '#/informes' ? Icons.reports : null}
         {path === '#/visitas' ? Icons.visits : null}
+        {path === '#/mantenimientos' ? Icons.maintenance : null}
         {path === '#/actas-internas' ? Icons.actas : null}
         {path === '#/admin' ? Icons.admin : null}
         <span className="text-sm font-medium flex-1 text-left">{label}</span>
@@ -262,7 +282,13 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
             badge={usuario?.rol === RolUsuario.INGENIERO_BIOMEDICO ? pendingSolicitudesEquipos : 0}
           />
           <NavItem
-            label={usuario?.rol === RolUsuario.INGENIERO_BIOMEDICO ? 'Mantenimientos' : 'Visitas'}
+            label="Mantenimientos"
+            path="#/mantenimientos"
+            roles={[RolUsuario.INGENIERO_BIOMEDICO, RolUsuario.AUXILIAR_ADMINISTRATIVA, RolUsuario.GERENCIA]}
+            badge={usuario?.rol === RolUsuario.AUXILIAR_ADMINISTRATIVA ? pendingMantenimientos : 0}
+          />
+          <NavItem
+            label={usuario?.rol === RolUsuario.INGENIERO_BIOMEDICO ? 'Reportes de Visitas' : 'Visitas'}
             path="#/visitas"
             roles={[RolUsuario.VISITADOR, RolUsuario.INGENIERO_BIOMEDICO]}
             badge={
