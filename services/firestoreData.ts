@@ -777,6 +777,7 @@ const normalizeMantenimientoPayload = (value: Omit<Mantenimiento, 'id'>): Omit<M
     repuestos: value.repuestos?.map((r) => ({
       cantidad: r.cantidad,
       descripcion: upperOptional(r.descripcion) || '',
+      valor: Number.isFinite(r.valor) ? r.valor : 0,
     })),
     creadoPorNombre: upper(value.creadoPorNombre),
     aceptadoPorNombre: upperOptional(value.aceptadoPorNombre),
@@ -810,6 +811,7 @@ const normalizeMantenimientoUpdate = (value: Partial<Mantenimiento>): Partial<Ma
       ? value.repuestos.map((r) => ({
           cantidad: r.cantidad,
           descripcion: upperOptional(r.descripcion) || '',
+          valor: Number.isFinite(r.valor) ? r.valor : 0,
         }))
       : undefined,
     creadoPorNombre: value.creadoPorNombre !== undefined ? upperOptional(value.creadoPorNombre) : undefined,

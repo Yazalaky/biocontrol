@@ -13,6 +13,7 @@ import {
   type EquipoBiomedico,
   type Mantenimiento,
   type MantenimientoHistorial,
+  type MantenimientoRepuesto,
   type Paciente,
   type TipoEquipo,
 } from '../types';
@@ -65,6 +66,26 @@ const Mantenimientos: React.FC = () => {
   const [equipoQuery, setEquipoQuery] = useState('');
   const [equipoPickerOpen, setEquipoPickerOpen] = useState(false);
   const printRef = useRef<HTMLDivElement>(null);
+  const parseRepuestoValor = (value: string) => {
+    const normalized = value.replace(',', '.');
+    const num = parseFloat(normalized);
+    return Number.isFinite(num) ? num : 0;
+  };
+
+  const calcRepuestosTotal = (items?: MantenimientoRepuesto[]) => {
+    if (!items || items.length === 0) return 0;
+    return items.reduce((sum, item) => {
+      const cantidad = Number.isFinite(item.cantidad) ? item.cantidad : 0;
+      const valor = Number.isFinite(item.valor) ? item.valor : 0;
+      return sum + cantidad * valor;
+    }, 0);
+  };
+
+  const formatCosto = (total: number) => {
+    if (!Number.isFinite(total)) return '';
+    if (Math.round(total) === total) return String(total);
+    return total.toFixed(2);
+  };
 
   useEffect(() => {
     const unsub = subscribeMantenimientos(setMantenimientos, (e) => {
@@ -89,7 +110,25 @@ const Mantenimientos: React.FC = () => {
   }, [isBiomedico]);
 
   const pacientesById = useMemo(() => new Map(pacientes.map((p) => [p.id, p])), [pacientes]);
+  const equiposById = useMemo(() => new Map(equipos.map((e) => [e.id, e])), [equipos]);
   const tiposEquipoById = useMemo(() => new Map(tiposEquipo.map((t) => [t.id, t])), [tiposEquipo]);
+  const tiposEquipoByNombre = useMemo(() => {
+    const map = new Map<string, TipoEquipo>();
+    for (const tipo of tiposEquipo) {
+      const key = tipo.nombre?.trim().toLowerCase();
+      if (key) {
+        map.set(key, tipo);
+      }
+    }
+    return map;
+  }, [tiposEquipo]);
+
+  const getTrabajoDefault = (equipo?: EquipoBiomedico) => {
+    if (!equipo) return '';
+    const tipoPorId = equipo.tipoEquipoId ? tiposEquipoById.get(equipo.tipoEquipoId) : undefined;
+    const tipoPorNombre = !tipoPorId ? tiposEquipoByNombre.get(equipo.nombre?.trim().toLowerCase()) : undefined;
+    return tipoPorId?.trabajoRealizadoDefault || tipoPorNombre?.trabajoRealizadoDefault || '';
+  };
 
   const activeAsignacionByEquipo = useMemo(() => {
     const map = new Map<string, Asignacion>();
@@ -120,6 +159,18 @@ const Mantenimientos: React.FC = () => {
     setNotaProceso('');
     setEquipoQuery('');
     setEquipoPickerOpen(false);
+  };
+
+  const updateRepuestos = (nextRepuestos: MantenimientoRepuesto[]) => {
+    setForm((prev) => {
+      if (!prev) return prev;
+      const total = calcRepuestosTotal(nextRepuestos);
+      return {
+        ...prev,
+        repuestos: nextRepuestos,
+        costo: formatCosto(total),
+      };
+    });
   };
 
   const openNew = () => {
@@ -174,7 +225,7 @@ const Mantenimientos: React.FC = () => {
   const applyEquipo = (equipo: EquipoBiomedico) => {
     const asignacion = activeAsignacionByEquipo.get(equipo.id);
     const paciente = asignacion ? pacientesById.get(asignacion.idPaciente) : undefined;
-    const tipoPlantilla = equipo.tipoEquipoId ? tiposEquipoById.get(equipo.tipoEquipoId) : undefined;
+    const trabajoDefault = getTrabajoDefault(equipo);
     setForm((prev) => {
       if (!prev) return prev;
       return {
@@ -190,7 +241,7 @@ const Mantenimientos: React.FC = () => {
         ciudad: paciente?.barrio || prev.ciudad || '',
         sede: prev.sede || equipo.hojaVidaDatos?.sede || 'BUCARAMANGA',
         telefono: paciente?.telefono || prev.telefono || '',
-        trabajoRealizado: prev.trabajoRealizado || tipoPlantilla?.trabajoRealizadoDefault || '',
+        trabajoRealizado: prev.tipo === TipoMantenimiento.PREVENTIVO ? trabajoDefault : '',
       };
     });
   };
@@ -218,6 +269,7 @@ const Mantenimientos: React.FC = () => {
       toast({ tone: 'warning', message: 'La firma del biomédico es obligatoria para el mantenimiento preventivo.' });
       return;
     }
+    const costoRepuestos = formatCosto(calcRepuestosTotal(form.repuestos));
     setSaving(true);
     try {
       if (!form.id) {
@@ -228,6 +280,7 @@ const Mantenimientos: React.FC = () => {
             : EstadoMantenimiento.EN_PROCESO;
         const nuevo = await createMantenimiento({
           ...rest,
+          costo: costoRepuestos,
           estado,
           fecha: form.fecha || new Date().toISOString().slice(0, 10),
           creadoPorUid: usuario.id,
@@ -237,7 +290,7 @@ const Mantenimientos: React.FC = () => {
         toast({ tone: 'success', message: 'Mantenimiento creado.' });
       } else {
         const { id: mantenimientoId, consecutivo: _consecutivo, ...patch } = form;
-        await updateMantenimiento(mantenimientoId, patch);
+        await updateMantenimiento(mantenimientoId, { ...patch, costo: costoRepuestos });
         toast({ tone: 'success', message: 'Mantenimiento actualizado.' });
       }
     } catch (err: any) {
@@ -571,14 +624,17 @@ const Mantenimientos: React.FC = () => {
                         value={form.tipo}
                         onChange={(e) => {
                           const tipo = e.target.value as TipoMantenimiento;
+                          const equipoActual = form.equipoId ? equiposById.get(form.equipoId) : undefined;
+                          const trabajoDefault = getTrabajoDefault(equipoActual);
+                          const trabajoRealizado = tipo === TipoMantenimiento.PREVENTIVO ? trabajoDefault : '';
                           if (!form.id) {
                             const nuevoEstado =
                               tipo === TipoMantenimiento.PREVENTIVO
                                 ? EstadoMantenimiento.CERRADO_PENDIENTE_ACEPTACION
                                 : EstadoMantenimiento.EN_PROCESO;
-                            setForm({ ...form, tipo, estado: nuevoEstado });
+                            setForm({ ...form, tipo, estado: nuevoEstado, trabajoRealizado });
                           } else {
-                            setForm({ ...form, tipo });
+                            setForm({ ...form, tipo, trabajoRealizado });
                           }
                         }}
                         disabled={!isBiomedico}
@@ -716,8 +772,8 @@ const Mantenimientos: React.FC = () => {
                         type="button"
                         onClick={() => {
                           const repuestos = form.repuestos ? [...form.repuestos] : [];
-                          repuestos.push({ cantidad: 1, descripcion: '' });
-                          setForm({ ...form, repuestos });
+                          repuestos.push({ cantidad: 1, descripcion: '', valor: 0 });
+                          updateRepuestos(repuestos);
                         }}
                       >
                         Agregar
@@ -729,7 +785,7 @@ const Mantenimientos: React.FC = () => {
                       <div className="text-sm text-gray-500">Sin repuestos.</div>
                     )}
                     {(form.repuestos || []).map((r, idx) => (
-                      <div key={idx} className="grid grid-cols-[80px_1fr_auto] gap-2 items-center">
+                      <div key={idx} className="grid grid-cols-[80px_1fr_160px_auto] gap-2 items-center">
                         <input
                           type="number"
                           min={0}
@@ -738,8 +794,8 @@ const Mantenimientos: React.FC = () => {
                           disabled={!isBiomedico}
                           onChange={(e) => {
                             const repuestos = [...(form.repuestos || [])];
-                            repuestos[idx] = { ...repuestos[idx], cantidad: Number(e.target.value) };
-                            setForm({ ...form, repuestos });
+                            repuestos[idx] = { ...repuestos[idx], cantidad: Number(e.target.value || 0) };
+                            updateRepuestos(repuestos);
                           }}
                         />
                         <input
@@ -749,7 +805,21 @@ const Mantenimientos: React.FC = () => {
                           onChange={(e) => {
                             const repuestos = [...(form.repuestos || [])];
                             repuestos[idx] = { ...repuestos[idx], descripcion: e.target.value };
-                            setForm({ ...form, repuestos });
+                            updateRepuestos(repuestos);
+                          }}
+                        />
+                        <input
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          className="border p-2 rounded"
+                          placeholder="Valor unitario"
+                          value={Number.isFinite(r.valor) ? r.valor : ''}
+                          disabled={!isBiomedico}
+                          onChange={(e) => {
+                            const repuestos = [...(form.repuestos || [])];
+                            repuestos[idx] = { ...repuestos[idx], valor: parseRepuestoValor(e.target.value) };
+                            updateRepuestos(repuestos);
                           }}
                         />
                         {isBiomedico && (
@@ -759,7 +829,7 @@ const Mantenimientos: React.FC = () => {
                             onClick={() => {
                               const repuestos = [...(form.repuestos || [])];
                               repuestos.splice(idx, 1);
-                              setForm({ ...form, repuestos });
+                              updateRepuestos(repuestos);
                             }}
                           >
                             Quitar
@@ -791,11 +861,11 @@ const Mantenimientos: React.FC = () => {
                       />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-gray-700">Costo</label>
+                      <label className="block text-sm font-medium text-gray-700">Costo total</label>
                       <input
                         className="mt-1 w-full border p-2 rounded"
                         value={form.costo || ''}
-                        onChange={(e) => setForm({ ...form, costo: e.target.value })}
+                        readOnly
                         disabled={!isBiomedico}
                       />
                     </div>

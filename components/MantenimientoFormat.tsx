@@ -136,6 +136,7 @@ const MantenimientoFormat: React.FC<Props> = ({ mantenimiento }) => {
             <tr>
               <th className="border border-black px-2 py-1 w-12">Cant.</th>
               <th className="border border-black px-2 py-1 text-left">Descripción</th>
+              <th className="border border-black px-2 py-1 w-24">Valor unitario</th>
             </tr>
           </thead>
           <tbody>
@@ -143,6 +144,9 @@ const MantenimientoFormat: React.FC<Props> = ({ mantenimiento }) => {
               <tr key={`${r.descripcion}-${idx}`}>
                 <td className="border border-black px-2 py-1 text-center">{r.cantidad}</td>
                 <td className="border border-black px-2 py-1">{r.descripcion || '—'}</td>
+                <td className="border border-black px-2 py-1 text-right">
+                  {Number.isFinite(r.valor) ? r.valor : '—'}
+                </td>
               </tr>
             ))}
           </tbody>

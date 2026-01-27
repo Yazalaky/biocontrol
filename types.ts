@@ -385,6 +385,7 @@ export interface ReporteEquipo {
 export interface MantenimientoRepuesto {
   cantidad: number;
   descripcion: string;
+  valor?: number;
 }
 
 export interface MantenimientoHistorial {
