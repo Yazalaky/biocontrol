@@ -577,6 +577,11 @@ const Inventory: React.FC = () => {
   };
 
   const mergeHojaVidaFijos = (base?: HojaVidaFijos, override?: HojaVidaFijos): HojaVidaFijos => ({
+    direccionEmpresa: override?.direccionEmpresa ?? base?.direccionEmpresa,
+    fabricante: override?.fabricante ?? base?.fabricante,
+    clasificacionBiomedica: override?.clasificacionBiomedica ?? base?.clasificacionBiomedica,
+    componentes: override?.componentes ?? base?.componentes,
+    vidaUtil: override?.vidaUtil ?? base?.vidaUtil,
     definicion: override?.definicion ?? base?.definicion,
     recomendacionesFabricante: override?.recomendacionesFabricante ?? base?.recomendacionesFabricante,
     periodicidadMantenimiento: override?.periodicidadMantenimiento ?? base?.periodicidadMantenimiento,
@@ -728,6 +733,74 @@ const Inventory: React.FC = () => {
     } catch (err: any) {
       console.error('Error eliminando tipo de equipo:', err);
       toast({ tone: 'error', message: err?.message || 'No se pudo eliminar el tipo de equipo.' });
+    }
+  };
+
+  const handleMigrarFijos = async () => {
+    if (!canEdit) return;
+    if (tiposEquipo.length === 0) {
+      toast({ tone: 'info', message: 'No hay tipos de equipo para migrar.' });
+      return;
+    }
+    const ok = await confirmDialog({
+      title: 'Migrar datos fijos por tipo',
+      message:
+        'Se tomarán datos existentes de los equipos para completar Dirección, Fabricante, Clasificación, Componentes y Vida útil en cada tipo (solo si están vacíos). ¿Deseas continuar?',
+      confirmText: 'Migrar',
+      cancelText: 'Cancelar',
+    });
+    if (!ok) return;
+
+    const firstNonEmpty = (values: Array<string | undefined | null>) => {
+      for (const v of values) {
+        if (typeof v === 'string' && v.trim()) return v;
+      }
+      return undefined;
+    };
+
+    let updated = 0;
+    for (const tipo of tiposEquipo) {
+      const equiposTipo = equipos.filter((e) => e.tipoEquipoId === tipo.id);
+      if (equiposTipo.length === 0) continue;
+
+      const base = tipo.fijos || {};
+      const patch: Partial<HojaVidaFijos> = {};
+
+      if (!base.direccionEmpresa) {
+        patch.direccionEmpresa = firstNonEmpty(equiposTipo.map((e) => e.hojaVidaDatos?.direccionEmpresa));
+      }
+      if (!base.fabricante) {
+        patch.fabricante = firstNonEmpty(equiposTipo.map((e) => e.hojaVidaDatos?.fabricante));
+      }
+      if (!base.clasificacionBiomedica) {
+        patch.clasificacionBiomedica = firstNonEmpty(
+          equiposTipo.map((e) => e.hojaVidaDatos?.clasificacionBiomedica),
+        );
+      }
+      if (!base.componentes) {
+        patch.componentes = firstNonEmpty(equiposTipo.map((e) => e.hojaVidaDatos?.componentes));
+      }
+      if (!base.vidaUtil) {
+        patch.vidaUtil = firstNonEmpty(equiposTipo.map((e) => e.hojaVidaDatos?.vidaUtil));
+      }
+
+      if (Object.values(patch).some((v) => typeof v === 'string' && v.trim())) {
+        try {
+          await saveTipoEquipo({
+            ...tipo,
+            fijos: { ...(tipo.fijos || {}), ...patch },
+          });
+          updated += 1;
+        } catch (err) {
+          console.error('Error migrando tipo:', tipo.nombre, err);
+        }
+      }
+    }
+
+    if (updated > 0) {
+      toast({ tone: 'success', message: `Migración completada. Tipos actualizados: ${updated}.` });
+    } else {
+      toast({ tone: 'info', message: 'No hubo cambios para migrar.' });
     }
   };
 
@@ -1748,22 +1821,6 @@ const Inventory: React.FC = () => {
                       onChange={(e) => updateHojaVidaDatos({ sede: e.target.value })}
                     />
                   </div>
-                  <div className="md:col-span-2">
-                    <label className="block text-xs font-medium">Dirección (empresa)</label>
-                    <input
-                      className="w-full border p-2 rounded"
-                      value={formData.hojaVidaDatos?.direccionEmpresa || ''}
-                      onChange={(e) => updateHojaVidaDatos({ direccionEmpresa: e.target.value })}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium">Fabricante</label>
-                    <input
-                      className="w-full border p-2 rounded"
-                      value={formData.hojaVidaDatos?.fabricante || ''}
-                      onChange={(e) => updateHojaVidaDatos({ fabricante: e.target.value })}
-                    />
-                  </div>
                   <div>
                     <label className="block text-xs font-medium">Servicio</label>
                     <select
@@ -1797,21 +1854,6 @@ const Inventory: React.FC = () => {
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-medium">Clasificación biomédica</label>
-                    <select
-                      className="w-full border p-2 rounded"
-                      value={formData.hojaVidaDatos?.clasificacionBiomedica || ''}
-                      onChange={(e) => updateHojaVidaDatos({ clasificacionBiomedica: e.target.value })}
-                    >
-                      <option value="">Selecciona...</option>
-                      <option value="DIAGNOSTICO">DIAGNOSTICO</option>
-                      <option value="TRATAMIENTO Y MANTENIMIENTO DE LA VIDA">TRATAMIENTO Y MANTENIMIENTO DE LA VIDA</option>
-                      <option value="PREVENCION">PREVENCION</option>
-                      <option value="REHABILITACION">REHABILITACION</option>
-                      <option value="ANALISIS DE LABORATORIO">ANALISIS DE LABORATORIO</option>
-                    </select>
-                  </div>
-                  <div>
                     <label className="block text-xs font-medium">Riesgo</label>
                     <select
                       className="w-full border p-2 rounded"
@@ -1826,20 +1868,19 @@ const Inventory: React.FC = () => {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-xs font-medium">Componentes</label>
-                    <input
-                      className="w-full border p-2 rounded"
-                      value={formData.hojaVidaDatos?.componentes || ''}
-                      onChange={(e) => updateHojaVidaDatos({ componentes: e.target.value })}
-                    />
-                  </div>
-                  <div>
                     <label className="block text-xs font-medium">Forma de adquisición</label>
-                    <input
+                    <select
                       className="w-full border p-2 rounded"
                       value={formData.hojaVidaDatos?.formaAdquisicion || ''}
                       onChange={(e) => updateHojaVidaDatos({ formaAdquisicion: e.target.value })}
-                    />
+                    >
+                      <option value="">Selecciona...</option>
+                      <option value="COMPRA">COMPRA</option>
+                      <option value="TRASLADO">TRASLADO</option>
+                      <option value="DONACION">DONACION</option>
+                      <option value="ARRENDAMIENTO">ARRENDAMIENTO</option>
+                      <option value="COMODATO">COMODATO</option>
+                    </select>
                   </div>
                   <div>
                     <label className="block text-xs font-medium">Costo de adquisición</label>
@@ -1862,14 +1903,6 @@ const Inventory: React.FC = () => {
                           fechaInstalacion: Number.isNaN(d.getTime()) ? undefined : d.toISOString(),
                         });
                       }}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium">Vida útil</label>
-                    <input
-                      className="w-full border p-2 rounded"
-                      value={formData.hojaVidaDatos?.vidaUtil || ''}
-                      onChange={(e) => updateHojaVidaDatos({ vidaUtil: e.target.value })}
                     />
                   </div>
                   <div>
@@ -1947,6 +1980,80 @@ const Inventory: React.FC = () => {
                   Datos fijos por tipo (override opcional)
                 </summary>
                 <div className="mt-3 space-y-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="md:col-span-2">
+                      <label className="block text-xs font-medium">Dirección (empresa)</label>
+                      <input
+                        className="w-full border p-2 rounded"
+                        value={
+                          formData.hojaVidaOverrides?.direccionEmpresa ??
+                          tipoSeleccionado?.fijos?.direccionEmpresa ??
+                          formData.hojaVidaDatos?.direccionEmpresa ??
+                          ''
+                        }
+                        onChange={(e) => updateHojaVidaOverrides({ direccionEmpresa: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium">Fabricante</label>
+                      <input
+                        className="w-full border p-2 rounded"
+                        value={
+                          formData.hojaVidaOverrides?.fabricante ??
+                          tipoSeleccionado?.fijos?.fabricante ??
+                          formData.hojaVidaDatos?.fabricante ??
+                          ''
+                        }
+                        onChange={(e) => updateHojaVidaOverrides({ fabricante: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium">Clasificación biomédica</label>
+                      <select
+                        className="w-full border p-2 rounded"
+                        value={
+                          formData.hojaVidaOverrides?.clasificacionBiomedica ??
+                          tipoSeleccionado?.fijos?.clasificacionBiomedica ??
+                          formData.hojaVidaDatos?.clasificacionBiomedica ??
+                          ''
+                        }
+                        onChange={(e) => updateHojaVidaOverrides({ clasificacionBiomedica: e.target.value })}
+                      >
+                        <option value="">Selecciona...</option>
+                        <option value="DIAGNOSTICO">DIAGNOSTICO</option>
+                        <option value="TRATAMIENTO Y MANTENIMIENTO DE LA VIDA">TRATAMIENTO Y MANTENIMIENTO DE LA VIDA</option>
+                        <option value="PREVENCION">PREVENCION</option>
+                        <option value="REHABILITACION">REHABILITACION</option>
+                        <option value="ANALISIS DE LABORATORIO">ANALISIS DE LABORATORIO</option>
+                      </select>
+                    </div>
+                    <div className="md:col-span-2">
+                      <label className="block text-xs font-medium">Componentes</label>
+                      <input
+                        className="w-full border p-2 rounded"
+                        value={
+                          formData.hojaVidaOverrides?.componentes ??
+                          tipoSeleccionado?.fijos?.componentes ??
+                          formData.hojaVidaDatos?.componentes ??
+                          ''
+                        }
+                        onChange={(e) => updateHojaVidaOverrides({ componentes: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium">Vida útil</label>
+                      <input
+                        className="w-full border p-2 rounded"
+                        value={
+                          formData.hojaVidaOverrides?.vidaUtil ??
+                          tipoSeleccionado?.fijos?.vidaUtil ??
+                          formData.hojaVidaDatos?.vidaUtil ??
+                          ''
+                        }
+                        onChange={(e) => updateHojaVidaOverrides({ vidaUtil: e.target.value })}
+                      />
+                    </div>
+                  </div>
                   <div>
                     <label className="block text-xs font-medium">Definición</label>
                     <textarea
@@ -2389,22 +2496,22 @@ const Inventory: React.FC = () => {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
                     <div><span className="text-gray-500">Empresa:</span> {historyDatos?.empresa || EMPRESA_DEFAULT}</div>
                     <div><span className="text-gray-500">Sede:</span> {historyDatos?.sede || SEDE_DEFAULT}</div>
-                    <div className="md:col-span-2"><span className="text-gray-500">Dirección:</span> {historyDatos?.direccionEmpresa || '—'}</div>
+                    <div className="md:col-span-2"><span className="text-gray-500">Dirección:</span> {historyFijos.direccionEmpresa || historyDatos?.direccionEmpresa || '—'}</div>
                     <div><span className="text-gray-500">Equipo:</span> {historyEquipo.equipo.nombre}</div>
                     <div><span className="text-gray-500">Tipo plantilla:</span> {historyTipo?.nombre || '—'}</div>
                     <div className="md:col-span-2"><span className="text-gray-500">Definición:</span> {historyFijos.definicion || '—'}</div>
                     <div><span className="text-gray-500">Marca:</span> {historyEquipo.equipo.marca}</div>
                     <div><span className="text-gray-500">Modelo:</span> {historyEquipo.equipo.modelo}</div>
                     <div><span className="text-gray-500">Serie:</span> {historyEquipo.equipo.numeroSerie || '—'}</div>
-                    <div><span className="text-gray-500">Fabricante:</span> {historyDatos?.fabricante || '—'}</div>
+                    <div><span className="text-gray-500">Fabricante:</span> {historyFijos.fabricante || historyDatos?.fabricante || '—'}</div>
                     <div><span className="text-gray-500">Servicio:</span> {historyServicio}</div>
                     <div><span className="text-gray-500">Ubicación:</span> {historyUbicacion}</div>
                     <div><span className="text-gray-500">Tipo equipo:</span> {historyDatos?.tipoEquipo || '—'}</div>
                     <div><span className="text-gray-500">Registro INVIMA:</span> {historyDatos?.registroInvima || '—'}</div>
                     <div><span className="text-gray-500">N° Inventario:</span> {historyEquipo.equipo.codigoInventario}</div>
-                    <div><span className="text-gray-500">Clasificación biomédica:</span> {historyDatos?.clasificacionBiomedica || '—'}</div>
+                    <div><span className="text-gray-500">Clasificación biomédica:</span> {historyFijos.clasificacionBiomedica || historyDatos?.clasificacionBiomedica || '—'}</div>
                     <div><span className="text-gray-500">Riesgo:</span> {historyDatos?.riesgo || '—'}</div>
-                    <div className="md:col-span-2"><span className="text-gray-500">Componentes:</span> {historyDatos?.componentes || '—'}</div>
+                    <div className="md:col-span-2"><span className="text-gray-500">Componentes:</span> {historyFijos.componentes || historyDatos?.componentes || '—'}</div>
                   </div>
                 </div>
 
@@ -2414,7 +2521,7 @@ const Inventory: React.FC = () => {
                     <div><span className="text-gray-500">Forma adquisición:</span> {historyDatos?.formaAdquisicion || '—'}</div>
                     <div><span className="text-gray-500">Costo adquisición:</span> {historyDatos?.costoAdquisicion || '—'}</div>
                     <div><span className="text-gray-500">Fecha instalación:</span> {formatDate(historyDatos?.fechaInstalacion)}</div>
-                    <div><span className="text-gray-500">Vida útil:</span> {historyDatos?.vidaUtil || '—'}</div>
+                    <div><span className="text-gray-500">Vida útil:</span> {historyFijos.vidaUtil || historyDatos?.vidaUtil || '—'}</div>
                     <div><span className="text-gray-500">Proveedor:</span> {historyDatos?.proveedor || '—'}</div>
                     <div><span className="text-gray-500">Estado del equipo:</span> {historyDatos?.estadoEquipo || '—'}</div>
                     <div><span className="text-gray-500">Garantía:</span> {historyDatos?.garantia || '—'}</div>
@@ -2596,9 +2703,14 @@ const Inventory: React.FC = () => {
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="text-sm font-semibold text-gray-800">Plantillas</div>
-                  <button className="md-btn md-btn-outlined" onClick={() => openTiposEquipo()} type="button">
-                    Nuevo tipo
-                  </button>
+                  <div className="flex gap-2">
+                    <button className="md-btn md-btn-outlined" onClick={handleMigrarFijos} type="button">
+                      Migrar datos
+                    </button>
+                    <button className="md-btn md-btn-outlined" onClick={() => openTiposEquipo()} type="button">
+                      Nuevo tipo
+                    </button>
+                  </div>
                 </div>
                 {tiposEquipo.length === 0 ? (
                   <div className="text-sm text-gray-500">No hay tipos registrados.</div>
@@ -2640,6 +2752,55 @@ const Inventory: React.FC = () => {
                     onChange={(e) => setTipoForm({ ...tipoForm, nombre: e.target.value })}
                     placeholder="Ej: SUCCIONADOR"
                   />
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="md:col-span-2">
+                    <label className="block text-xs font-medium">Dirección (empresa)</label>
+                    <input
+                      className="w-full border p-2 rounded"
+                      value={tipoForm.fijos?.direccionEmpresa || ''}
+                      onChange={(e) => updateTipoFijos({ direccionEmpresa: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium">Fabricante</label>
+                    <input
+                      className="w-full border p-2 rounded"
+                      value={tipoForm.fijos?.fabricante || ''}
+                      onChange={(e) => updateTipoFijos({ fabricante: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium">Clasificación biomédica</label>
+                    <select
+                      className="w-full border p-2 rounded"
+                      value={tipoForm.fijos?.clasificacionBiomedica || ''}
+                      onChange={(e) => updateTipoFijos({ clasificacionBiomedica: e.target.value })}
+                    >
+                      <option value="">Selecciona...</option>
+                      <option value="DIAGNOSTICO">DIAGNOSTICO</option>
+                      <option value="TRATAMIENTO Y MANTENIMIENTO DE LA VIDA">TRATAMIENTO Y MANTENIMIENTO DE LA VIDA</option>
+                      <option value="PREVENCION">PREVENCION</option>
+                      <option value="REHABILITACION">REHABILITACION</option>
+                      <option value="ANALISIS DE LABORATORIO">ANALISIS DE LABORATORIO</option>
+                    </select>
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="block text-xs font-medium">Componentes</label>
+                    <input
+                      className="w-full border p-2 rounded"
+                      value={tipoForm.fijos?.componentes || ''}
+                      onChange={(e) => updateTipoFijos({ componentes: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium">Vida útil</label>
+                    <input
+                      className="w-full border p-2 rounded"
+                      value={tipoForm.fijos?.vidaUtil || ''}
+                      onChange={(e) => updateTipoFijos({ vidaUtil: e.target.value })}
+                    />
+                  </div>
                 </div>
                 <div>
                   <label className="block text-xs font-medium">Definición</label>

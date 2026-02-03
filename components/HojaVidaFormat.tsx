@@ -34,10 +34,14 @@ const HojaVidaFormat: React.FC<HojaVidaFormatProps> = ({
 
   const empresa = datos?.empresa || 'MEDICUC IPS';
   const sede = datos?.sede || 'BUCARAMANGA';
-  const direccionEmpresa = datos?.direccionEmpresa || '—';
+  const direccionEmpresa = fijos?.direccionEmpresa || datos?.direccionEmpresa || '—';
   const definicion = fijos?.definicion || '—';
   const servicioTexto = servicio || datos?.servicio || '—';
   const ubicacionTexto = ubicacion || 'BODEGA';
+  const fabricante = fijos?.fabricante || datos?.fabricante || '—';
+  const clasificacionBiomedica = fijos?.clasificacionBiomedica || datos?.clasificacionBiomedica || '—';
+  const componentes = fijos?.componentes || datos?.componentes || '—';
+  const vidaUtil = fijos?.vidaUtil || datos?.vidaUtil || '—';
 
   return (
     <div className="hoja-vida-page acta-page force-light bg-white text-black p-6 text-[10px] font-sans w-[8.5in] min-h-[11in] mx-auto border border-gray-300 shadow-none print:border-none print:shadow-none">
@@ -112,7 +116,7 @@ const HojaVidaFormat: React.FC<HojaVidaFormatProps> = ({
                   <td className="border border-black px-1 py-0.5 font-semibold bg-gray-100">Serie</td>
                   <td className="border border-black px-1 py-0.5 text-red-600 font-bold">{equipo.numeroSerie || '—'}</td>
                   <td className="border border-black px-1 py-0.5 font-semibold bg-gray-100">Fabricante</td>
-                  <td className="border border-black px-1 py-0.5">{datos?.fabricante || '—'}</td>
+                  <td className="border border-black px-1 py-0.5">{fabricante}</td>
                 </tr>
                 <tr>
                   <td className="border border-black px-1 py-0.5 font-semibold bg-gray-100">Servicio</td>
@@ -134,14 +138,14 @@ const HojaVidaFormat: React.FC<HojaVidaFormatProps> = ({
                 </tr>
                 <tr>
                   <td className="border border-black px-1 py-0.5 font-semibold bg-gray-100">Clasificación Biomédica</td>
-                  <td className="border border-black px-1 py-0.5">{datos?.clasificacionBiomedica || '—'}</td>
+                  <td className="border border-black px-1 py-0.5">{clasificacionBiomedica}</td>
                   <td className="border border-black px-1 py-0.5 font-semibold bg-gray-100">Riesgo</td>
                   <td className="border border-black px-1 py-0.5">{datos?.riesgo || '—'}</td>
                 </tr>
                 <tr>
                   <td className="border border-black px-1 py-0.5 font-semibold bg-gray-100">Componentes</td>
                   <td className="border border-black px-1 py-0.5" colSpan={3}>
-                    {datos?.componentes || '—'}
+                    {componentes}
                   </td>
                 </tr>
               </tbody>
@@ -175,7 +179,7 @@ const HojaVidaFormat: React.FC<HojaVidaFormatProps> = ({
               <td className="border border-black px-1 py-0.5 font-semibold bg-gray-100">Fecha de instalación</td>
               <td className="border border-black px-1 py-0.5">{formatDate(datos?.fechaInstalacion)}</td>
               <td className="border border-black px-1 py-0.5 font-semibold bg-gray-100">Vida útil</td>
-              <td className="border border-black px-1 py-0.5">{datos?.vidaUtil || '—'}</td>
+              <td className="border border-black px-1 py-0.5">{vidaUtil}</td>
             </tr>
             <tr>
               <td className="border border-black px-1 py-0.5 font-semibold bg-gray-100">Proveedor</td>

@@ -56,6 +56,11 @@ export interface HojaVidaOtrosSuministros {
 }
 
 export interface HojaVidaFijos {
+  direccionEmpresa?: string;
+  fabricante?: string;
+  clasificacionBiomedica?: string;
+  componentes?: string;
+  vidaUtil?: string;
   definicion?: string;
   recomendacionesFabricante?: string;
   periodicidadMantenimiento?: string;

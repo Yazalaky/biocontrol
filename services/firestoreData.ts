@@ -80,6 +80,11 @@ const upperOptional = (value?: string | null) => (typeof value === 'string' ? va
 const upperHojaVidaFijos = (value?: HojaVidaFijos) => {
   if (!value) return undefined;
   return {
+    direccionEmpresa: upperOptional(value.direccionEmpresa),
+    fabricante: upperOptional(value.fabricante),
+    clasificacionBiomedica: upperOptional(value.clasificacionBiomedica),
+    componentes: upperOptional(value.componentes),
+    vidaUtil: upperOptional(value.vidaUtil),
     definicion: upperOptional(value.definicion),
     recomendacionesFabricante: upperOptional(value.recomendacionesFabricante),
     periodicidadMantenimiento: upperOptional(value.periodicidadMantenimiento),
