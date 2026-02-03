@@ -194,6 +194,11 @@ export interface EquipoBiomedico {
   tipoEquipoId?: string;
   hojaVidaDatos?: HojaVidaDatosEquipo;
   hojaVidaOverrides?: HojaVidaFijos;
+  // Calibraciones
+  calibracionUltima?: string;
+  calibracionProxima?: string;
+  calibracionPeriodicidad?: string;
+  calibracionCertificado?: CalibracionCertificado;
   // Fecha de ingreso del equipo al inventario (ISO string).
   fechaIngreso?: string;
   // Fecha de mantenimiento (ISO string).
@@ -339,6 +344,28 @@ export interface EquipoFoto {
   size: number; // bytes
   contentType: string;
   url?: string; // URL de descarga (cacheable)
+}
+
+export interface CalibracionCertificado {
+  path: string; // Ruta en Storage
+  name: string; // Nombre original
+  size: number; // bytes
+  contentType: string;
+  url?: string; // URL de descarga (cacheable)
+}
+
+export interface CalibracionEquipo {
+  id: string;
+  equipoId: string;
+  fecha: string; // ISO
+  proximaFecha?: string; // ISO
+  periodicidad?: string;
+  costo?: string;
+  observaciones?: string;
+  certificado?: CalibracionCertificado;
+  creadoPorUid: string;
+  creadoPorNombre: string;
+  createdAt?: string;
 }
 
 export interface ReporteEquipoHistorial {

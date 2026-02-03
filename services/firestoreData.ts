@@ -33,6 +33,8 @@ import {
   type ActaInterna,
   type Asignacion,
   type AsignacionProfesional,
+  type CalibracionCertificado,
+  type CalibracionEquipo,
   type EquipoFoto,
   type EquipoBiomedico,
   type HojaVidaDatosEquipo,
@@ -1048,6 +1050,7 @@ export async function saveEquipo(equipo: EquipoBiomedico): Promise<string | unde
     tipoEquipoId: equipo.tipoEquipoId,
     hojaVidaDatos: upperHojaVidaDatos(equipo.hojaVidaDatos),
     hojaVidaOverrides: upperHojaVidaFijos(equipo.hojaVidaOverrides),
+    calibracionPeriodicidad: upperOptional(equipo.calibracionPeriodicidad),
     empresaAlquiler: upperOptional(equipo.empresaAlquiler),
     datosPropietario: equipo.datosPropietario
       ? {
@@ -1071,6 +1074,9 @@ export async function saveEquipo(equipo: EquipoBiomedico): Promise<string | unde
     const payload = stripUndefinedDeep({ ...rest, numeroSerie, codigoInventario }) as any;
     if (normalizeTipoPropiedad(normalized.tipoPropiedad) !== TipoPropiedad.ALQUILADO) {
       payload.empresaAlquiler = deleteField();
+    }
+    if (!payload.calibracionPeriodicidad) {
+      payload.calibracionPeriodicidad = deleteField();
     }
     await updateDoc(ref, payload);
     return;
@@ -1101,6 +1107,90 @@ export async function updateEquipoFoto(id: string, foto: EquipoFoto) {
 export async function clearEquipoFoto(id: string) {
   const ref = doc(equiposCol, id);
   await updateDoc(ref, { fotoEquipo: deleteField() } as any);
+}
+
+export function subscribeCalibracionesEquipo(
+  equipoId: string,
+  onData: (items: CalibracionEquipo[]) => void,
+  onError?: (e: Error) => void,
+) {
+  if (!equipoId) {
+    onData([]);
+    return () => {};
+  }
+  const col = collection(db, 'equipos', equipoId, 'calibraciones');
+  const q = query(col, orderBy('fecha', 'desc'));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const items = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<CalibracionEquipo, 'id'>) }));
+      onData(items);
+    },
+    (err) => onError?.(err as unknown as Error),
+  );
+}
+
+export async function addCalibracionEquipo(params: {
+  equipoId: string;
+  fecha: string;
+  proximaFecha?: string;
+  periodicidad?: string;
+  costo?: string;
+  observaciones?: string;
+  certificado: CalibracionCertificado;
+  creadoPorUid: string;
+  creadoPorNombre: string;
+}) {
+  const {
+    equipoId,
+    fecha,
+    proximaFecha,
+    periodicidad,
+    costo,
+    observaciones,
+    certificado,
+    creadoPorUid,
+    creadoPorNombre,
+  } = params;
+  const col = collection(db, 'equipos', equipoId, 'calibraciones');
+  const payload: Omit<CalibracionEquipo, 'id'> = stripUndefinedDeep({
+    equipoId,
+    fecha,
+    proximaFecha,
+    periodicidad: upperOptional(periodicidad),
+    costo: upperOptional(costo),
+    observaciones: upperOptional(observaciones),
+    certificado,
+    creadoPorUid,
+    creadoPorNombre,
+    createdAt: new Date().toISOString(),
+  }) as any;
+
+  await addDoc(col, payload as any);
+
+  const ref = doc(equiposCol, equipoId);
+  const updatePayload: any = {
+    calibracionUltima: fecha,
+    calibracionProxima: proximaFecha,
+    calibracionPeriodicidad: upperOptional(periodicidad),
+    calibracionCertificado: certificado,
+  };
+  await updateDoc(ref, updatePayload);
+}
+
+export async function updateCalibracionCertificado(params: {
+  equipoId: string;
+  calibracionId: string;
+  certificado: CalibracionCertificado;
+  syncEquipo?: boolean;
+}) {
+  const { equipoId, calibracionId, certificado, syncEquipo } = params;
+  const ref = doc(db, 'equipos', equipoId, 'calibraciones', calibracionId);
+  await updateDoc(ref, stripUndefinedDeep({ certificado, updatedAt: new Date().toISOString() }) as any);
+  if (syncEquipo) {
+    const equipoRef = doc(equiposCol, equipoId);
+    await updateDoc(equipoRef, { calibracionCertificado: certificado } as any);
+  }
 }
 
 export async function isNumeroSerieDisponible(numeroSerie: string, excludeId?: string) {

@@ -406,6 +406,9 @@ const Inventory: React.FC = () => {
     const disponibleParaEntrega =
       isNew && formData.tipoPropiedad === TipoPropiedad.PACIENTE ? true : baseDisponible;
 
+    const calibracionPeriodicidad =
+      (formData.hojaVidaOverrides?.calibracion ?? tipoSeleccionado?.fijos?.calibracion ?? '').trim();
+
     const newEquipo: EquipoBiomedico = {
       id: formData.id || '',
       codigoInventario: formData.codigoInventario || '', // Si es nuevo, db lo ignora y genera uno.
@@ -417,6 +420,7 @@ const Inventory: React.FC = () => {
       tipoEquipoId: formData.tipoEquipoId || undefined,
       hojaVidaDatos: formData.hojaVidaDatos || undefined,
       hojaVidaOverrides: formData.hojaVidaOverrides || undefined,
+      calibracionPeriodicidad: calibracionPeriodicidad || undefined,
       fechaIngreso: formData.fechaIngreso ? formData.fechaIngreso : new Date().toISOString(),
       fechaMantenimiento: formData.fechaMantenimiento,
       fechaBaja: formData.fechaBaja,

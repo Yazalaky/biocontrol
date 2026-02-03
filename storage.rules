@@ -16,6 +16,11 @@ service firebase.storage {
       return role() == r;
     }
 
+    function isAdmin() {
+      return isSignedIn()
+        && firestore.get(/databases/(default)/documents/admins/$(request.auth.uid)).data.enabled == true;
+    }
+
     // Fotos de reportes (VISITADOR)
     match /reportes_equipos/{uid}/{reporteId}/{fileName} {
       allow write: if isSignedIn()
@@ -56,7 +61,23 @@ service firebase.storage {
       allow read: if isSignedIn()
         && (hasRole('INGENIERO_BIOMEDICO')
           || hasRole('AUXILIAR_ADMINISTRATIVA')
-          || hasRole('GERENCIA'));
+          || hasRole('GERENCIA')
+          || isAdmin());
+    }
+
+    // Certificados de calibración (PDF)
+    match /calibraciones/{equipoId}/{fileName} {
+      allow write: if isSignedIn()
+        && hasRole('INGENIERO_BIOMEDICO')
+        && request.resource != null
+        && request.resource.size < 10 * 1024 * 1024
+        && request.resource.contentType.matches('application/pdf');
+
+      allow read: if isSignedIn()
+        && (hasRole('INGENIERO_BIOMEDICO')
+          || hasRole('AUXILIAR_ADMINISTRATIVA')
+          || hasRole('GERENCIA')
+          || isAdmin());
     }
 
     // Deny by default

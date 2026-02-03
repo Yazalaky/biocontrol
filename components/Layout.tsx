@@ -84,6 +84,14 @@ const Icons = {
       <path d="M14.7 6.3a3 3 0 0 0-4.24 4.24l-6.22 6.22a2 2 0 1 0 2.83 2.83l6.22-6.22a3 3 0 0 0 4.24-4.24l-2.83 2.83-2.83-2.83 2.83-2.83Z" />
     </svg>
   ),
+  calibrations: (
+    <svg className="app-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <circle cx="12" cy="12" r="8" />
+      <path d="M12 8v4l3 3" />
+      <path d="M2 12h2" />
+      <path d="M20 12h2" />
+    </svg>
+  ),
   admin: (
     <svg className="app-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <path d="M12 3l8 4v6c0 5-3.5 9-8 9s-8-4-8-9V7l8-4Z" />
@@ -205,6 +213,7 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
         {path === '#/informes' ? Icons.reports : null}
         {path === '#/visitas' ? Icons.visits : null}
         {path === '#/mantenimientos' ? Icons.maintenance : null}
+        {path === '#/calibraciones' ? Icons.calibrations : null}
         {path === '#/actas-internas' ? Icons.actas : null}
         {path === '#/admin' ? Icons.admin : null}
         <span className="text-sm font-medium flex-1 text-left">{label}</span>
@@ -286,6 +295,11 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
             path="#/mantenimientos"
             roles={[RolUsuario.INGENIERO_BIOMEDICO, RolUsuario.AUXILIAR_ADMINISTRATIVA, RolUsuario.GERENCIA]}
             badge={usuario?.rol === RolUsuario.AUXILIAR_ADMINISTRATIVA ? pendingMantenimientos : 0}
+          />
+          <NavItem
+            label="Calibraciones"
+            path="#/calibraciones"
+            roles={[RolUsuario.INGENIERO_BIOMEDICO, RolUsuario.AUXILIAR_ADMINISTRATIVA, RolUsuario.GERENCIA]}
           />
           <NavItem
             label={usuario?.rol === RolUsuario.INGENIERO_BIOMEDICO ? 'Reportes de Visitas' : 'Visitas'}

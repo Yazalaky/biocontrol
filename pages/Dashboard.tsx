@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import Layout from '../components/Layout';
+import { useAuth } from '../contexts/AuthContext';
 import {
   EstadoAsignacion,
   EstadoEquipo,
   EstadoPaciente,
+  RolUsuario,
   TipoPropiedad,
   TipoMantenimiento,
   type Asignacion,
@@ -58,6 +60,9 @@ const StatIcon = ({ type }: { type: 'patients' | 'equipos' | 'assigned' | 'maint
 };
 
 const Dashboard: React.FC = () => {
+  const { hasRole } = useAuth();
+  const isBiomedico = hasRole([RolUsuario.INGENIERO_BIOMEDICO]);
+
   const [stats, setStats] = useState({
     pacientesActivos: 0,
     totalEquipos: 0,
@@ -73,6 +78,7 @@ const Dashboard: React.FC = () => {
   const [mantenimientos, setMantenimientos] = useState<Mantenimiento[]>([]);
   const [selectedYearMantenimiento, setSelectedYearMantenimiento] = useState<number | 'ALL' | null>(null);
   const [firestoreError, setFirestoreError] = useState<string | null>(null);
+  const [showCalibPopup, setShowCalibPopup] = useState(false);
 
   const parseCosto = (value?: string) => {
     if (!value) return null;
@@ -195,6 +201,33 @@ const Dashboard: React.FC = () => {
     }
     return count;
   }, [mantenimientos, selectedYearMantenimiento]);
+
+  const calibracionesProximas = React.useMemo(() => {
+    const today = new Date();
+    const end = new Date(today);
+    end.setDate(end.getDate() + 30);
+    const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    return equiposData
+      .filter((eq) => eq.tipoPropiedad === TipoPropiedad.MEDICUC)
+      .map((eq) => {
+        if (!eq.calibracionProxima) return null;
+        const next = new Date(eq.calibracionProxima);
+        if (Number.isNaN(next.getTime())) return null;
+        if (next.getTime() > end.getTime()) return null;
+        const days = Math.ceil((next.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+        return { eq, days, next };
+      })
+      .filter(Boolean) as { eq: EquipoBiomedico; days: number; next: Date }[];
+  }, [equiposData]);
+
+  useEffect(() => {
+    if (!isBiomedico) return;
+    if (calibracionesProximas.length === 0) return;
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const dismissed = localStorage.getItem('calibraciones_popup_dismissed');
+    if (dismissed === todayKey) return;
+    setShowCalibPopup(true);
+  }, [isBiomedico, calibracionesProximas]);
 
   useEffect(() => {
     let pacientes: Paciente[] = [];
@@ -550,6 +583,53 @@ const Dashboard: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {showCalibPopup && isBiomedico && calibracionesProximas.length > 0 && (
+        <div className="fixed inset-0 z-[90] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-xl rounded-2xl border border-gray-200 bg-white p-5 shadow-2xl">
+            <div className="text-lg font-bold text-gray-900">Calibraciones próximas a vencer</div>
+            <div className="mt-1 text-sm text-gray-500">
+              Equipos MEDICUC con calibración dentro de los próximos 30 días.
+            </div>
+            <div className="mt-4 max-h-64 overflow-auto space-y-2">
+              {calibracionesProximas.map(({ eq, days, next }) => (
+                <div key={eq.id} className="flex items-center justify-between rounded-lg border border-gray-200 px-3 py-2 text-sm">
+                  <div>
+                    <div className="font-semibold text-gray-800">{eq.codigoInventario} · {eq.nombre}</div>
+                    <div className="text-xs text-gray-500">Próxima: {next.toLocaleDateString()}</div>
+                  </div>
+                  <span className={`text-xs font-semibold px-3 py-1 rounded-full ${days < 0 ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
+                    {days < 0 ? `VENCIDA (${Math.abs(days)}d)` : `POR VENCER (${days}d)`}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                className="md-btn md-btn-outlined"
+                onClick={() => {
+                  localStorage.setItem('calibraciones_popup_dismissed', new Date().toISOString().slice(0, 10));
+                  setShowCalibPopup(false);
+                }}
+              >
+                Cerrar
+              </button>
+              <button
+                type="button"
+                className="md-btn md-btn-filled"
+                onClick={() => {
+                  localStorage.setItem('calibraciones_popup_dismissed', new Date().toISOString().slice(0, 10));
+                  setShowCalibPopup(false);
+                  window.location.hash = '#/calibraciones';
+                }}
+              >
+                Ver calibraciones
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </Layout>
   );
 };

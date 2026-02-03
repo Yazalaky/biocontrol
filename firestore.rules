@@ -34,6 +34,11 @@ service cloud.firestore {
       return hasRole("GERENCIA");
     }
 
+    function isAdmin() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
     // --- USERS ---
     match /users/{uid} {
       allow read: if isSignedIn() && request.auth.uid == uid;
@@ -82,6 +87,19 @@ service cloud.firestore {
       // VISITADOR: solo puede ver equipos con asignación activa
       allow read: if isSignedIn() && (!isVisitador() || resource.data.asignadoActivo == true);
       allow create, update, delete: if isSignedIn() && isBiomedico();
+
+      // --- CALIBRACIONES (subcolección) ---
+      match /calibraciones/{calId} {
+        allow read: if isSignedIn() && (isBiomedico() || isAuxiliar() || isGerencia() || isAdmin());
+        allow create: if isSignedIn() && isBiomedico();
+        allow update: if isSignedIn()
+          && isBiomedico()
+          && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+            "certificado",
+            "updatedAt"
+          ]);
+        allow delete: if false;
+      }
     }
 
     // --- ASIGNACIONES ---
