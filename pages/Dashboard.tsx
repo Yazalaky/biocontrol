@@ -4,14 +4,23 @@ import {
   EstadoAsignacion,
   EstadoEquipo,
   EstadoPaciente,
+  TipoPropiedad,
+  TipoMantenimiento,
   type Asignacion,
   type AsignacionProfesional,
   type EquipoBiomedico,
+  type Mantenimiento,
   type Paciente,
 } from '../types';
 import StatusBadge from '../components/StatusBadge';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
-import { subscribeAsignaciones, subscribeAsignacionesProfesionales, subscribeEquipos, subscribePacientes } from '../services/firestoreData';
+import {
+  subscribeAsignaciones,
+  subscribeAsignacionesProfesionales,
+  subscribeEquipos,
+  subscribeMantenimientos,
+  subscribePacientes,
+} from '../services/firestoreData';
 
 const StatIcon = ({ type }: { type: 'patients' | 'equipos' | 'assigned' | 'maintenance' }) => {
   switch (type) {
@@ -59,7 +68,133 @@ const Dashboard: React.FC = () => {
   });
 
   const [recentAssignments, setRecentAssignments] = useState<any[]>([]);
+  const [equiposData, setEquiposData] = useState<EquipoBiomedico[]>([]);
+  const [selectedYear, setSelectedYear] = useState<number | 'ALL' | null>(null);
+  const [mantenimientos, setMantenimientos] = useState<Mantenimiento[]>([]);
+  const [selectedYearMantenimiento, setSelectedYearMantenimiento] = useState<number | 'ALL' | null>(null);
   const [firestoreError, setFirestoreError] = useState<string | null>(null);
+
+  const parseCosto = (value?: string) => {
+    if (!value) return null;
+    const cleaned = value.replace(/[^\d]/g, '');
+    if (!cleaned) return null;
+    const num = Number(cleaned);
+    return Number.isFinite(num) ? num : null;
+  };
+
+  const getIngresoYear = (value?: string) => {
+    if (!value) return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    return date.getFullYear();
+  };
+
+  const formatCurrency = (value: number) =>
+    new Intl.NumberFormat('es-CO', {
+      style: 'currency',
+      currency: 'COP',
+      maximumFractionDigits: 0,
+    }).format(value);
+
+  const availableYears = React.useMemo(() => {
+    const years = new Set<number>();
+    for (const eq of equiposData) {
+      if (eq.tipoPropiedad !== TipoPropiedad.MEDICUC) continue;
+      const costo = parseCosto(eq.hojaVidaDatos?.costoAdquisicion);
+      if (!costo) continue;
+      const year = getIngresoYear(eq.fechaIngreso);
+      if (year) years.add(year);
+    }
+    return Array.from(years).sort((a, b) => b - a);
+  }, [equiposData]);
+
+  const availableYearsMantenimiento = React.useMemo(() => {
+    const years = new Set<number>();
+    for (const m of mantenimientos) {
+      if (m.tipo !== TipoMantenimiento.CORRECTIVO) continue;
+      const costo = parseCosto(m.costo);
+      if (!costo) continue;
+      const year = getIngresoYear(m.fecha);
+      if (year) years.add(year);
+    }
+    return Array.from(years).sort((a, b) => b - a);
+  }, [mantenimientos]);
+
+  useEffect(() => {
+    if (availableYears.length === 0) {
+      if (selectedYear !== null) setSelectedYear(null);
+      return;
+    }
+    if (!selectedYear || (selectedYear !== 'ALL' && !availableYears.includes(selectedYear))) {
+      setSelectedYear('ALL');
+    }
+  }, [availableYears, selectedYear]);
+
+  useEffect(() => {
+    if (availableYearsMantenimiento.length === 0) {
+      if (selectedYearMantenimiento !== null) setSelectedYearMantenimiento(null);
+      return;
+    }
+    if (!selectedYearMantenimiento || (selectedYearMantenimiento !== 'ALL' && !availableYearsMantenimiento.includes(selectedYearMantenimiento))) {
+      setSelectedYearMantenimiento('ALL');
+    }
+  }, [availableYearsMantenimiento, selectedYearMantenimiento]);
+
+  const costoTotalYear = React.useMemo(() => {
+    if (!selectedYear) return 0;
+    let total = 0;
+    for (const eq of equiposData) {
+      if (eq.tipoPropiedad !== TipoPropiedad.MEDICUC) continue;
+      const costo = parseCosto(eq.hojaVidaDatos?.costoAdquisicion);
+      if (!costo) continue;
+      const year = getIngresoYear(eq.fechaIngreso);
+      if (selectedYear !== 'ALL' && year !== selectedYear) continue;
+      total += costo;
+    }
+    return total;
+  }, [equiposData, selectedYear]);
+
+  const costoTotalCount = React.useMemo(() => {
+    if (!selectedYear) return 0;
+    let count = 0;
+    for (const eq of equiposData) {
+      if (eq.tipoPropiedad !== TipoPropiedad.MEDICUC) continue;
+      const costo = parseCosto(eq.hojaVidaDatos?.costoAdquisicion);
+      if (!costo) continue;
+      const year = getIngresoYear(eq.fechaIngreso);
+      if (selectedYear !== 'ALL' && year !== selectedYear) continue;
+      count += 1;
+    }
+    return count;
+  }, [equiposData, selectedYear]);
+
+  const costoMantenimientoTotal = React.useMemo(() => {
+    if (!selectedYearMantenimiento) return 0;
+    let total = 0;
+    for (const m of mantenimientos) {
+      if (m.tipo !== TipoMantenimiento.CORRECTIVO) continue;
+      const costo = parseCosto(m.costo);
+      if (!costo) continue;
+      const year = getIngresoYear(m.fecha);
+      if (selectedYearMantenimiento !== 'ALL' && year !== selectedYearMantenimiento) continue;
+      total += costo;
+    }
+    return total;
+  }, [mantenimientos, selectedYearMantenimiento]);
+
+  const costoMantenimientoCount = React.useMemo(() => {
+    if (!selectedYearMantenimiento) return 0;
+    let count = 0;
+    for (const m of mantenimientos) {
+      if (m.tipo !== TipoMantenimiento.CORRECTIVO) continue;
+      const costo = parseCosto(m.costo);
+      if (!costo) continue;
+      const year = getIngresoYear(m.fecha);
+      if (selectedYearMantenimiento !== 'ALL' && year !== selectedYearMantenimiento) continue;
+      count += 1;
+    }
+    return count;
+  }, [mantenimientos, selectedYearMantenimiento]);
 
   useEffect(() => {
     let pacientes: Paciente[] = [];
@@ -130,6 +265,7 @@ const Dashboard: React.FC = () => {
     });
     const unsubEquipos = subscribeEquipos((e) => {
       equipos = e;
+      setEquiposData(e);
       recompute();
     }, (e) => {
       console.error('Firestore subscribeEquipos error:', e);
@@ -149,12 +285,16 @@ const Dashboard: React.FC = () => {
       console.error('Firestore subscribeAsignacionesProfesionales error:', e);
       setFirestoreError(`No tienes permisos para leer "asignaciones_profesionales" en Firestore. Detalle: ${e.message}`);
     });
+    const unsubMantenimientos = subscribeMantenimientos(setMantenimientos, (e) => {
+      console.error('Firestore subscribeMantenimientos error:', e);
+    });
 
     return () => {
       unsubPacientes();
       unsubEquipos();
       unsubAsignaciones();
       unsubAsignacionesProfesionales();
+      unsubMantenimientos();
     };
   }, []);
 
@@ -173,17 +313,17 @@ const Dashboard: React.FC = () => {
     subtitle,
   }: {
     title: string;
-    value: number;
+    value: React.ReactNode;
     accent: string;
     icon: 'patients' | 'equipos' | 'assigned' | 'maintenance';
     subtitle: string;
   }) => (
-    <div className="md-card p-5 relative overflow-hidden">
+    <div className="md-card p-4 sm:p-5 relative overflow-hidden">
       <div className="absolute left-0 top-0 bottom-0 w-1.5" style={{ background: accent }} />
       <div className="flex items-start justify-between">
         <div>
           <p className="text-xs font-semibold tracking-wide text-gray-500 uppercase">{title}</p>
-          <p className="mt-2 text-3xl font-extrabold text-gray-900">{value}</p>
+          <p className="mt-2 text-2xl sm:text-3xl font-extrabold text-gray-900">{value}</p>
           <p className="mt-2 text-sm text-gray-500">{subtitle}</p>
         </div>
         <div
@@ -203,7 +343,7 @@ const Dashboard: React.FC = () => {
           {firestoreError}
         </div>
       )}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6 gap-6 mb-8">
         <StatCard
           title="Pacientes Activos"
           value={stats.pacientesActivos}
@@ -218,6 +358,92 @@ const Dashboard: React.FC = () => {
           icon="equipos"
           subtitle="Inventario registrado"
         />
+        <div className="md-card p-4 sm:p-5 relative overflow-hidden">
+          <div className="absolute left-0 top-0 bottom-0 w-1.5" style={{ background: '#0ea5e9' }} />
+          <div className="flex items-start justify-between">
+            <div className="w-full">
+              <p className="text-xs font-semibold tracking-wide text-gray-500 uppercase">Costo equipos (MEDICUC)</p>
+              <div className="mt-2 flex items-center justify-between gap-3">
+                <p className="text-xl sm:text-2xl font-extrabold text-gray-900">
+                  {selectedYear ? formatCurrency(costoTotalYear) : '—'}
+                </p>
+                <select
+                  className="border rounded px-2 py-1 text-xs text-gray-700 bg-white"
+                  value={selectedYear ?? ''}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setSelectedYear(value === 'ALL' ? 'ALL' : Number(value));
+                  }}
+                  disabled={availableYears.length === 0}
+                >
+                  {availableYears.length === 0 && <option value="">Año</option>}
+                  {availableYears.length > 0 && (
+                    <option value="ALL">Todo</option>
+                  )}
+                  {availableYears.map((year) => (
+                    <option key={year} value={year}>
+                      {year}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <p className="mt-2 text-sm text-gray-500">
+                {selectedYear === 'ALL'
+                  ? `Total general · ${costoTotalCount} equipos`
+                  : `Por año de ingreso · ${costoTotalCount} equipos`}
+              </p>
+            </div>
+            <div
+              className="h-11 w-11 rounded-2xl flex items-center justify-center"
+              style={{ background: 'rgba(14,165,233,0.15)', color: '#0ea5e9' }}
+            >
+              <StatIcon type="equipos" />
+            </div>
+          </div>
+        </div>
+        <div className="md-card p-4 sm:p-5 relative overflow-hidden">
+          <div className="absolute left-0 top-0 bottom-0 w-1.5" style={{ background: '#ef4444' }} />
+          <div className="flex items-start justify-between">
+            <div className="w-full">
+              <p className="text-xs font-semibold tracking-wide text-gray-500 uppercase">Costo mantenimientos</p>
+              <div className="mt-2 flex items-center justify-between gap-3">
+                <p className="text-xl sm:text-2xl font-extrabold text-gray-900">
+                  {selectedYearMantenimiento ? formatCurrency(costoMantenimientoTotal) : '—'}
+                </p>
+                <select
+                  className="border rounded px-2 py-1 text-xs text-gray-700 bg-white"
+                  value={selectedYearMantenimiento ?? ''}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setSelectedYearMantenimiento(value === 'ALL' ? 'ALL' : Number(value));
+                  }}
+                  disabled={availableYearsMantenimiento.length === 0}
+                >
+                  {availableYearsMantenimiento.length === 0 && <option value="">Año</option>}
+                  {availableYearsMantenimiento.length > 0 && (
+                    <option value="ALL">Todo</option>
+                  )}
+                  {availableYearsMantenimiento.map((year) => (
+                    <option key={year} value={year}>
+                      {year}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <p className="mt-2 text-sm text-gray-500">
+                {selectedYearMantenimiento === 'ALL'
+                  ? `Total general · ${costoMantenimientoCount} mantenimientos`
+                  : `Por año · ${costoMantenimientoCount} mantenimientos`}
+              </p>
+            </div>
+            <div
+              className="h-11 w-11 rounded-2xl flex items-center justify-center"
+              style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444' }}
+            >
+              <StatIcon type="maintenance" />
+            </div>
+          </div>
+        </div>
         <StatCard
           title="Equipos Asignados"
           value={stats.equiposAsignados}

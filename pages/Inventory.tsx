@@ -441,10 +441,14 @@ const Inventory: React.FC = () => {
               try {
                 await deleteObject(storageRef(storage, formData.fotoEquipo.path));
               } catch (err) {
-                console.warn('No se pudo eliminar la imagen anterior:', err);
+                const code = (err as { code?: string })?.code;
+                if (code !== 'storage/object-not-found') {
+                  console.warn('No se pudo eliminar la imagen anterior:', err);
+                }
               }
             }
-            const storagePath = `equipos/${equipoId}/${Date.now()}_${equipoFotoFile.name}`;
+            const uniqueName = `${Date.now()}_${Math.random().toString(36).slice(2)}_${equipoFotoFile.name}`;
+            const storagePath = `equipos/${equipoId}/${uniqueName}`;
             const refFile = storageRef(storage, storagePath);
             await uploadBytes(refFile, equipoFotoFile, { contentType: equipoFotoFile.type });
             const url = await getDownloadURL(refFile);
