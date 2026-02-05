@@ -2,6 +2,7 @@ import {
   addDoc,
   arrayUnion,
   collection,
+  collectionGroup,
   deleteDoc,
   deleteField,
   doc,
@@ -33,6 +34,8 @@ import {
   type ActaInterna,
   type Asignacion,
   type AsignacionProfesional,
+  type ActaProfesional,
+  type ActaProfesionalItem,
   type CalibracionCertificado,
   type CalibracionEquipo,
   type EquipoFoto,
@@ -49,11 +52,27 @@ const profesionalesCol = collection(db, 'profesionales');
 const equiposCol = collection(db, 'equipos');
 const asignacionesCol = collection(db, 'asignaciones');
 const asignacionesProfesionalesCol = collection(db, 'asignaciones_profesionales');
+const actasProfesionalesCol = collection(db, 'actas_profesionales');
 const actasInternasCol = collection(db, 'actas_internas');
 const reportesEquiposCol = collection(db, 'reportes_equipos');
 const mantenimientosCol = collection(db, 'mantenimientos');
 const solicitudesEquiposPacienteCol = collection(db, 'solicitudes_equipos_paciente');
 const tiposEquipoCol = collection(db, 'tipos_equipo');
+
+export function subscribeCalibraciones(
+  onData: (items: CalibracionEquipo[]) => void,
+  onError?: (e: Error) => void,
+) {
+  const q = query(collectionGroup(db, 'calibraciones'), orderBy('fecha', 'desc'));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const items = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<CalibracionEquipo, 'id'>) }));
+      onData(items);
+    },
+    (err) => onError?.(err as unknown as Error),
+  );
+}
 
 function assertRoleString(value: string, allowed: readonly string[], fieldName: string) {
   if (!allowed.includes(value)) {
@@ -149,7 +168,13 @@ const upperHojaVidaDatos = (value?: HojaVidaDatosEquipo) => {
 };
 
 async function getNextNumber(
-  collectionName: 'pacientes' | 'profesionales' | 'asignaciones' | 'asignaciones_profesionales' | 'mantenimientos',
+  collectionName:
+    | 'pacientes'
+    | 'profesionales'
+    | 'asignaciones'
+    | 'asignaciones_profesionales'
+    | 'actas_profesionales'
+    | 'mantenimientos',
 ): Promise<number> {
   const col =
     collectionName === 'pacientes'
@@ -158,9 +183,11 @@ async function getNextNumber(
         ? profesionalesCol
         : collectionName === 'asignaciones_profesionales'
           ? asignacionesProfesionalesCol
-          : collectionName === 'mantenimientos'
-            ? mantenimientosCol
-            : asignacionesCol;
+          : collectionName === 'actas_profesionales'
+            ? actasProfesionalesCol
+            : collectionName === 'mantenimientos'
+              ? mantenimientosCol
+              : asignacionesCol;
   const q = query(col, orderBy('consecutivo', 'desc'), limit(1));
   const snap = await getDocs(q);
   const last = snap.docs[0]?.data()?.consecutivo;
@@ -334,6 +361,21 @@ export function subscribeAsignacionesProfesionales(
   );
 }
 
+export function subscribeActasProfesionales(
+  onData: (actas: ActaProfesional[]) => void,
+  onError?: (e: Error) => void,
+) {
+  const q = query(actasProfesionalesCol, orderBy('consecutivo', 'desc'));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const actas = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<ActaProfesional, 'id'>) }));
+      onData(actas);
+    },
+    (err) => onError?.(err as unknown as Error),
+  );
+}
+
 export async function saveProfesional(profesional: Profesional) {
   if (!profesional.nombre || !profesional.cedula) {
     throw new Error('El profesional debe tener nombre y cédula.');
@@ -363,6 +405,51 @@ export async function saveProfesional(profesional: Profesional) {
   );
 }
 
+export async function createActaProfesional(params: {
+  idProfesional: string;
+  fechaEntregaOriginalIso: string;
+  ciudad?: string;
+  sede?: string;
+  observacionesEntrega: string;
+  usuarioAsigna: string;
+  uidAsigna?: string;
+  firmaAuxiliar?: string;
+  items: ActaProfesionalItem[];
+}): Promise<ActaProfesional> {
+  const {
+    idProfesional,
+    fechaEntregaOriginalIso,
+    ciudad,
+    sede,
+    observacionesEntrega,
+    usuarioAsigna,
+    uidAsigna,
+    firmaAuxiliar,
+    items,
+  } = params;
+
+  const consecutivo = await getNextNumber('actas_profesionales');
+  const nowIso = new Date().toISOString();
+  const acta: Omit<ActaProfesional, 'id'> = {
+    consecutivo,
+    idProfesional,
+    fechaEntregaOriginal: fechaEntregaOriginalIso,
+    fechaActualizacionEntrega: nowIso,
+    ciudad: upperOptional(ciudad) || '',
+    sede: upperOptional(sede) || '',
+    observacionesEntrega: upper(observacionesEntrega),
+    usuarioAsigna: upper(usuarioAsigna),
+    uidAsigna,
+    firmaAuxiliar,
+    items,
+    createdAt: nowIso,
+    updatedAt: nowIso,
+  };
+
+  const docRef = await addDoc(actasProfesionalesCol, stripUndefinedDeep(acta) as any);
+  return { id: docRef.id, ...acta };
+}
+
 export async function asignarEquipoProfesional(params: {
   idProfesional: string;
   idEquipo: string;
@@ -373,6 +460,8 @@ export async function asignarEquipoProfesional(params: {
   usuarioAsigna: string;
   uidAsigna?: string;
   firmaAuxiliar?: string;
+  actaProfesionalId?: string;
+  actaProfesionalConsecutivo?: number;
 }): Promise<AsignacionProfesional> {
   const {
     idProfesional,
@@ -384,6 +473,8 @@ export async function asignarEquipoProfesional(params: {
     usuarioAsigna,
     uidAsigna,
     firmaAuxiliar,
+    actaProfesionalId,
+    actaProfesionalConsecutivo,
   } = params;
 
   // Bloqueo: no permitir si está activo en pacientes o profesionales.
@@ -415,6 +506,8 @@ export async function asignarEquipoProfesional(params: {
     consecutivo,
     idProfesional,
     idEquipo,
+    actaProfesionalId,
+    actaProfesionalConsecutivo,
     fechaEntregaOriginal: fechaEntregaOriginalIso,
     fechaActualizacionEntrega: nowIso,
     ciudad: upperOptional(ciudad) || '',
@@ -428,6 +521,43 @@ export async function asignarEquipoProfesional(params: {
 
   const docRef = await addDoc(asignacionesProfesionalesCol, stripUndefinedDeep(asignacion) as any);
   return { id: docRef.id, ...asignacion };
+}
+
+export async function guardarFirmaProfesionalActa(params: { idActa: string; dataUrl: string | null }) {
+  const ref = doc(actasProfesionalesCol, params.idActa);
+  await updateDoc(
+    ref,
+    stripUndefinedDeep({
+      firmaProfesionalEntrega: params.dataUrl || null,
+      updatedAt: new Date().toISOString(),
+    }) as any,
+  );
+}
+
+export async function guardarFirmaAuxiliarActa(params: { idActa: string; dataUrl: string | null }) {
+  const ref = doc(actasProfesionalesCol, params.idActa);
+  await updateDoc(
+    ref,
+    stripUndefinedDeep({
+      firmaAuxiliar: params.dataUrl || null,
+      updatedAt: new Date().toISOString(),
+    }) as any,
+  );
+}
+
+export async function vincularAsignacionProfesionalActa(params: {
+  idAsignacion: string;
+  actaProfesionalId: string;
+  actaProfesionalConsecutivo: number;
+}) {
+  const ref = doc(asignacionesProfesionalesCol, params.idAsignacion);
+  await updateDoc(
+    ref,
+    stripUndefinedDeep({
+      actaProfesionalId: params.actaProfesionalId,
+      actaProfesionalConsecutivo: params.actaProfesionalConsecutivo,
+    }) as any,
+  );
 }
 
 export async function devolverEquipoProfesional(params: {
@@ -1191,6 +1321,24 @@ export async function updateCalibracionCertificado(params: {
     const equipoRef = doc(equiposCol, equipoId);
     await updateDoc(equipoRef, { calibracionCertificado: certificado } as any);
   }
+}
+
+export async function updateCalibracionFields(params: {
+  equipoId: string;
+  calibracionId: string;
+  costo?: string;
+  observaciones?: string;
+}) {
+  const { equipoId, calibracionId, costo, observaciones } = params;
+  const ref = doc(db, 'equipos', equipoId, 'calibraciones', calibracionId);
+  await updateDoc(
+    ref,
+    stripUndefinedDeep({
+      costo: upperOptional(costo),
+      observaciones: upperOptional(observaciones),
+      updatedAt: new Date().toISOString(),
+    }) as any,
+  );
 }
 
 export async function isNumeroSerieDisponible(numeroSerie: string, excludeId?: string) {

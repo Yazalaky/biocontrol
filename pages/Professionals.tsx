@@ -2,25 +2,32 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Layout from '../components/Layout';
 import { toast } from '../services/feedback';
 import ActaProfesionalFormat from '../components/ActaProfesionalFormat';
+import ActaProfesionalGroupFormat from '../components/ActaProfesionalGroupFormat';
 import SignaturePad from '../components/SignaturePad';
 import StatusBadge from '../components/StatusBadge';
 import { useAuth } from '../contexts/AuthContext';
 import {
   asignarEquipoProfesional,
+  createActaProfesional,
   devolverEquipoProfesional,
+  guardarFirmaAuxiliarActa,
   guardarFirmaAuxiliarProfesional,
+  guardarFirmaProfesionalActa,
   guardarFirmaProfesional,
   saveProfesional,
+  subscribeActasProfesionales,
   subscribeAsignaciones,
   subscribeAsignacionesProfesionales,
   subscribeEquipos,
   subscribeProfesionales,
+  vincularAsignacionProfesionalActa,
 } from '../services/firestoreData';
 import {
   EstadoAsignacion,
   EstadoEquipo,
   RolUsuario,
   type Asignacion,
+  type ActaProfesional,
   type AsignacionProfesional,
   type EquipoBiomedico,
   type Profesional,
@@ -34,6 +41,7 @@ const Professionals: React.FC = () => {
   const [equipos, setEquipos] = useState<EquipoBiomedico[]>([]);
   const [asignacionesPacientes, setAsignacionesPacientes] = useState<Asignacion[]>([]);
   const [asignacionesProfesionales, setAsignacionesProfesionales] = useState<AsignacionProfesional[]>([]);
+  const [actasProfesionales, setActasProfesionales] = useState<ActaProfesional[]>([]);
   const [firestoreError, setFirestoreError] = useState<string | null>(null);
 
   const [searchTerm, setSearchTerm] = useState('');
@@ -45,8 +53,8 @@ const Professionals: React.FC = () => {
 
   // Assignment form
   const [equipoQuery, setEquipoQuery] = useState('');
-  const [equipoSeleccionado, setEquipoSeleccionado] = useState('');
   const [equipoPickerOpen, setEquipoPickerOpen] = useState(false);
+  const [equiposSeleccionados, setEquiposSeleccionados] = useState<EquipoBiomedico[]>([]);
   const [obsEntrega, setObsEntrega] = useState('');
   const [ciudad, setCiudad] = useState('');
   const [sede, setSede] = useState('');
@@ -73,11 +81,20 @@ const Professionals: React.FC = () => {
   const [estadoDevolucion, setEstadoDevolucion] = useState<EstadoEquipo>(EstadoEquipo.DISPONIBLE);
 
   // Acta preview
-  const [actaData, setActaData] = useState<{
-    asig: AsignacionProfesional;
-    equipo: EquipoBiomedico;
-    tipo: 'ENTREGA' | 'DEVOLUCION';
-  } | null>(null);
+  const [actaData, setActaData] = useState<
+    | {
+        kind: 'single';
+        asig: AsignacionProfesional;
+        equipo: EquipoBiomedico;
+        tipo: 'ENTREGA' | 'DEVOLUCION';
+      }
+    | {
+        kind: 'group';
+        acta: ActaProfesional;
+        tipo: 'ENTREGA';
+      }
+    | null
+  >(null);
   const [professionalSignature, setProfessionalSignature] = useState<string | null>(null);
   const [adminSignature, setAdminSignature] = useState<string | null>(null);
   const [savingProfessionalSig, setSavingProfessionalSig] = useState(false);
@@ -119,12 +136,17 @@ const Professionals: React.FC = () => {
         `No tienes permisos para leer "asignaciones_profesionales" en Firestore. Detalle: ${e.message}`,
       );
     });
+    const unsubActasProfesionales = subscribeActasProfesionales(setActasProfesionales, (e) => {
+      console.error('Firestore subscribeActasProfesionales error:', e);
+      setFirestoreError(`No tienes permisos para leer "actas_profesionales" en Firestore. Detalle: ${e.message}`);
+    });
 
     return () => {
       unsubProfesionales();
       unsubEquipos();
       unsubAsignacionesPacientes();
       unsubAsignacionesProfesionales();
+      unsubActasProfesionales();
     };
   }, []);
 
@@ -137,6 +159,10 @@ const Professionals: React.FC = () => {
   }, [profesionales, searchTerm]);
 
   const equiposById = useMemo(() => new Map(equipos.map((e) => [e.id, e])), [equipos]);
+  const actasProfesionalesById = useMemo(
+    () => new Map(actasProfesionales.map((a) => [a.id, a])),
+    [actasProfesionales],
+  );
 
   const activeEquipoIds = useMemo(() => {
     const ids = new Set<string>();
@@ -183,6 +209,7 @@ const Professionals: React.FC = () => {
     if (!q) return [];
     return equiposDisponibles
       .filter((eq) => {
+        if (equiposSeleccionados.some((s) => s.id === eq.id)) return false;
         return (
           (eq.codigoInventario || '').toLowerCase().includes(q) ||
           (eq.numeroSerie || '').toLowerCase().includes(q) ||
@@ -192,7 +219,7 @@ const Professionals: React.FC = () => {
         );
       })
       .slice(0, 30);
-  }, [equiposDisponibles, equipoQuery]);
+  }, [equiposDisponibles, equipoQuery, equiposSeleccionados]);
 
   const asignacionesDelProfesional = useMemo(() => {
     if (!selectedProfesional) return [];
@@ -203,6 +230,13 @@ const Professionals: React.FC = () => {
         const db = new Date(b.fechaEntregaOriginal).getTime();
         return db - da;
       });
+  }, [asignacionesProfesionales, selectedProfesional]);
+
+  const asignacionesConsolidables = useMemo(() => {
+    if (!selectedProfesional) return [];
+    return asignacionesProfesionales.filter(
+      (a) => a.idProfesional === selectedProfesional.id && a.estado === EstadoAsignacion.ACTIVA && !a.actaProfesionalId,
+    );
   }, [asignacionesProfesionales, selectedProfesional]);
 
   const openCreate = () => {
@@ -248,17 +282,24 @@ const Professionals: React.FC = () => {
 
   const handleAsignar = async () => {
     if (!selectedProfesional || !canManage) return;
-    if (!equipoSeleccionado) return;
+    if (equiposSeleccionados.length === 0) return;
     if (!fechaEntregaOriginal) {
       toast({ tone: 'warning', message: 'Selecciona la fecha de entrega original.' });
       return;
     }
 
     try {
-      const equipo = equiposById.get(equipoSeleccionado);
-      const nuevaAsignacion = await asignarEquipoProfesional({
+      const items = equiposSeleccionados.map((eq) => ({
+        idEquipo: eq.id,
+        codigoInventario: eq.codigoInventario || '',
+        numeroSerie: eq.numeroSerie || '',
+        nombre: eq.nombre || '',
+        marca: eq.marca || '',
+        modelo: eq.modelo || '',
+      }));
+
+      const acta = await createActaProfesional({
         idProfesional: selectedProfesional.id,
-        idEquipo: equipoSeleccionado,
         fechaEntregaOriginalIso: isoFromDate(fechaEntregaOriginal),
         ciudad,
         sede,
@@ -266,23 +307,40 @@ const Professionals: React.FC = () => {
         usuarioAsigna: usuario?.nombre || 'Auxiliar',
         uidAsigna: usuario?.id,
         firmaAuxiliar: adminSignature || undefined,
+        items,
       });
+
+      await Promise.all(
+        equiposSeleccionados.map((eq) =>
+          asignarEquipoProfesional({
+            idProfesional: selectedProfesional.id,
+            idEquipo: eq.id,
+            fechaEntregaOriginalIso: isoFromDate(fechaEntregaOriginal),
+            ciudad,
+            sede,
+            observacionesEntrega: obsEntrega,
+            usuarioAsigna: usuario?.nombre || 'Auxiliar',
+            uidAsigna: usuario?.id,
+            firmaAuxiliar: adminSignature || undefined,
+            actaProfesionalId: acta.id,
+            actaProfesionalConsecutivo: acta.consecutivo,
+          }),
+        ),
+      );
 
       toast({
         tone: 'success',
         title: 'Asignacion exitosa',
-        message: `ACTA DE ENTREGA N° ${nuevaAsignacion.consecutivo}\nProfesional: ${selectedProfesional.nombre}`,
+        message: `ACTA DE ENTREGA N° ${acta.consecutivo}\nProfesional: ${selectedProfesional.nombre}`,
       });
 
       setObsEntrega('');
-      setEquipoSeleccionado('');
       setEquipoQuery('');
       setEquipoPickerOpen(false);
+      setEquiposSeleccionados([]);
 
-      if (equipo) {
-        setActaData({ asig: nuevaAsignacion, equipo, tipo: 'ENTREGA' });
-        setProfessionalSignature(null);
-      }
+      setActaData({ kind: 'group', acta, tipo: 'ENTREGA' });
+      setProfessionalSignature(null);
     } catch (err: any) {
       console.error('Error asignando equipo a profesional:', err);
       toast({ tone: 'error', message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo asignar el equipo.'}` });
@@ -306,11 +364,94 @@ const Professionals: React.FC = () => {
     }
   };
 
+  const handleConsolidarActa = async () => {
+    if (!selectedProfesional || !canManage) return;
+    const pendientes = asignacionesDelProfesional.filter(
+      (a) => a.estado === EstadoAsignacion.ACTIVA && !a.actaProfesionalId,
+    );
+    if (pendientes.length < 2) return;
+
+    try {
+      const equiposItems = pendientes
+        .map((a) => equiposById.get(a.idEquipo))
+        .filter(Boolean) as EquipoBiomedico[];
+      if (equiposItems.length === 0) {
+        toast({ tone: 'error', message: 'No se encontraron equipos válidos para consolidar.' });
+        return;
+      }
+
+      const uniqueDates = new Set(pendientes.map((p) => p.fechaEntregaOriginal));
+      if (uniqueDates.size > 1) {
+        toast({
+          tone: 'warning',
+          message: 'Las asignaciones tienen fechas distintas. Se usará la más antigua para el acta consolidada.',
+        });
+      }
+
+      const sorted = [...pendientes].sort(
+        (a, b) => new Date(a.fechaEntregaOriginal).getTime() - new Date(b.fechaEntregaOriginal).getTime(),
+      );
+      const base = sorted[0];
+
+      const acta = await createActaProfesional({
+        idProfesional: selectedProfesional.id,
+        fechaEntregaOriginalIso: base.fechaEntregaOriginal,
+        ciudad: base.ciudad,
+        sede: base.sede,
+        observacionesEntrega: base.observacionesEntrega || '',
+        usuarioAsigna: base.usuarioAsigna || usuario?.nombre || 'Auxiliar',
+        uidAsigna: base.uidAsigna || usuario?.id,
+        firmaAuxiliar: base.firmaAuxiliar,
+        items: equiposItems.map((eq) => ({
+          idEquipo: eq.id,
+          codigoInventario: eq.codigoInventario || '',
+          numeroSerie: eq.numeroSerie || '',
+          nombre: eq.nombre || '',
+          marca: eq.marca || '',
+          modelo: eq.modelo || '',
+        })),
+      });
+
+      await Promise.all(
+        pendientes.map((a) =>
+          vincularAsignacionProfesionalActa({
+            idAsignacion: a.id,
+            actaProfesionalId: acta.id,
+            actaProfesionalConsecutivo: acta.consecutivo,
+          }),
+        ),
+      );
+
+      toast({
+        tone: 'success',
+        title: 'Acta consolidada',
+        message: `ACTA N° ${acta.consecutivo} creada con ${pendientes.length} equipos.`,
+      });
+
+      setActaData({ kind: 'group', acta, tipo: 'ENTREGA' });
+    } catch (err: any) {
+      console.error('Error consolidando acta profesional:', err);
+      toast({ tone: 'error', message: err?.message || 'No se pudo consolidar el acta.' });
+    }
+  };
+
   const handleVerActa = (asig: AsignacionProfesional, tipo: 'ENTREGA' | 'DEVOLUCION') => {
+    if (tipo === 'ENTREGA' && asig.actaProfesionalId) {
+      const acta = actasProfesionalesById.get(asig.actaProfesionalId);
+      if (!acta) {
+        toast({ tone: 'error', message: 'No se encontró el acta profesional asociada.' });
+        return;
+      }
+      setActaData({ kind: 'group', acta, tipo: 'ENTREGA' });
+      setProfessionalSignature(acta.firmaProfesionalEntrega || null);
+      if (acta.firmaAuxiliar) setAdminSignature(acta.firmaAuxiliar);
+      return;
+    }
+
     const equipo = equiposById.get(asig.idEquipo);
     if (!equipo) return;
 
-    setActaData({ asig, equipo, tipo });
+    setActaData({ kind: 'single', asig, equipo, tipo });
     const savedSig = tipo === 'ENTREGA' ? asig.firmaProfesionalEntrega : asig.firmaProfesionalDevolucion;
     setProfessionalSignature(savedSig || null);
     if (asig.firmaAuxiliar) setAdminSignature(asig.firmaAuxiliar);
@@ -321,11 +462,35 @@ const Professionals: React.FC = () => {
     if (!actaData) return;
     setSavingProfessionalSig(true);
     try {
-      await guardarFirmaProfesional({
-        idAsignacion: actaData.asig.id,
-        tipoActa: actaData.tipo,
-        dataUrl: professionalSignature,
-      });
+      if (actaData.kind === 'group') {
+        await guardarFirmaProfesionalActa({
+          idActa: actaData.acta.id,
+          dataUrl: professionalSignature,
+        });
+        setActaData((prev) => {
+          if (!prev || prev.kind !== 'group') return prev;
+          return { ...prev, acta: { ...prev.acta, firmaProfesionalEntrega: professionalSignature || undefined } };
+        });
+      } else {
+        await guardarFirmaProfesional({
+          idAsignacion: actaData.asig.id,
+          tipoActa: actaData.tipo,
+          dataUrl: professionalSignature,
+        });
+        setActaData((prev) => {
+          if (!prev || prev.kind !== 'single') return prev;
+          const updatedAsig: AsignacionProfesional = { ...prev.asig };
+          if (prev.tipo === 'ENTREGA') {
+            updatedAsig.firmaProfesionalEntrega = professionalSignature || undefined;
+          } else {
+            updatedAsig.firmaProfesionalDevolucion = professionalSignature || undefined;
+          }
+          return {
+            ...prev,
+            asig: updatedAsig,
+          };
+        });
+      }
       toast({ tone: 'success', message: 'Firma del profesional guardada correctamente.' });
     } catch (err: any) {
       console.error('Error guardando firma profesional:', err);
@@ -339,15 +504,24 @@ const Professionals: React.FC = () => {
     if (!canManage) return;
     if (!actaData) return;
     if (!adminSignature) return;
-    if (actaData.asig.firmaAuxiliar) return;
+    if (actaData.kind === 'single' && actaData.asig.firmaAuxiliar) return;
+    if (actaData.kind === 'group' && actaData.acta.firmaAuxiliar) return;
 
     setSavingAdminSig(true);
     try {
-      await guardarFirmaAuxiliarProfesional({ idAsignacion: actaData.asig.id, dataUrl: adminSignature });
-      setActaData((prev) => {
-        if (!prev) return prev;
-        return { ...prev, asig: { ...prev.asig, firmaAuxiliar: adminSignature } };
-      });
+      if (actaData.kind === 'group') {
+        await guardarFirmaAuxiliarActa({ idActa: actaData.acta.id, dataUrl: adminSignature });
+        setActaData((prev) => {
+          if (!prev || prev.kind !== 'group') return prev;
+          return { ...prev, acta: { ...prev.acta, firmaAuxiliar: adminSignature } };
+        });
+      } else {
+        await guardarFirmaAuxiliarProfesional({ idAsignacion: actaData.asig.id, dataUrl: adminSignature });
+        setActaData((prev) => {
+          if (!prev || prev.kind !== 'single') return prev;
+          return { ...prev, asig: { ...prev.asig, firmaAuxiliar: adminSignature } };
+        });
+      }
       toast({ tone: 'success', message: 'Firma del auxiliar guardada correctamente.' });
     } catch (err: any) {
       console.error('Error guardando firma auxiliar (profesional):', err);
@@ -367,13 +541,22 @@ const Professionals: React.FC = () => {
       setAdminSignature(res);
       localStorage.setItem('biocontrol_admin_sig', res);
 
-      if (actaData && !actaData.asig.firmaAuxiliar) {
+      if (actaData) {
         try {
-          await guardarFirmaAuxiliarProfesional({ idAsignacion: actaData.asig.id, dataUrl: res });
-          setActaData((prev) => {
-            if (!prev) return prev;
-            return { ...prev, asig: { ...prev.asig, firmaAuxiliar: res } };
-          });
+          if (actaData.kind === 'group' && !actaData.acta.firmaAuxiliar) {
+            await guardarFirmaAuxiliarActa({ idActa: actaData.acta.id, dataUrl: res });
+            setActaData((prev) => {
+              if (!prev || prev.kind !== 'group') return prev;
+              return { ...prev, acta: { ...prev.acta, firmaAuxiliar: res } };
+            });
+          }
+          if (actaData.kind === 'single' && !actaData.asig.firmaAuxiliar) {
+            await guardarFirmaAuxiliarProfesional({ idAsignacion: actaData.asig.id, dataUrl: res });
+            setActaData((prev) => {
+              if (!prev || prev.kind !== 'single') return prev;
+              return { ...prev, asig: { ...prev.asig, firmaAuxiliar: res } };
+            });
+          }
         } catch (err: any) {
           console.error('Error guardando firma auxiliar (upload profesional):', err);
           toast({ tone: 'error', message: err?.message || 'No se pudo guardar la firma del auxiliar en Firestore.' });
@@ -607,22 +790,24 @@ const Professionals: React.FC = () => {
                           onChange={(e) => {
                             setEquipoQuery(e.target.value);
                             setEquipoPickerOpen(true);
-                            setEquipoSeleccionado('');
                           }}
                           onFocus={() => setEquipoPickerOpen(true)}
                           onKeyDown={(e) => {
                             if (e.key !== 'Enter') return;
                             const q = equipoQuery.trim().toLowerCase();
                             if (!q) return;
-                            const matches = equiposDisponibles.filter((eq) => {
+                            const matches = equiposDisponiblesFiltrados.filter((eq) => {
                               return (
                                 (eq.codigoInventario || '').toLowerCase() === q || (eq.numeroSerie || '').toLowerCase() === q
                               );
                             });
                             if (matches.length === 1) {
                               const chosen = matches[0];
-                              setEquipoSeleccionado(chosen.id);
-                              setEquipoQuery(`${chosen.codigoInventario || ''} • ${chosen.numeroSerie || ''} • ${chosen.nombre}`);
+                              setEquiposSeleccionados((prev) => {
+                                if (prev.some((p) => p.id === chosen.id)) return prev;
+                                return [...prev, chosen];
+                              });
+                              setEquipoQuery('');
                               setEquipoPickerOpen(false);
                             }
                           }}
@@ -638,8 +823,11 @@ const Professionals: React.FC = () => {
                                   key={eq.id}
                                   className="w-full text-left px-3 py-2 hover:bg-gray-50 border-b last:border-b-0"
                                   onClick={() => {
-                                    setEquipoSeleccionado(eq.id);
-                                    setEquipoQuery(`${eq.codigoInventario || ''} • ${eq.numeroSerie || ''} • ${eq.nombre}`);
+                                    setEquiposSeleccionados((prev) => {
+                                      if (prev.some((p) => p.id === eq.id)) return prev;
+                                      return [...prev, eq];
+                                    });
+                                    setEquipoQuery('');
                                     setEquipoPickerOpen(false);
                                   }}
                                 >
@@ -655,6 +843,35 @@ const Professionals: React.FC = () => {
                           </div>
                         )}
                       </div>
+                      {equiposSeleccionados.length > 0 && (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {equiposSeleccionados.map((eq) => (
+                            <span
+                              key={eq.id}
+                              className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 text-blue-700 text-xs font-medium"
+                            >
+                              {eq.codigoInventario} · {eq.nombre}
+                              <button
+                                type="button"
+                                className="text-blue-700 hover:text-blue-900"
+                                onClick={() =>
+                                  setEquiposSeleccionados((prev) => prev.filter((p) => p.id !== eq.id))
+                                }
+                                aria-label={`Quitar ${eq.nombre}`}
+                              >
+                                ✕
+                              </button>
+                            </span>
+                          ))}
+                          <button
+                            type="button"
+                            className="text-xs text-gray-500 underline"
+                            onClick={() => setEquiposSeleccionados([])}
+                          >
+                            Limpiar selección
+                          </button>
+                        </div>
+                      )}
                     </div>
                     <div className="md:col-span-4">
                       <label className="block text-sm font-medium text-gray-700">Observaciones iniciales</label>
@@ -668,7 +885,7 @@ const Professionals: React.FC = () => {
                     <div className="md:col-span-4 flex justify-end">
                       <button
                         onClick={handleAsignar}
-                        disabled={!equipoSeleccionado || !fechaEntregaOriginal}
+                        disabled={equiposSeleccionados.length === 0 || !fechaEntregaOriginal}
                         className="md-btn md-btn-filled"
                         title="Asignar y generar acta de entrega"
                       >
@@ -684,6 +901,15 @@ const Professionals: React.FC = () => {
             <div className="md-card p-6">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-md font-bold text-gray-900">Equipos Entregados</h3>
+                {canManage && asignacionesConsolidables.length > 1 && (
+                  <button
+                    onClick={handleConsolidarActa}
+                    className="md-btn md-btn-outlined"
+                    title="Crear una sola acta para todas las asignaciones activas sin acta"
+                  >
+                    Consolidar acta
+                  </button>
+                )}
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -707,9 +933,10 @@ const Professionals: React.FC = () => {
                     ) : (
                       asignacionesDelProfesional.map((asig) => {
                         const eq = equiposById.get(asig.idEquipo);
+                        const actaNum = asig.actaProfesionalConsecutivo || asig.consecutivo;
                         return (
                           <tr key={asig.id} className="border-b hover:bg-gray-50">
-                            <td className="p-2 font-mono">{String(asig.consecutivo).padStart(4, '0')}</td>
+                            <td className="p-2 font-mono">{String(actaNum).padStart(4, '0')}</td>
                             <td className="p-2">
                               <div className="font-semibold text-gray-900">{eq?.nombre || 'Equipo'}</div>
                               <div className="text-xs text-gray-500 font-mono">
@@ -838,9 +1065,11 @@ const Professionals: React.FC = () => {
                     <label className="block text-sm font-medium text-gray-600 mb-2">Firma Profesional</label>
                     {(() => {
                       const savedSig =
-                        actaData.tipo === 'ENTREGA'
-                          ? actaData.asig.firmaProfesionalEntrega
-                          : actaData.asig.firmaProfesionalDevolucion;
+                        actaData.kind === 'group'
+                          ? actaData.acta.firmaProfesionalEntrega
+                          : actaData.tipo === 'ENTREGA'
+                            ? actaData.asig.firmaProfesionalEntrega
+                            : actaData.asig.firmaProfesionalDevolucion;
                       const locked = !!savedSig;
 
                       return (
@@ -897,8 +1126,11 @@ const Professionals: React.FC = () => {
                                 </button>
                               </div>
                               <p className="text-[11px] text-gray-500 mt-2">
-                                La firma se guarda en Firestore dentro de la asignación (
-                                {actaData.tipo === 'ENTREGA' ? 'firmaProfesionalEntrega' : 'firmaProfesionalDevolucion'}).
+                                {actaData.kind === 'group'
+                                  ? 'La firma se guarda en Firestore dentro del acta profesional (firmaProfesionalEntrega).'
+                                  : `La firma se guarda en Firestore dentro de la asignación (${
+                                      actaData.tipo === 'ENTREGA' ? 'firmaProfesionalEntrega' : 'firmaProfesionalDevolucion'
+                                    }).`}
                               </p>
                             </>
                           )}
@@ -911,7 +1143,8 @@ const Professionals: React.FC = () => {
                   <div className="mb-6">
                     <label className="block text-sm font-medium text-gray-600 mb-2">Firma Auxiliar Admin</label>
                     {(() => {
-                      const savedAdminSig = actaData.asig.firmaAuxiliar || null;
+                      const savedAdminSig =
+                        actaData.kind === 'group' ? actaData.acta.firmaAuxiliar || null : actaData.asig.firmaAuxiliar || null;
                       const locked = !!savedAdminSig;
                       const effectiveAdminSig = locked ? savedAdminSig : canManage ? adminSignature : null;
 
@@ -987,14 +1220,24 @@ const Professionals: React.FC = () => {
                   <div ref={actaViewportRef} className="w-full h-full p-4 flex justify-center items-start overflow-hidden">
                     <div className="transition-transform" style={{ transform: `scale(${actaPreviewScale})`, transformOrigin: 'top center' }}>
                       <div id="acta-print-container" ref={actaMeasureRef} className="bg-white shadow-lg">
-                        <ActaProfesionalFormat
-                          profesional={selectedProfesional}
-                          equipo={actaData.equipo}
-                          asignacion={actaData.asig}
-                          tipoActa={actaData.tipo}
-                          professionalSignature={professionalSignature}
-                          adminSignature={actaData.asig.firmaAuxiliar ? actaData.asig.firmaAuxiliar : canManage ? adminSignature : null}
-                        />
+                        {actaData.kind === 'group' ? (
+                          <ActaProfesionalGroupFormat
+                            profesional={selectedProfesional}
+                            acta={actaData.acta}
+                            tipoActa={actaData.tipo}
+                            professionalSignature={professionalSignature}
+                            adminSignature={actaData.acta.firmaAuxiliar ? actaData.acta.firmaAuxiliar : canManage ? adminSignature : null}
+                          />
+                        ) : (
+                          <ActaProfesionalFormat
+                            profesional={selectedProfesional}
+                            equipo={actaData.equipo}
+                            asignacion={actaData.asig}
+                            tipoActa={actaData.tipo}
+                            professionalSignature={professionalSignature}
+                            adminSignature={actaData.asig.firmaAuxiliar ? actaData.asig.firmaAuxiliar : canManage ? adminSignature : null}
+                          />
+                        )}
                       </div>
                     </div>
                   </div>

@@ -260,6 +260,8 @@ export interface AsignacionProfesional {
   consecutivo: number;
   idProfesional: string;
   idEquipo: string;
+  actaProfesionalId?: string;
+  actaProfesionalConsecutivo?: number;
   // Fecha real/histórica de entrega (manual).
   fechaEntregaOriginal: string;
   // Fecha en la que se generó/actualizó la entrega en el sistema (ISO). No cambia con el tiempo (opción A).
@@ -278,6 +280,34 @@ export interface AsignacionProfesional {
   firmaAuxiliar?: string;
   usuarioAsigna: string;
   uidAsigna?: string;
+}
+
+export interface ActaProfesionalItem {
+  idEquipo: string;
+  codigoInventario: string;
+  numeroSerie: string;
+  nombre: string;
+  marca: string;
+  modelo: string;
+  estado?: string;
+}
+
+export interface ActaProfesional {
+  id: string;
+  consecutivo: number;
+  idProfesional: string;
+  fechaEntregaOriginal: string;
+  fechaActualizacionEntrega: string;
+  ciudad?: string;
+  sede?: string;
+  observacionesEntrega: string;
+  usuarioAsigna: string;
+  uidAsigna?: string;
+  firmaAuxiliar?: string;
+  firmaProfesionalEntrega?: string;
+  items: ActaProfesionalItem[];
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 // Modelo de Acta

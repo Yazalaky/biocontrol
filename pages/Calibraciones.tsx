@@ -15,6 +15,7 @@ import {
   subscribeEquipos,
   subscribeTiposEquipo,
   updateCalibracionCertificado,
+  updateCalibracionFields,
 } from '../services/firestoreData';
 import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
 import { storage } from '../services/firebase';
@@ -86,6 +87,8 @@ const Calibraciones: React.FC = () => {
   const [replaceTarget, setReplaceTarget] = useState<CalibracionEquipo | null>(null);
   const [replacing, setReplacing] = useState(false);
   const replaceInputRef = React.useRef<HTMLInputElement>(null);
+  const [editingCostoId, setEditingCostoId] = useState<string | null>(null);
+  const [editingCostoValue, setEditingCostoValue] = useState('');
 
   useEffect(() => {
     const unsubEquipos = subscribeEquipos(setEquipos, (e) => {
@@ -228,6 +231,38 @@ const Calibraciones: React.FC = () => {
       setReplacing(false);
       setReplaceTarget(null);
       if (replaceInputRef.current) replaceInputRef.current.value = '';
+    }
+  };
+
+  const startEditCosto = (item: CalibracionEquipo) => {
+    if (!isBiomedico) return;
+    setEditingCostoId(item.id);
+    setEditingCostoValue(item.costo || '');
+  };
+
+  const cancelEditCosto = () => {
+    setEditingCostoId(null);
+    setEditingCostoValue('');
+  };
+
+  const saveEditCosto = async (item: CalibracionEquipo) => {
+    if (!selectedEquipo) return;
+    const value = editingCostoValue.trim();
+    if (!value) {
+      toast({ tone: 'warning', message: 'Escribe el costo.' });
+      return;
+    }
+    try {
+      await updateCalibracionFields({
+        equipoId: selectedEquipo.id,
+        calibracionId: item.id,
+        costo: value,
+      });
+      toast({ tone: 'success', message: 'Costo actualizado.' });
+      cancelEditCosto();
+    } catch (err) {
+      console.error('Error actualizando costo:', err);
+      toast({ tone: 'error', message: 'No se pudo actualizar el costo.' });
     }
   };
 
@@ -500,6 +535,31 @@ const Calibraciones: React.FC = () => {
                       {item.observaciones ? (
                         <div className="mt-1 text-xs text-gray-600">{item.observaciones}</div>
                       ) : null}
+                      {isBiomedico && editingCostoId === item.id ? (
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <input
+                            type="text"
+                            value={editingCostoValue}
+                            onChange={(e) => setEditingCostoValue(e.target.value)}
+                            className="rounded-md border border-gray-200 px-2 py-1 text-xs"
+                            placeholder="Costo"
+                          />
+                          <button
+                            type="button"
+                            className="rounded-md bg-blue-600 px-2 py-1 text-xs font-semibold text-white"
+                            onClick={() => saveEditCosto(item)}
+                          >
+                            Guardar
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded-md border border-gray-200 px-2 py-1 text-xs text-gray-600"
+                            onClick={cancelEditCosto}
+                          >
+                            Cancelar
+                          </button>
+                        </div>
+                      ) : null}
                       <div className="mt-2 flex items-center gap-2 text-xs text-gray-500">
                         <span>Por: {item.creadoPorNombre}</span>
                         {item.certificado?.path || item.certificado?.url ? (
@@ -519,6 +579,15 @@ const Calibraciones: React.FC = () => {
                             disabled={replacing}
                           >
                             {replacing && replaceTarget?.id === item.id ? 'Actualizando...' : 'Reemplazar PDF'}
+                          </button>
+                        ) : null}
+                        {isBiomedico && editingCostoId !== item.id ? (
+                          <button
+                            type="button"
+                            className="text-gray-600 hover:underline"
+                            onClick={() => startEditCosto(item)}
+                          >
+                            {item.costo ? 'Editar costo' : 'Agregar costo'}
                           </button>
                         ) : null}
                       </div>

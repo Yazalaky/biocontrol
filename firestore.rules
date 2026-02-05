@@ -96,6 +96,8 @@ service cloud.firestore {
           && isBiomedico()
           && request.resource.data.diff(resource.data).changedKeys().hasOnly([
             "certificado",
+            "costo",
+            "observaciones",
             "updatedAt"
           ]);
         allow delete: if false;
@@ -134,6 +136,13 @@ service cloud.firestore {
     // --- ASIGNACIONES PROFESIONALES ---
     match /asignaciones_profesionales/{id} {
       allow read: if isSignedIn() && (isAuxiliar() || isGerencia() || isBiomedico());
+      allow create, update: if isSignedIn() && isAuxiliar();
+      allow delete: if false;
+    }
+
+    // --- ACTAS PROFESIONALES (entrega multiple) ---
+    match /actas_profesionales/{id} {
+      allow read: if isSignedIn() && (isAuxiliar() || isGerencia() || isBiomedico() || isAdmin());
       allow create, update: if isSignedIn() && isAuxiliar();
       allow delete: if false;
     }

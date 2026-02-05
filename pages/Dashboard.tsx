@@ -13,6 +13,7 @@ import {
   type EquipoBiomedico,
   type Mantenimiento,
   type Paciente,
+  type CalibracionEquipo,
 } from '../types';
 import StatusBadge from '../components/StatusBadge';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
@@ -20,6 +21,7 @@ import {
   subscribeAsignaciones,
   subscribeAsignacionesProfesionales,
   subscribeEquipos,
+  subscribeCalibraciones,
   subscribeMantenimientos,
   subscribePacientes,
 } from '../services/firestoreData';
@@ -77,6 +79,8 @@ const Dashboard: React.FC = () => {
   const [selectedYear, setSelectedYear] = useState<number | 'ALL' | null>(null);
   const [mantenimientos, setMantenimientos] = useState<Mantenimiento[]>([]);
   const [selectedYearMantenimiento, setSelectedYearMantenimiento] = useState<number | 'ALL' | null>(null);
+  const [calibraciones, setCalibraciones] = useState<CalibracionEquipo[]>([]);
+  const [selectedYearCalibracion, setSelectedYearCalibracion] = useState<number | 'ALL' | null>(null);
   const [firestoreError, setFirestoreError] = useState<string | null>(null);
   const [showCalibPopup, setShowCalibPopup] = useState(false);
 
@@ -126,6 +130,20 @@ const Dashboard: React.FC = () => {
     return Array.from(years).sort((a, b) => b - a);
   }, [mantenimientos]);
 
+  const availableYearsCalibracion = React.useMemo(() => {
+    const years = new Set<number>();
+    const equiposById = new Map(equiposData.map((e) => [e.id, e]));
+    for (const c of calibraciones) {
+      const eq = equiposById.get(c.equipoId);
+      if (!eq || eq.tipoPropiedad !== TipoPropiedad.MEDICUC) continue;
+      const costo = parseCosto(c.costo);
+      if (!costo) continue;
+      const year = getIngresoYear(c.fecha);
+      if (year) years.add(year);
+    }
+    return Array.from(years).sort((a, b) => b - a);
+  }, [calibraciones, equiposData]);
+
   useEffect(() => {
     if (availableYears.length === 0) {
       if (selectedYear !== null) setSelectedYear(null);
@@ -145,6 +163,16 @@ const Dashboard: React.FC = () => {
       setSelectedYearMantenimiento('ALL');
     }
   }, [availableYearsMantenimiento, selectedYearMantenimiento]);
+
+  useEffect(() => {
+    if (availableYearsCalibracion.length === 0) {
+      if (selectedYearCalibracion !== null) setSelectedYearCalibracion(null);
+      return;
+    }
+    if (!selectedYearCalibracion || (selectedYearCalibracion !== 'ALL' && !availableYearsCalibracion.includes(selectedYearCalibracion))) {
+      setSelectedYearCalibracion('ALL');
+    }
+  }, [availableYearsCalibracion, selectedYearCalibracion]);
 
   const costoTotalYear = React.useMemo(() => {
     if (!selectedYear) return 0;
@@ -201,6 +229,38 @@ const Dashboard: React.FC = () => {
     }
     return count;
   }, [mantenimientos, selectedYearMantenimiento]);
+
+  const costoCalibracionTotal = React.useMemo(() => {
+    if (!selectedYearCalibracion) return 0;
+    let total = 0;
+    const equiposById = new Map(equiposData.map((e) => [e.id, e]));
+    for (const c of calibraciones) {
+      const eq = equiposById.get(c.equipoId);
+      if (!eq || eq.tipoPropiedad !== TipoPropiedad.MEDICUC) continue;
+      const costo = parseCosto(c.costo);
+      if (!costo) continue;
+      const year = getIngresoYear(c.fecha);
+      if (selectedYearCalibracion !== 'ALL' && year !== selectedYearCalibracion) continue;
+      total += costo;
+    }
+    return total;
+  }, [calibraciones, equiposData, selectedYearCalibracion]);
+
+  const costoCalibracionCount = React.useMemo(() => {
+    if (!selectedYearCalibracion) return 0;
+    let count = 0;
+    const equiposById = new Map(equiposData.map((e) => [e.id, e]));
+    for (const c of calibraciones) {
+      const eq = equiposById.get(c.equipoId);
+      if (!eq || eq.tipoPropiedad !== TipoPropiedad.MEDICUC) continue;
+      const costo = parseCosto(c.costo);
+      if (!costo) continue;
+      const year = getIngresoYear(c.fecha);
+      if (selectedYearCalibracion !== 'ALL' && year !== selectedYearCalibracion) continue;
+      count += 1;
+    }
+    return count;
+  }, [calibraciones, equiposData, selectedYearCalibracion]);
 
   const calibracionesProximas = React.useMemo(() => {
     const today = new Date();
@@ -321,6 +381,9 @@ const Dashboard: React.FC = () => {
     const unsubMantenimientos = subscribeMantenimientos(setMantenimientos, (e) => {
       console.error('Firestore subscribeMantenimientos error:', e);
     });
+    const unsubCalibraciones = subscribeCalibraciones(setCalibraciones, (e) => {
+      console.error('Firestore subscribeCalibraciones error:', e);
+    });
 
     return () => {
       unsubPacientes();
@@ -328,6 +391,7 @@ const Dashboard: React.FC = () => {
       unsubAsignaciones();
       unsubAsignacionesProfesionales();
       unsubMantenimientos();
+      unsubCalibraciones();
     };
   }, []);
 
@@ -472,6 +536,49 @@ const Dashboard: React.FC = () => {
             <div
               className="h-11 w-11 rounded-2xl flex items-center justify-center"
               style={{ background: 'rgba(239,68,68,0.15)', color: '#ef4444' }}
+            >
+              <StatIcon type="maintenance" />
+            </div>
+          </div>
+        </div>
+        <div className="md-card p-4 sm:p-5 relative overflow-hidden">
+          <div className="absolute left-0 top-0 bottom-0 w-1.5" style={{ background: '#10b981' }} />
+          <div className="flex items-start justify-between">
+            <div className="w-full">
+              <p className="text-xs font-semibold tracking-wide text-gray-500 uppercase">Costo calibraciones</p>
+              <div className="mt-2 flex items-center justify-between gap-3">
+                <p className="text-xl sm:text-2xl font-extrabold text-gray-900">
+                  {selectedYearCalibracion ? formatCurrency(costoCalibracionTotal) : '—'}
+                </p>
+                <select
+                  className="border rounded px-2 py-1 text-xs text-gray-700 bg-white"
+                  value={selectedYearCalibracion ?? ''}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setSelectedYearCalibracion(value === 'ALL' ? 'ALL' : Number(value));
+                  }}
+                  disabled={availableYearsCalibracion.length === 0}
+                >
+                  {availableYearsCalibracion.length === 0 && <option value="">Año</option>}
+                  {availableYearsCalibracion.length > 0 && (
+                    <option value="ALL">Todo</option>
+                  )}
+                  {availableYearsCalibracion.map((year) => (
+                    <option key={year} value={year}>
+                      {year}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <p className="mt-2 text-sm text-gray-500">
+                {selectedYearCalibracion === 'ALL'
+                  ? `Total general · ${costoCalibracionCount} calibraciones`
+                  : `Por año · ${costoCalibracionCount} calibraciones`}
+              </p>
+            </div>
+            <div
+              className="h-11 w-11 rounded-2xl flex items-center justify-center"
+              style={{ background: 'rgba(16,185,129,0.15)', color: '#10b981' }}
             >
               <StatIcon type="maintenance" />
             </div>
