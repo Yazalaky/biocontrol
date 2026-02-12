@@ -14,6 +14,7 @@ const ActaFormat: React.FC<ActaFormatProps> = ({ paciente, equipo, asignacion, t
   const fechaEntregaOriginal = new Date(asignacion.fechaAsignacion);
   const fechaActualizacionEntrega = new Date(asignacion.fechaActualizacionEntrega || asignacion.fechaAsignacion);
   const fechaDevolucion = new Date(asignacion.fechaDevolucion || new Date().toISOString());
+  const sedeActa = 'BUCARAMANGA';
   const logoCandidates = ['/medicuc-logo.png', '/medicuc-logo.jpg', '/medicuc-logo.svg'] as const;
   const [logoIndex, setLogoIndex] = useState(0);
   const [logoFailed, setLogoFailed] = useState(false);
@@ -69,7 +70,7 @@ const ActaFormat: React.FC<ActaFormatProps> = ({ paciente, equipo, asignacion, t
           <div className="w-[10%] border-r border-black p-1 font-semibold bg-gray-100">Acta</div>
           <div className="w-[10%] border-r border-black p-1 text-center text-red-600 font-bold">{String(asignacion.consecutivo).padStart(4, '0')}</div>
           <div className="w-[10%] border-r border-black p-1 font-semibold bg-gray-100">Sede</div>
-          <div className="w-[15%] border-r border-black p-1">Cúcuta</div>
+          <div className="w-[15%] border-r border-black p-1">{sedeActa}</div>
           <div className="w-[10%] border-r border-black p-1 font-semibold bg-gray-100">Eps</div>
           <div className="w-[20%] p-1">{paciente.eps}</div>
         </div>

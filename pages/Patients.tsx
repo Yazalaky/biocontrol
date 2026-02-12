@@ -11,6 +11,7 @@ import {
   EstadoAsignacion,
   RolUsuario,
   EPS,
+  RegimenPaciente,
 } from '../types';
 import { useAuth } from '../contexts/AuthContext';
 import StatusBadge from '../components/StatusBadge';
@@ -41,6 +42,9 @@ const Patients: React.FC = () => {
 
   // Search State
   const [searchTerm, setSearchTerm] = useState('');
+  const [entregaFilter, setEntregaFilter] = useState<
+    'TODOS' | 'CON_ACTA_ACTIVA' | 'CON_ACTA_FINALIZADA' | 'SIN_ACTA_NI_EQUIPO'
+  >('TODOS');
 
   const canManage = usuario?.rol === RolUsuario.AUXILIAR_ADMINISTRATIVA;
 
@@ -244,15 +248,63 @@ const Patients: React.FC = () => {
     return () => ro.disconnect();
   }, [actaData]);
 
-  // Filtro de Pacientes (Buscador)
-  const filteredPacientes = pacientes.filter(p => {
-    if (!searchTerm) return true;
-    const term = searchTerm.toLowerCase();
-    return (
+  const pacientesConActaActiva = useMemo(() => {
+    const set = new Set<string>();
+    for (const asignacion of allAsignaciones) {
+      if (asignacion.estado === EstadoAsignacion.ACTIVA && asignacion.idPaciente) {
+        set.add(asignacion.idPaciente);
+      }
+    }
+    return set;
+  }, [allAsignaciones]);
+
+  const pacientesConActaFinalizada = useMemo(() => {
+    const set = new Set<string>();
+    for (const asignacion of allAsignaciones) {
+      if (asignacion.estado === EstadoAsignacion.FINALIZADA && asignacion.idPaciente) {
+        set.add(asignacion.idPaciente);
+      }
+    }
+    return set;
+  }, [allAsignaciones]);
+
+  const entregaFilterCounts = useMemo(() => {
+    let conActaActiva = 0;
+    let conActaFinalizada = 0;
+    let sinActaNiEquipo = 0;
+    for (const paciente of pacientes) {
+      const hasActaActiva = pacientesConActaActiva.has(paciente.id);
+      const hasActaFinalizada = pacientesConActaFinalizada.has(paciente.id);
+      if (hasActaActiva) conActaActiva += 1;
+      if (hasActaFinalizada) conActaFinalizada += 1;
+      if (!hasActaActiva && !hasActaFinalizada) sinActaNiEquipo += 1;
+    }
+    return {
+      TODOS: pacientes.length,
+      CON_ACTA_ACTIVA: conActaActiva,
+      CON_ACTA_FINALIZADA: conActaFinalizada,
+      SIN_ACTA_NI_EQUIPO: sinActaNiEquipo,
+    };
+  }, [pacientes, pacientesConActaActiva, pacientesConActaFinalizada]);
+
+  // Filtro de Pacientes (Buscador + estado de entrega/asignación)
+  const filteredPacientes = pacientes.filter((p) => {
+    const term = searchTerm.trim().toLowerCase();
+    const matchesSearch =
+      !term ||
       p.nombreCompleto.toLowerCase().includes(term) ||
       p.numeroDocumento.includes(term) ||
-      p.eps.toLowerCase().includes(term)
-    );
+      p.eps.toLowerCase().includes(term);
+
+    const hasActaActiva = pacientesConActaActiva.has(p.id);
+    const hasActaFinalizada = pacientesConActaFinalizada.has(p.id);
+    const matchesEntregaFilter =
+      entregaFilter === 'TODOS' ||
+      (entregaFilter === 'CON_ACTA_ACTIVA' && hasActaActiva) ||
+      (entregaFilter === 'CON_ACTA_FINALIZADA' && hasActaFinalizada) ||
+      (entregaFilter === 'SIN_ACTA_NI_EQUIPO' && !hasActaActiva && !hasActaFinalizada);
+
+    return matchesSearch && matchesEntregaFilter;
   });
 
   const initials = (fullName: string) => {
@@ -278,6 +330,7 @@ const Patients: React.FC = () => {
       barrio: formData.barrio || '',
       zona: formData.zona as any,
       eps: formData.eps || 'Particular',
+      regimen: (formData.regimen as RegimenPaciente) || undefined,
       fechaInicioPrograma: formData.fechaInicioPrograma || new Date().toISOString(),
       horasPrestadas: formData.horasPrestadas || '', 
       tipoServicio: formData.tipoServicio || '',
@@ -325,6 +378,7 @@ const Patients: React.FC = () => {
       "DocumentoFamiliar",
       "ParentescoFamiliar",
       "EPS",
+      "Regimen",
       "FechaInicio (YYYY-MM-DD)",
       "HorasPrestadas (Texto)",
       "TipoServicio",
@@ -345,6 +399,7 @@ const Patients: React.FC = () => {
       "1090111222",
       "Esposa",
       "Salud Total",
+      "CONTRIBUTIVO",
       "2023-10-01",
       "12 Horas Diarias",
       "Domiciliario",
@@ -389,6 +444,13 @@ const Patients: React.FC = () => {
         const columns = line.split(','); 
         if (columns.length < 6) continue; 
 
+        const regimenRaw = (columns[11]?.trim() || '').toUpperCase();
+        const regimenParsed = (['CONTRIBUTIVO', 'SUBSIDIADO', 'ESPECIAL'] as const).includes(regimenRaw as any)
+          ? (regimenRaw as RegimenPaciente)
+          : undefined;
+        const hasRegimenColumn = Boolean(regimenParsed);
+        const offset = hasRegimenColumn ? 1 : 0;
+
         // Actualizado para nuevos campos
         const importedPaciente: Paciente = {
           id: '',
@@ -404,11 +466,14 @@ const Patients: React.FC = () => {
           documentoFamiliar: columns[8]?.trim() || '',
           parentescoFamiliar: columns[9]?.trim() || '',
           eps: (columns[10]?.trim() as EPS) || 'Particular',
-          fechaInicioPrograma: columns[11]?.trim() ? new Date(columns[11].trim()).toISOString() : new Date().toISOString(),
-          horasPrestadas: columns[12]?.trim() || '',
-          tipoServicio: columns[13]?.trim() || '',
-          diagnostico: columns[14]?.trim() || '',
-          zona: (columns[15]?.trim() as any) || undefined,
+          regimen: regimenParsed,
+          fechaInicioPrograma: columns[11 + offset]?.trim()
+            ? new Date(columns[11 + offset].trim()).toISOString()
+            : new Date().toISOString(),
+          horasPrestadas: columns[12 + offset]?.trim() || '',
+          tipoServicio: columns[13 + offset]?.trim() || '',
+          diagnostico: columns[14 + offset]?.trim() || '',
+          zona: (columns[15 + offset]?.trim() as any) || undefined,
           estado: EstadoPaciente.ACTIVO
         };
 
@@ -752,6 +817,19 @@ const Patients: React.FC = () => {
                   </select>
                 </div>
                 <div>
+                  <label className="block text-sm font-medium text-gray-700">Régimen</label>
+                  <select
+                    className="w-full border p-2.5 rounded-md"
+                    value={formData.regimen || ''}
+                    onChange={e => setFormData({...formData, regimen: (e.target.value as RegimenPaciente) || undefined})}
+                  >
+                    <option value="">-- Seleccione Régimen --</option>
+                    <option value="CONTRIBUTIVO">CONTRIBUTIVO</option>
+                    <option value="SUBSIDIADO">SUBSIDIADO</option>
+                    <option value="ESPECIAL">ESPECIAL</option>
+                  </select>
+                </div>
+                <div>
                   <label className="block text-sm font-medium text-gray-700">Fecha de Inicio del Programa</label>
                   <input type="date" required className="w-full border p-2.5 rounded-md" value={formData.fechaInicioPrograma ? formData.fechaInicioPrograma.substring(0, 10) : ''} onChange={e => setFormData({...formData, fechaInicioPrograma: e.target.value})} />
                 </div>
@@ -798,6 +876,7 @@ const Patients: React.FC = () => {
                 <div className="bg-blue-50 p-3 rounded border border-blue-100">
                     <p className="text-blue-900 font-semibold mb-1">Información Clínica</p>
                     <p><strong>EPS:</strong> {selectedPaciente.eps}</p>
+                    <p><strong>Régimen:</strong> {selectedPaciente.regimen || 'N/A'}</p>
                     <p><strong>Diagnóstico:</strong> {selectedPaciente.diagnostico}</p>
                     <p><strong>Servicio:</strong> {selectedPaciente.tipoServicio}</p>
                     <p><strong>Horas:</strong> {selectedPaciente.horasPrestadas}</p>
@@ -1352,7 +1431,7 @@ const Patients: React.FC = () => {
         </div>
       )}
       <div className="mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <div className="w-full md:max-w-xl">
+        <div className="w-full md:max-w-2xl">
           <div className="md-search">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="11" cy="11" r="7" />
@@ -1364,6 +1443,52 @@ const Patients: React.FC = () => {
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
             />
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setEntregaFilter('TODOS')}
+              className={`px-3 py-1.5 rounded-full border text-sm font-medium ${
+                entregaFilter === 'TODOS'
+                  ? 'bg-blue-600 border-blue-600 text-white'
+                  : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
+              }`}
+            >
+              Todos ({entregaFilterCounts.TODOS})
+            </button>
+            <button
+              type="button"
+              onClick={() => setEntregaFilter('CON_ACTA_ACTIVA')}
+              className={`px-3 py-1.5 rounded-full border text-sm font-medium ${
+                entregaFilter === 'CON_ACTA_ACTIVA'
+                  ? 'bg-blue-600 border-blue-600 text-white'
+                  : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
+              }`}
+            >
+              Con acta activa ({entregaFilterCounts.CON_ACTA_ACTIVA})
+            </button>
+            <button
+              type="button"
+              onClick={() => setEntregaFilter('CON_ACTA_FINALIZADA')}
+              className={`px-3 py-1.5 rounded-full border text-sm font-medium ${
+                entregaFilter === 'CON_ACTA_FINALIZADA'
+                  ? 'bg-blue-600 border-blue-600 text-white'
+                  : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
+              }`}
+            >
+              Con acta finalizada ({entregaFilterCounts.CON_ACTA_FINALIZADA})
+            </button>
+            <button
+              type="button"
+              onClick={() => setEntregaFilter('SIN_ACTA_NI_EQUIPO')}
+              className={`px-3 py-1.5 rounded-full border text-sm font-medium ${
+                entregaFilter === 'SIN_ACTA_NI_EQUIPO'
+                  ? 'bg-blue-600 border-blue-600 text-white'
+                  : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
+              }`}
+            >
+              Sin acta ni equipo ({entregaFilterCounts.SIN_ACTA_NI_EQUIPO})
+            </button>
           </div>
         </div>
         

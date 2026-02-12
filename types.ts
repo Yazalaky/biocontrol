@@ -13,6 +13,7 @@ export enum EstadoPaciente {
 }
 
 export type EPS = 'Nueva Eps' | 'Salud Total' | 'Fomag' | 'Particular' | 'Seguros Bolivar';
+export type RegimenPaciente = 'CONTRIBUTIVO' | 'SUBSIDIADO' | 'ESPECIAL';
 
 // Estados del Equipo
 export enum EstadoEquipo {
@@ -161,6 +162,7 @@ export interface Paciente {
   // Zona del rutero (opcional).
   zona?: 'GIRON' | 'BGA1' | 'BGA2' | 'PIEDECUESTA' | 'FLORIDABLANCA';
   eps: EPS;
+  regimen?: RegimenPaciente;
   fechaInicioPrograma: string; // ISO Date
   horasPrestadas: string; // Texto libre
   tipoServicio: string;

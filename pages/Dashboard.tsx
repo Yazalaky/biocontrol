@@ -67,8 +67,11 @@ const Dashboard: React.FC = () => {
 
   const [stats, setStats] = useState({
     pacientesActivos: 0,
+    pacientesConActaActiva: 0,
     totalEquipos: 0,
     equiposDisponibles: 0,
+    equiposAsignadosPacientes: 0,
+    equiposAsignadosProfesionales: 0,
     equiposAsignados: 0,
     equiposMantenimiento: 0,
     equiposBaja: 0
@@ -296,9 +299,19 @@ const Dashboard: React.FC = () => {
     let asignacionesProfesionales: AsignacionProfesional[] = [];
 
     const recompute = () => {
-      const activos = new Set<string>();
-      for (const a of asignaciones) if (a.estado === EstadoAsignacion.ACTIVA) activos.add(a.idEquipo);
-      for (const a of asignacionesProfesionales) if (a.estado === EstadoAsignacion.ACTIVA) activos.add(a.idEquipo);
+      const activosPacientes = new Set<string>();
+      const activosProfesionales = new Set<string>();
+      const pacientesConActaActiva = new Set<string>();
+      for (const a of asignaciones) {
+        if (a.estado === EstadoAsignacion.ACTIVA) {
+          activosPacientes.add(a.idEquipo);
+          pacientesConActaActiva.add(a.idPaciente);
+        }
+      }
+      for (const a of asignacionesProfesionales) {
+        if (a.estado === EstadoAsignacion.ACTIVA) activosProfesionales.add(a.idEquipo);
+      }
+      const activos = new Set<string>([...activosPacientes, ...activosProfesionales]);
       const lastFinalEstadoByEquipo = new Map<string, { date: number; estadoFinal: EstadoEquipo }>();
       for (const a of asignaciones) {
         if (a.estado !== EstadoAsignacion.FINALIZADA) continue;
@@ -324,8 +337,11 @@ const Dashboard: React.FC = () => {
       const estados = equipos.map(effectiveEstado);
       setStats({
         pacientesActivos: pacientes.filter((p) => p.estado === EstadoPaciente.ACTIVO).length,
+        pacientesConActaActiva: pacientesConActaActiva.size,
         totalEquipos: equipos.length,
         equiposDisponibles: estados.filter((s) => s === EstadoEquipo.DISPONIBLE).length,
+        equiposAsignadosPacientes: activosPacientes.size,
+        equiposAsignadosProfesionales: activosProfesionales.size,
         equiposAsignados: estados.filter((s) => s === EstadoEquipo.ASIGNADO).length,
         equiposMantenimiento: estados.filter((s) => s === EstadoEquipo.MANTENIMIENTO).length,
         equiposBaja: estados.filter((s) => s === EstadoEquipo.DADO_DE_BAJA).length,
@@ -585,11 +601,25 @@ const Dashboard: React.FC = () => {
           </div>
         </div>
         <StatCard
-          title="Equipos Asignados"
-          value={stats.equiposAsignados}
+          title="Pacientes con Acta Activa"
+          value={stats.pacientesConActaActiva}
+          accent="#14b8a6"
+          icon="patients"
+          subtitle="Con al menos una asignación activa"
+        />
+        <StatCard
+          title="Equipos Asignados (Pacientes)"
+          value={stats.equiposAsignadosPacientes}
+          accent="#2563eb"
+          icon="assigned"
+          subtitle="Activos en pacientes"
+        />
+        <StatCard
+          title="Equipos Asignados (Profesionales)"
+          value={stats.equiposAsignadosProfesionales}
           accent="#7c3aed"
           icon="assigned"
-          subtitle="Asignaciones activas"
+          subtitle="Activos en profesionales"
         />
         <StatCard
           title="En Mantenimiento"
