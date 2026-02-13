@@ -98,6 +98,35 @@ const Patients: React.FC = () => {
   }, [canManage]);
 
   useEffect(() => {
+    if (!canManage) return;
+    if (adminSignature) return;
+
+    const savedSig = localStorage.getItem('biocontrol_admin_sig');
+    if (savedSig) {
+      setAdminSignature(savedSig);
+      return;
+    }
+
+    const latestWithSig = [...allAsignaciones]
+      .filter((a) => {
+        if (!a.firmaAuxiliar) return false;
+        if (a.auxiliarUid && usuario?.id) return a.auxiliarUid === usuario.id;
+        if (a.auxiliarNombre && usuario?.nombre) return a.auxiliarNombre === usuario.nombre;
+        return false;
+      })
+      .sort((a, b) => {
+        const aTime = new Date(a.fechaActualizacionEntrega || a.fechaAsignacion).getTime();
+        const bTime = new Date(b.fechaActualizacionEntrega || b.fechaAsignacion).getTime();
+        return bTime - aTime;
+      })[0];
+
+    if (latestWithSig?.firmaAuxiliar) {
+      setAdminSignature(latestWithSig.firmaAuxiliar);
+      localStorage.setItem('biocontrol_admin_sig', latestWithSig.firmaAuxiliar);
+    }
+  }, [canManage, adminSignature, allAsignaciones, usuario?.id, usuario?.nombre]);
+
+  useEffect(() => {
     setFirestoreError(null);
 
     const unsubPacientes = subscribePacientes(setPacientes, (e) => {

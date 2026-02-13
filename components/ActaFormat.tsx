@@ -63,16 +63,20 @@ const ActaFormat: React.FC<ActaFormatProps> = ({ paciente, equipo, asignacion, t
       <div className="border-2 border-black mb-4">
         {/* Fila 1 */}
         <div className="flex border-b border-black">
-          <div className="w-[15%] border-r border-black p-1 font-semibold bg-gray-100">Fecha actualización</div>
-          <div className="w-[10%] border-r border-black p-1">
+          <div className="w-[12%] border-r border-black p-1 font-semibold bg-gray-100">Fecha actualización</div>
+          <div className="w-[9%] border-r border-black p-1 whitespace-nowrap overflow-hidden text-ellipsis">
             {(tipoActa === 'ENTREGA' ? fechaActualizacionEntrega : fechaDevolucion).toLocaleDateString()}
           </div>
-          <div className="w-[10%] border-r border-black p-1 font-semibold bg-gray-100">Acta</div>
-          <div className="w-[10%] border-r border-black p-1 text-center text-red-600 font-bold">{String(asignacion.consecutivo).padStart(4, '0')}</div>
-          <div className="w-[10%] border-r border-black p-1 font-semibold bg-gray-100">Sede</div>
-          <div className="w-[15%] border-r border-black p-1">{sedeActa}</div>
-          <div className="w-[10%] border-r border-black p-1 font-semibold bg-gray-100">Eps</div>
-          <div className="w-[20%] p-1">{paciente.eps}</div>
+          <div className="w-[7%] border-r border-black p-1 font-semibold bg-gray-100">Acta</div>
+          <div className="w-[7%] border-r border-black p-1 text-center text-red-600 font-bold whitespace-nowrap overflow-hidden text-ellipsis">{String(asignacion.consecutivo).padStart(4, '0')}</div>
+          <div className="w-[8%] border-r border-black p-1 font-semibold bg-gray-100">Sede</div>
+          <div className="w-[16%] border-r border-black p-1 whitespace-nowrap overflow-hidden text-ellipsis">{sedeActa}</div>
+          <div className="w-[6%] border-r border-black p-1 font-semibold bg-gray-100">Eps</div>
+          <div className="w-[10%] border-r border-black p-1 whitespace-nowrap overflow-hidden text-ellipsis">{paciente.eps}</div>
+          <div className="w-[9%] border-r border-black p-1 font-semibold bg-gray-100">Régimen</div>
+          <div className="w-[16%] min-w-0 p-1 text-[10px] leading-tight whitespace-normal break-words overflow-hidden">
+            {paciente.regimen || 'N/A'}
+          </div>
         </div>
         {/* Fila 1.1 - Fecha entrega original (solo ENTREGA) */}
         {tipoActa === 'ENTREGA' ? (
