@@ -10,7 +10,9 @@ import {getAuth} from "firebase-admin/auth";
 import {
   FieldValue,
   getFirestore,
+  type Query,
   type QueryDocumentSnapshot,
+  type Transaction,
 } from "firebase-admin/firestore";
 
 setGlobalOptions({maxInstances: 10, region: "us-central1"});
@@ -105,6 +107,222 @@ async function assertCallerIsAdminOrHasRole(uid: string, role: AllowedRole) {
   const enabled = adminSnap.exists && adminSnap.data()?.enabled === true;
   if (enabled) return;
   await assertCallerHasRole(uid, role);
+}
+
+const COUNTERS_COLLECTION = "counters";
+const TIPO_DOCUMENTO_VALUES = ["CC", "TI", "CE", "RC"] as const;
+const ESTADO_PACIENTE_VALUES = ["ACTIVO", "EGRESADO"] as const;
+const ESTADO_EQUIPO_VALUES = [
+  "DISPONIBLE",
+  "ASIGNADO",
+  "MANTENIMIENTO",
+  "DADO_DE_BAJA",
+] as const;
+const TIPO_PROPIEDAD_VALUES = [
+  "MEDICUC",
+  "PACIENTE",
+  "ALQUILADO",
+  "EMPLEADO",
+] as const;
+
+/**
+ * Convierte un valor a string trim + UPPERCASE.
+ * @param {unknown} value Valor recibido.
+ * @return {string} String normalizado.
+ */
+function upperTrim(value: unknown): string {
+  return typeof value === "string" ? value.trim().toUpperCase() : "";
+}
+
+/**
+ * Valida/corrige tipo de propiedad legado.
+ * @param {unknown} value Tipo recibido.
+ * @return {"MEDICUC"|"PACIENTE"|"ALQUILADO"|"EMPLEADO"} Tipo normalizado.
+ */
+function normalizeTipoPropiedad(value: unknown) {
+  const raw = upperTrim(value);
+  if (raw === "PROPIO") return "MEDICUC";
+  if (raw === "EXTERNO") return "ALQUILADO";
+  if ((TIPO_PROPIEDAD_VALUES as readonly string[]).includes(raw)) {
+    return raw as "MEDICUC" | "PACIENTE" | "ALQUILADO" | "EMPLEADO";
+  }
+  throw new HttpsError(
+    "invalid-argument",
+    "tipoPropiedad inválido. Valores permitidos: " +
+      "MEDICUC, PACIENTE, ALQUILADO, EMPLEADO.",
+  );
+}
+
+/**
+ * Obtiene consecutivo en transacción con fallback a max existente.
+ * Si el contador no existe, se inicializa con el max actual de la colección.
+ * @param {Transaction} tx Transacción activa.
+ * @param {string} counterKey Key del contador.
+ * @param {string} collectionName Colección objetivo.
+ * @return {Promise<number>} Siguiente consecutivo.
+ */
+async function nextConsecutivoInTx(
+  tx: Transaction,
+  counterKey: string,
+  collectionName: string,
+): Promise<number> {
+  const counterRef = db.doc(`${COUNTERS_COLLECTION}/${counterKey}`);
+  const counterSnap = await tx.get(counterRef);
+  const counterValue = counterSnap.data()?.value;
+  const hasNumericCounter =
+    typeof counterValue === "number" && Number.isFinite(counterValue);
+  let current = hasNumericCounter ? counterValue : null;
+
+  if (current === null) {
+    const lastSnap = await tx.get(
+      db.collection(collectionName).orderBy("consecutivo", "desc").limit(1),
+    );
+    const lastValue = lastSnap.docs[0]?.data()?.consecutivo;
+    current =
+      typeof lastValue === "number" && Number.isFinite(lastValue) ?
+        lastValue :
+        0;
+  }
+
+  const next = current + 1;
+  tx.set(
+    counterRef,
+    {
+      value: next,
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    {merge: true},
+  );
+  return next;
+}
+
+/**
+ * Obtiene código de inventario en transacción por prefijo.
+ * Si no existe contador, se calcula con el max actual para evitar colisiones.
+ * @param {Transaction} tx Transacción activa.
+ * @param {"MEDICUC"|"PACIENTE"|"ALQUILADO"|"EMPLEADO"} tipo Tipo de propiedad.
+ * @return {Promise<string>} Código generado, p. ej. MBG-001.
+ */
+async function nextCodigoInventarioInTx(
+  tx: Transaction,
+  tipo: "MEDICUC" | "PACIENTE" | "ALQUILADO" | "EMPLEADO",
+): Promise<string> {
+  const prefix = tipo === "PACIENTE" ?
+    "MBP-" :
+    tipo === "ALQUILADO" ?
+      "MBA-" :
+      tipo === "EMPLEADO" ?
+        "MBE-" :
+        "MBG-";
+  const counterKey = `equipos_codigo_${prefix.replace("-", "")}`;
+  const counterRef = db.doc(`${COUNTERS_COLLECTION}/${counterKey}`);
+  const counterSnap = await tx.get(counterRef);
+  const counterValue = counterSnap.data()?.value;
+  const hasNumericCounter =
+    typeof counterValue === "number" && Number.isFinite(counterValue);
+  let current = hasNumericCounter ? counterValue : null;
+
+  if (current === null) {
+    const allSnap = await tx.get(db.collection("equipos"));
+    let max = 0;
+    for (const d of allSnap.docs) {
+      const code = d.data()?.codigoInventario;
+      if (typeof code !== "string" || !code.startsWith(prefix)) continue;
+      const rawN = code.slice(prefix.length);
+      const n = Number.parseInt(rawN, 10);
+      if (!Number.isFinite(n) || n <= 0) continue;
+      if (n > max) max = n;
+    }
+    current = max;
+  }
+
+  let next = current + 1;
+  let codigo = `${prefix}${String(next).padStart(3, "0")}`;
+  let hasCollision = true;
+  while (hasCollision) {
+    const collision = await tx.get(
+      db.collection("equipos")
+        .where("codigoInventario", "==", codigo)
+        .limit(1),
+    );
+    hasCollision = !collision.empty;
+    if (!hasCollision) break;
+    next += 1;
+    codigo = `${prefix}${String(next).padStart(3, "0")}`;
+  }
+
+  tx.set(
+    counterRef,
+    {
+      value: next,
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    {merge: true},
+  );
+  return codigo;
+}
+
+/**
+ * Lee todos los documentos de un query en páginas para evitar truncamiento
+ * por límites fijos.
+ * @param {Query} baseQuery Query base con orden estable.
+ * @param {number} pageSize Tamaño de página.
+ * @return {Promise<QueryDocumentSnapshot[]>} Documentos acumulados.
+ */
+async function getAllDocsPaged(
+  baseQuery: Query,
+  pageSize = 500,
+): Promise<QueryDocumentSnapshot[]> {
+  const docs: QueryDocumentSnapshot[] = [];
+  let q = baseQuery.limit(pageSize);
+  let hasMore = true;
+  while (hasMore) {
+    const snap = await q.get();
+    if (snap.empty) break;
+    docs.push(...snap.docs);
+    if (snap.size < pageSize) {
+      hasMore = false;
+      continue;
+    }
+    const lastDoc = snap.docs[snap.docs.length - 1];
+    if (!lastDoc) {
+      hasMore = false;
+      continue;
+    }
+    q = baseQuery.startAfter(lastDoc).limit(pageSize);
+  }
+  return docs;
+}
+
+/**
+ * Carga documentos por ID en lotes y devuelve mapa id -> data.
+ * @param {string} collectionName Nombre de colección.
+ * @param {string[]} ids IDs a consultar.
+ * @return {Promise<Map<string, Record<string, unknown>>>} Mapa de datos.
+ */
+async function getDocDataMapByIds(
+  collectionName: string,
+  ids: string[],
+): Promise<Map<string, Record<string, unknown>>> {
+  const out = new Map<string, Record<string, unknown>>();
+  const uniqueIds = Array.from(
+    new Set(ids.filter((id) => typeof id === "string" && id.trim())),
+  );
+  if (!uniqueIds.length) return out;
+
+  const chunkSize = 300;
+  for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+    const chunk = uniqueIds.slice(i, i + chunkSize);
+    const refs = chunk.map((id) => db.doc(`${collectionName}/${id}`));
+    const snaps = await db.getAll(...refs);
+    for (const snap of snaps) {
+      if (!snap.exists) continue;
+      const data = snap.data();
+      if (!data) continue;
+      out.set(snap.id, data as Record<string, unknown>);
+    }
+  }
+  return out;
 }
 
 /**
@@ -271,7 +489,420 @@ export const listAuxiliares = onCall(async (request) => {
 });
 
 /**
- * 3.2) LISTAR PACIENTES SIN ASIGNACION ACTIVA (VISITADOR).
+ * 3.2) Crear paciente (transaccional).
+ * Asigna consecutivo único y evita colisiones por concurrencia.
+ */
+export const createPaciente = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
+  }
+  await assertCallerHasRole(request.auth.uid, "AUXILIAR_ADMINISTRATIVA");
+
+  const raw = (request.data as {paciente?: unknown})?.paciente;
+  if (!raw || typeof raw !== "object") {
+    throw new HttpsError("invalid-argument", "paciente es requerido.");
+  }
+  const paciente = raw as Record<string, unknown>;
+
+  const nombreCompleto = upperTrim(paciente.nombreCompleto);
+  const tipoDocumento = upperTrim(paciente.tipoDocumento);
+  const numeroDocumento = upperTrim(paciente.numeroDocumento);
+  const direccion = upperTrim(paciente.direccion);
+  const eps =
+    typeof paciente.eps === "string" ? paciente.eps.trim() : "";
+  const regimenRaw = upperTrim(paciente.regimen);
+  const fechaInicioPrograma =
+    typeof paciente.fechaInicioPrograma === "string" ?
+      paciente.fechaInicioPrograma.trim() :
+      "";
+  const horasPrestadas = upperTrim(paciente.horasPrestadas);
+  const tipoServicio = upperTrim(paciente.tipoServicio);
+  const diagnostico = upperTrim(paciente.diagnostico);
+  const telefono = upperTrim(paciente.telefono);
+  const nombreFamiliar = upperTrim(paciente.nombreFamiliar);
+  const telefonoFamiliar = upperTrim(paciente.telefonoFamiliar);
+  const estado = upperTrim(paciente.estado || "ACTIVO");
+
+  if (!nombreCompleto) {
+    throw new HttpsError(
+      "invalid-argument",
+      "paciente.nombreCompleto es requerido.",
+    );
+  }
+  if (!(TIPO_DOCUMENTO_VALUES as readonly string[]).includes(tipoDocumento)) {
+    throw new HttpsError(
+      "invalid-argument",
+      "tipoDocumento inválido. Valores permitidos: CC, TI, CE, RC.",
+    );
+  }
+  if (!numeroDocumento) {
+    throw new HttpsError(
+      "invalid-argument",
+      "paciente.numeroDocumento es requerido.",
+    );
+  }
+  if (!direccion || !eps || !fechaInicioPrograma || !horasPrestadas) {
+    throw new HttpsError(
+      "invalid-argument",
+      "Faltan campos requeridos del paciente.",
+    );
+  }
+  if (!tipoServicio || !diagnostico || !telefono) {
+    throw new HttpsError(
+      "invalid-argument",
+      "Faltan campos clínicos requeridos del paciente.",
+    );
+  }
+  if (!nombreFamiliar || !telefonoFamiliar) {
+    throw new HttpsError(
+      "invalid-argument",
+      "Faltan datos del familiar/acudiente.",
+    );
+  }
+  if (
+    !(ESTADO_PACIENTE_VALUES as readonly string[]).includes(estado)
+  ) {
+    throw new HttpsError(
+      "invalid-argument",
+      "estado inválido. Valores permitidos: ACTIVO, EGRESADO.",
+    );
+  }
+
+  const regimen =
+    regimenRaw &&
+      ["CONTRIBUTIVO", "SUBSIDIADO", "ESPECIAL"].includes(regimenRaw) ?
+      regimenRaw :
+      undefined;
+  const zona = upperTrim(paciente.zona);
+  if (
+    zona &&
+    !["GIRON", "BGA1", "BGA2", "PIEDECUESTA", "FLORIDABLANCA"].includes(zona)
+  ) {
+    throw new HttpsError(
+      "invalid-argument",
+      "zona inválida. Valores permitidos: " +
+        "GIRON, BGA1, BGA2, PIEDECUESTA, FLORIDABLANCA.",
+    );
+  }
+
+  const pacienteData: Record<string, unknown> = {
+    nombreCompleto,
+    tipoDocumento,
+    numeroDocumento,
+    direccion,
+    eps,
+    fechaInicioPrograma,
+    horasPrestadas,
+    tipoServicio,
+    diagnostico,
+    telefono,
+    nombreFamiliar,
+    telefonoFamiliar,
+    estado,
+    barrio: upperTrim(paciente.barrio) || undefined,
+    zona: zona || undefined,
+    regimen,
+    documentoFamiliar: upperTrim(paciente.documentoFamiliar) || undefined,
+    parentescoFamiliar: upperTrim(paciente.parentescoFamiliar) || undefined,
+    fechaSalida:
+      typeof paciente.fechaSalida === "string" ?
+        paciente.fechaSalida.trim() :
+        undefined,
+  };
+
+  const created = await db.runTransaction(async (tx) => {
+    const dupSnap = await tx.get(
+      db.collection("pacientes")
+        .where("numeroDocumento", "==", numeroDocumento)
+        .limit(1),
+    );
+    if (!dupSnap.empty) {
+      throw new HttpsError(
+        "already-exists",
+        `Ya existe un paciente con documento ${numeroDocumento}.`,
+      );
+    }
+
+    const consecutivo = await nextConsecutivoInTx(
+      tx,
+      "pacientes_consecutivo",
+      "pacientes",
+    );
+    const pacienteRef = db.collection("pacientes").doc();
+    tx.set(pacienteRef, {
+      ...pacienteData,
+      consecutivo,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    return {id: pacienteRef.id, consecutivo};
+  });
+
+  return created;
+});
+
+/**
+ * 3.3) Crear equipo (transaccional).
+ * Genera código inventario único por prefijo (MBG/MBP/MBA/MBE).
+ */
+export const createEquipo = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
+  }
+  await assertCallerHasRole(request.auth.uid, "INGENIERO_BIOMEDICO");
+
+  const raw = (request.data as {equipo?: unknown})?.equipo;
+  if (!raw || typeof raw !== "object") {
+    throw new HttpsError("invalid-argument", "equipo es requerido.");
+  }
+  const equipo = raw as Record<string, unknown>;
+
+  const numeroSerie = upperTrim(equipo.numeroSerie);
+  const nombre = upperTrim(equipo.nombre);
+  const marca = upperTrim(equipo.marca);
+  const modelo = upperTrim(equipo.modelo);
+  const estado = upperTrim(equipo.estado || "DISPONIBLE");
+  const tipoPropiedad = normalizeTipoPropiedad(equipo.tipoPropiedad);
+  const observaciones = upperTrim(equipo.observaciones);
+  const fechaIngreso =
+    typeof equipo.fechaIngreso === "string" && equipo.fechaIngreso.trim() ?
+      equipo.fechaIngreso.trim() :
+      new Date().toISOString();
+
+  if (!numeroSerie || !nombre || !marca || !modelo) {
+    throw new HttpsError(
+      "invalid-argument",
+      "Faltan campos requeridos del equipo.",
+    );
+  }
+  if (
+    !(ESTADO_EQUIPO_VALUES as readonly string[]).includes(estado)
+  ) {
+    throw new HttpsError(
+      "invalid-argument",
+      "estado inválido. Valores permitidos: DISPONIBLE, ASIGNADO, " +
+        "MANTENIMIENTO, DADO_DE_BAJA.",
+    );
+  }
+
+  const created = await db.runTransaction(async (tx) => {
+    const dupSerieSnap = await tx.get(
+      db.collection("equipos")
+        .where("numeroSerie", "==", numeroSerie)
+        .limit(1),
+    );
+    if (!dupSerieSnap.empty) {
+      throw new HttpsError(
+        "already-exists",
+        `El serial ${numeroSerie} ya existe en inventario.`,
+      );
+    }
+
+    const codigoInventario = await nextCodigoInventarioInTx(tx, tipoPropiedad);
+    const equipoRef = db.collection("equipos").doc();
+    const payload: Record<string, unknown> = {
+      codigoInventario,
+      numeroSerie,
+      nombre,
+      marca,
+      modelo,
+      estado,
+      tipoPropiedad,
+      observaciones,
+      fechaIngreso,
+      disponibleParaEntrega:
+        typeof equipo.disponibleParaEntrega === "boolean" ?
+          equipo.disponibleParaEntrega :
+          false,
+      ubicacionActual:
+        typeof equipo.ubicacionActual === "string" &&
+          equipo.ubicacionActual.trim() ?
+          upperTrim(equipo.ubicacionActual) :
+          "BODEGA",
+      tipoEquipoId:
+        typeof equipo.tipoEquipoId === "string" && equipo.tipoEquipoId.trim() ?
+          equipo.tipoEquipoId.trim() :
+          undefined,
+      hojaVidaDatos:
+        typeof equipo.hojaVidaDatos === "object" && equipo.hojaVidaDatos ?
+          equipo.hojaVidaDatos :
+          undefined,
+      hojaVidaOverrides:
+        typeof equipo.hojaVidaOverrides === "object" &&
+          equipo.hojaVidaOverrides ?
+          equipo.hojaVidaOverrides :
+          undefined,
+      calibracionPeriodicidad:
+        typeof equipo.calibracionPeriodicidad === "string" &&
+          equipo.calibracionPeriodicidad.trim() ?
+          upperTrim(equipo.calibracionPeriodicidad) :
+          undefined,
+      fechaMantenimiento:
+        typeof equipo.fechaMantenimiento === "string" &&
+          equipo.fechaMantenimiento.trim() ?
+          equipo.fechaMantenimiento.trim() :
+          undefined,
+      fechaBaja:
+        typeof equipo.fechaBaja === "string" && equipo.fechaBaja.trim() ?
+          equipo.fechaBaja.trim() :
+          undefined,
+      custodioUid:
+        typeof equipo.custodioUid === "string" && equipo.custodioUid.trim() ?
+          equipo.custodioUid.trim() :
+          undefined,
+      empresaAlquiler:
+        tipoPropiedad === "ALQUILADO" &&
+          typeof equipo.empresaAlquiler === "string" &&
+          equipo.empresaAlquiler.trim() ?
+          upperTrim(equipo.empresaAlquiler) :
+          undefined,
+      datosPropietario:
+        typeof equipo.datosPropietario === "object" &&
+          equipo.datosPropietario ?
+          equipo.datosPropietario :
+          undefined,
+      createdAt: FieldValue.serverTimestamp(),
+    };
+
+    tx.set(equipoRef, payload);
+    return {id: equipoRef.id, codigoInventario};
+  });
+
+  return created;
+});
+
+/**
+ * 3.4) Crear asignación de paciente (transaccional).
+ * Asigna consecutivo único y evita doble asignación activa del mismo equipo.
+ */
+export const createAsignacionPaciente = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
+  }
+  await assertCallerHasRole(request.auth.uid, "AUXILIAR_ADMINISTRATIVA");
+
+  const raw = (request.data as {asignacion?: unknown})?.asignacion;
+  if (!raw || typeof raw !== "object") {
+    throw new HttpsError("invalid-argument", "asignacion es requerida.");
+  }
+  const data = raw as Record<string, unknown>;
+
+  const idPaciente = assertNonEmptyString(data.idPaciente, "idPaciente");
+  const idEquipo = assertNonEmptyString(data.idEquipo, "idEquipo");
+  const usuarioAsigna = upperTrim(data.usuarioAsigna);
+  if (!usuarioAsigna) {
+    throw new HttpsError("invalid-argument", "usuarioAsigna es requerido.");
+  }
+  const fechaAsignacion =
+    typeof data.fechaAsignacionIso === "string" &&
+      data.fechaAsignacionIso.trim() ?
+      data.fechaAsignacionIso.trim() :
+      new Date().toISOString();
+
+  const assignment = await db.runTransaction(async (tx) => {
+    const [pacienteSnap, equipoSnap] = await Promise.all([
+      tx.get(db.doc(`pacientes/${idPaciente}`)),
+      tx.get(db.doc(`equipos/${idEquipo}`)),
+    ]);
+
+    if (!pacienteSnap.exists) {
+      throw new HttpsError("not-found", "El paciente no existe.");
+    }
+    if (!equipoSnap.exists) {
+      throw new HttpsError("not-found", "El equipo no existe.");
+    }
+
+    const [activePacienteSnap, activeProfesionalSnap] = await Promise.all([
+      tx.get(
+        db.collection("asignaciones")
+          .where("idEquipo", "==", idEquipo)
+          .where("estado", "==", "ACTIVA")
+          .limit(1),
+      ),
+      tx.get(
+        db.collection("asignaciones_profesionales")
+          .where("idEquipo", "==", idEquipo)
+          .where("estado", "==", "ACTIVA")
+          .limit(1),
+      ),
+    ]);
+    if (!activePacienteSnap.empty || !activeProfesionalSnap.empty) {
+      throw new HttpsError(
+        "failed-precondition",
+        "El equipo no está disponible.",
+      );
+    }
+
+    const consecutivo = await nextConsecutivoInTx(
+      tx,
+      "asignaciones_consecutivo",
+      "asignaciones",
+    );
+    const nowIso = new Date().toISOString();
+    const asignacionRef = db.collection("asignaciones").doc();
+    const asignacion = {
+      consecutivo,
+      idPaciente,
+      idEquipo,
+      fechaAsignacion,
+      fechaActualizacionEntrega: nowIso,
+      estado: "ACTIVA",
+      observacionesEntrega: upperTrim(data.observacionesEntrega),
+      firmaAuxiliar:
+        typeof data.firmaAuxiliar === "string" && data.firmaAuxiliar.trim() ?
+          data.firmaAuxiliar.trim() :
+          undefined,
+      usuarioAsigna,
+      auxiliarNombre:
+        typeof data.auxiliarNombre === "string" && data.auxiliarNombre.trim() ?
+          upperTrim(data.auxiliarNombre) :
+          undefined,
+      auxiliarUid:
+        typeof data.auxiliarUid === "string" && data.auxiliarUid.trim() ?
+          data.auxiliarUid.trim() :
+          undefined,
+      createdAt: FieldValue.serverTimestamp(),
+    };
+    tx.set(asignacionRef, asignacion);
+
+    return {
+      id: asignacionRef.id,
+      consecutivo,
+      idPaciente,
+      idEquipo,
+      fechaAsignacion,
+      fechaActualizacionEntrega: nowIso,
+      estado: "ACTIVA",
+      observacionesEntrega: upperTrim(data.observacionesEntrega),
+      firmaAuxiliar:
+        typeof data.firmaAuxiliar === "string" && data.firmaAuxiliar.trim() ?
+          data.firmaAuxiliar.trim() :
+          undefined,
+      usuarioAsigna,
+      auxiliarNombre:
+        typeof data.auxiliarNombre === "string" && data.auxiliarNombre.trim() ?
+          upperTrim(data.auxiliarNombre) :
+          undefined,
+      auxiliarUid:
+        typeof data.auxiliarUid === "string" && data.auxiliarUid.trim() ?
+          data.auxiliarUid.trim() :
+          undefined,
+    };
+  });
+
+  return {asignacion: assignment};
+});
+
+/**
+ * 3.5) LISTAR PACIENTES SIN ASIGNACION ACTIVA (VISITADOR).
  * Retorna id, nombreCompleto y numeroDocumento.
  *
  * Se expone como callable para evitar abrir lectura masiva en rules.
@@ -286,56 +917,141 @@ export const listPacientesSinAsignacion = onCall(async (request) => {
 
   await assertCallerHasRole(request.auth.uid, "VISITADOR");
 
-  const [falseSnap, nullSnap, activeSnap, pacientesSnap] = await Promise.all([
-    db.collection("pacientes")
-      .where("tieneAsignacionActiva", "==", false)
-      .limit(500)
-      .get(),
-    db.collection("pacientes")
-      .where("tieneAsignacionActiva", "==", null)
-      .limit(500)
-      .get(),
-    db.collection("asignaciones")
-      .where("estado", "==", "ACTIVA")
-      .limit(2000)
-      .get(),
-    db.collection("pacientes")
-      .limit(2000)
-      .get(),
+  const [activeDocs, pacientesDocs] = await Promise.all([
+    getAllDocsPaged(
+      db.collection("asignaciones")
+        .where("estado", "==", "ACTIVA")
+        .orderBy("__name__"),
+    ),
+    getAllDocsPaged(db.collection("pacientes").orderBy("__name__")),
   ]);
 
   const activeSet = new Set<string>();
-  for (const docSnap of activeSnap.docs) {
+  for (const docSnap of activeDocs) {
     const data = docSnap.data() as Record<string, unknown>;
     const idPaciente =
       typeof data.idPaciente === "string" ? data.idPaciente : "";
     if (idPaciente) activeSet.add(idPaciente);
   }
 
-  const map = new Map<string, {id: string; nombre: string; doc: string}>();
+  const pacientes = [] as Array<{id: string; nombre: string; doc: string}>;
   const addPaciente = (docSnap: QueryDocumentSnapshot) => {
     const data = docSnap.data() as Record<string, unknown>;
     const nombre =
       typeof data.nombreCompleto === "string" ? data.nombreCompleto : "";
     const doc =
       typeof data.numeroDocumento === "string" ? data.numeroDocumento : "";
-    map.set(docSnap.id, {id: docSnap.id, nombre, doc});
+    pacientes.push({id: docSnap.id, nombre, doc});
   };
 
-  for (const docSnap of falseSnap.docs) addPaciente(docSnap);
-  for (const docSnap of nullSnap.docs) addPaciente(docSnap);
-
-  for (const docSnap of pacientesSnap.docs) {
+  for (const docSnap of pacientesDocs) {
     if (activeSet.has(docSnap.id)) continue;
-    if (map.has(docSnap.id)) continue;
     addPaciente(docSnap);
   }
 
-  const pacientes = Array.from(map.values()).sort((a, b) =>
-    a.nombre.localeCompare(b.nombre, "es"),
-  );
+  pacientes.sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
 
   return {pacientes};
+});
+
+/**
+ * Lista historial completo de firmas de entrega capturadas por el visitador.
+ * Incluye asignaciones activas y finalizadas.
+ */
+export const listFirmasCapturadasVisitador = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
+  }
+  const callerUid = request.auth.uid;
+  await assertCallerHasRole(callerUid, "VISITADOR");
+
+  const asignacionesSnap = await db
+    .collection("asignaciones")
+    .where("firmaPacienteEntregaCapturadaPorUid", "==", callerUid)
+    .get();
+
+  const baseRows = asignacionesSnap.docs
+    .map((docSnap) => {
+      const d = docSnap.data() as Record<string, unknown>;
+      const firma =
+        typeof d.firmaPacienteEntrega === "string" ?
+          d.firmaPacienteEntrega :
+          "";
+      if (!firma) return null;
+      const idPaciente = typeof d.idPaciente === "string" ? d.idPaciente : "";
+      const idEquipo = typeof d.idEquipo === "string" ? d.idEquipo : "";
+      const estado = typeof d.estado === "string" ? d.estado : "";
+      const capturadaAt =
+        typeof d.firmaPacienteEntregaCapturadaAt === "string" ?
+          d.firmaPacienteEntregaCapturadaAt :
+          "";
+      const capturadaPor =
+        typeof d.firmaPacienteEntregaCapturadaPorNombre === "string" ?
+          d.firmaPacienteEntregaCapturadaPorNombre :
+          "";
+      return {
+        idAsignacion: docSnap.id,
+        idPaciente,
+        idEquipo,
+        estado,
+        firmaPacienteEntrega: firma,
+        firmaPacienteEntregaCapturadaAt: capturadaAt,
+        firmaPacienteEntregaCapturadaPorNombre: capturadaPor,
+      };
+    })
+    .filter((row): row is NonNullable<typeof row> => !!row);
+
+  baseRows.sort((a, b) => {
+    const ta = new Date(a.firmaPacienteEntregaCapturadaAt || 0).getTime();
+    const tb = new Date(b.firmaPacienteEntregaCapturadaAt || 0).getTime();
+    return tb - ta;
+  });
+
+  const pacienteMap = await getDocDataMapByIds(
+    "pacientes",
+    baseRows.map((r) => r.idPaciente),
+  );
+  const equipoMap = await getDocDataMapByIds(
+    "equipos",
+    baseRows.map((r) => r.idEquipo),
+  );
+
+  const firmas = baseRows.map((r) => {
+    const paciente = pacienteMap.get(r.idPaciente);
+    const equipo = equipoMap.get(r.idEquipo);
+    const pacienteNombre =
+      typeof paciente?.nombreCompleto === "string" ?
+        paciente.nombreCompleto :
+        "PACIENTE";
+    const pacienteDocumento =
+      typeof paciente?.numeroDocumento === "string" ?
+        paciente.numeroDocumento :
+        "";
+    const equipoCodigo =
+      typeof equipo?.codigoInventario === "string" ?
+        equipo.codigoInventario :
+        "";
+    const equipoNombre =
+      typeof equipo?.nombre === "string" ? equipo.nombre : "EQUIPO";
+
+    return {
+      idAsignacion: r.idAsignacion,
+      estado: r.estado,
+      pacienteNombre,
+      pacienteDocumento,
+      equipoCodigoInventario: equipoCodigo,
+      equipoNombre,
+      firmaPacienteEntrega: r.firmaPacienteEntrega,
+      firmaPacienteEntregaCapturadaAt: r.firmaPacienteEntregaCapturadaAt || "",
+      firmaPacienteEntregaCapturadaPorNombre:
+        r.firmaPacienteEntregaCapturadaPorNombre || "",
+    };
+  });
+
+  return {firmas};
 });
 
 /**
@@ -1158,57 +1874,153 @@ export const approveSolicitudEquipoPaciente = onCall(async (request) => {
   const auxEmail =
     typeof auxData.email === "string" ? auxData.email : "";
 
-  let asignacionId = "";
-  let actaInternaId = "";
   if (tipoPropiedad === "PACIENTE" || tipoPropiedad === "MEDICUC") {
-    const activeSnap = await db.collection("asignaciones")
-      .where("idEquipo", "==", equipoId)
-      .where("estado", "==", "ACTIVA")
-      .limit(1)
-      .get();
-    if (!activeSnap.empty) {
-      throw new HttpsError(
-        "failed-precondition",
-        "El equipo ya tiene una asignación activa.",
-      );
-    }
-    const pacienteSnap = await db.collection("asignaciones")
-      .where("idPaciente", "==", idPaciente)
-      .where("estado", "==", "ACTIVA")
-      .limit(1)
-      .get();
-    if (!pacienteSnap.empty) {
-      throw new HttpsError(
-        "failed-precondition",
-        "El paciente ya tiene una asignación activa.",
-      );
-    }
+    const txResult = await db.runTransaction(async (tx) => {
+      const [solicitudTxSnap, equipoTxSnap] = await Promise.all([
+        tx.get(solicitudRef),
+        tx.get(equipoRef),
+      ]);
 
-    const lastSnap = await db.collection("asignaciones")
-      .orderBy("consecutivo", "desc")
-      .limit(1)
-      .get();
-    const last = lastSnap.docs[0]?.data()?.consecutivo;
-    const consecutivo =
-      typeof last === "number" && Number.isFinite(last) ? last + 1 : 1;
+      if (!solicitudTxSnap.exists) {
+        throw new HttpsError("not-found", "La solicitud no existe.");
+      }
+      if (!equipoTxSnap.exists) {
+        throw new HttpsError("not-found", "El equipo no existe.");
+      }
 
-    const nowIso = new Date().toISOString();
-    const asignacion = {
-      consecutivo,
-      idPaciente,
-      idEquipo: equipoId,
-      fechaAsignacion: nowIso,
-      fechaActualizacionEntrega: nowIso,
-      estado: "ACTIVA",
-      observacionesEntrega: observaciones || "Registro por visitador.",
-      usuarioAsigna: aprobadoPorNombre,
-      auxiliarNombre: auxNombre || undefined,
-      auxiliarUid: auxUid || undefined,
+      const solicitudTx = solicitudTxSnap.data() as Record<string, unknown>;
+      const estadoTx =
+        typeof solicitudTx.estado === "string" ? solicitudTx.estado : "";
+      const equipoIdTx =
+        typeof solicitudTx.equipoId === "string" ? solicitudTx.equipoId : "";
+      const asignacionIdTx =
+        typeof solicitudTx.asignacionId === "string" ?
+          solicitudTx.asignacionId :
+          "";
+
+      if (estadoTx === "APROBADA") {
+        if (equipoIdTx && equipoIdTx !== equipoId) {
+          throw new HttpsError(
+            "failed-precondition",
+            "La solicitud ya fue aprobada con otro equipo.",
+          );
+        }
+        return {asignacionId: asignacionIdTx, alreadyApproved: true};
+      }
+      if (estadoTx !== "PENDIENTE") {
+        throw new HttpsError(
+          "failed-precondition",
+          "La solicitud no está en estado PENDIENTE.",
+        );
+      }
+
+      const idPacienteTx =
+        typeof solicitudTx.idPaciente === "string" ?
+          solicitudTx.idPaciente :
+          "";
+      if (!idPacienteTx) {
+        throw new HttpsError(
+          "failed-precondition",
+          "La solicitud no tiene paciente válido.",
+        );
+      }
+      const tipoPropiedadTx =
+        typeof solicitudTx.tipoPropiedad === "string" ?
+          solicitudTx.tipoPropiedad :
+          "";
+      if (
+        tipoPropiedadTx !== "PACIENTE" &&
+        tipoPropiedadTx !== "ALQUILADO" &&
+        tipoPropiedadTx !== "MEDICUC"
+      ) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Tipo de propiedad inválido en la solicitud.",
+        );
+      }
+
+      const equipoDataTx = equipoTxSnap.data() as Record<string, unknown>;
+      const equipoTipoTx =
+        typeof equipoDataTx.tipoPropiedad === "string" ?
+          equipoDataTx.tipoPropiedad :
+          "";
+      if (equipoTipoTx && equipoTipoTx !== tipoPropiedadTx) {
+        throw new HttpsError(
+          "failed-precondition",
+          "La propiedad del equipo no coincide con la solicitud.",
+        );
+      }
+
+      const [activeSnap, pacienteSnap] = await Promise.all([
+        tx.get(
+          db.collection("asignaciones")
+            .where("idEquipo", "==", equipoId)
+            .where("estado", "==", "ACTIVA")
+            .limit(1),
+        ),
+        tx.get(
+          db.collection("asignaciones")
+            .where("idPaciente", "==", idPacienteTx)
+            .where("estado", "==", "ACTIVA")
+            .limit(1),
+        ),
+      ]);
+      if (!activeSnap.empty) {
+        throw new HttpsError(
+          "failed-precondition",
+          "El equipo ya tiene una asignación activa.",
+        );
+      }
+      if (!pacienteSnap.empty) {
+        throw new HttpsError(
+          "failed-precondition",
+          "El paciente ya tiene una asignación activa.",
+        );
+      }
+
+      const consecutivo = await nextConsecutivoInTx(
+        tx,
+        "asignaciones_consecutivo",
+        "asignaciones",
+      );
+      const nowIso = new Date().toISOString();
+      const asignacionRef = db.collection("asignaciones").doc();
+      tx.set(asignacionRef, {
+        consecutivo,
+        idPaciente: idPacienteTx,
+        idEquipo: equipoId,
+        fechaAsignacion: nowIso,
+        fechaActualizacionEntrega: nowIso,
+        estado: "ACTIVA",
+        observacionesEntrega: observaciones || "Registro por visitador.",
+        usuarioAsigna: aprobadoPorNombre,
+        auxiliarNombre: auxNombre || undefined,
+        auxiliarUid: auxUid || undefined,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+
+      tx.update(solicitudRef, {
+        estado: "APROBADA",
+        aprobadoAt: nowIso,
+        aprobadoPorUid: callerUid,
+        aprobadoPorNombre,
+        equipoId,
+        asignacionId: asignacionRef.id,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+
+      return {asignacionId: asignacionRef.id, alreadyApproved: false};
+    });
+
+    return {
+      ok: true,
+      asignacionId: txResult.asignacionId || "",
+      actaInternaId: "",
+      alreadyApproved: txResult.alreadyApproved,
     };
-    const ref = await db.collection("asignaciones").add(asignacion);
-    asignacionId = ref.id;
   }
 
+  let actaInternaId = "";
   if (tipoPropiedad === "ALQUILADO") {
     if (!firmaEntrega) {
       throw new HttpsError(
@@ -1299,18 +2111,247 @@ export const approveSolicitudEquipoPaciente = onCall(async (request) => {
 
     return {ok: true, actaInternaId};
   }
+  throw new HttpsError("internal", "Tipo de propiedad no soportado.");
+});
 
-  await solicitudRef.update({
-    estado: "APROBADA",
-    aprobadoAt: new Date().toISOString(),
-    aprobadoPorUid: callerUid,
-    aprobadoPorNombre,
-    equipoId,
-    ...(asignacionId ? {asignacionId} : {}),
-    updatedAt: FieldValue.serverTimestamp(),
+/**
+ * Crea reporte de visita/falla (VISITADOR) con anti-duplicado global por
+ * asignación: solo puede existir 1 reporte ABIERTO/EN_PROCESO por idAsignacion.
+ */
+export const createReporteEquipo = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
+  }
+  const callerUid = request.auth.uid;
+  await assertCallerHasRole(callerUid, "VISITADOR");
+
+  const raw = (request.data as {reporte?: unknown})?.reporte;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new HttpsError("invalid-argument", "reporte es requerido.");
+  }
+  const reporte = raw as Record<string, unknown>;
+
+  const reporteId = assertNonEmptyString(
+    reporte.reporteId ?? reporte.id,
+    "reporteId",
+  );
+  const idAsignacion = assertNonEmptyString(
+    reporte.idAsignacion,
+    "idAsignacion",
+  );
+  const idPaciente = assertNonEmptyString(reporte.idPaciente, "idPaciente");
+  const idEquipo = assertNonEmptyString(reporte.idEquipo, "idEquipo");
+  const descripcion = upperTrim(reporte.descripcion);
+  if (!descripcion) {
+    throw new HttpsError("invalid-argument", "descripcion es requerida.");
+  }
+
+  const fechaVisita =
+    typeof reporte.fechaVisita === "string" && reporte.fechaVisita.trim() ?
+      reporte.fechaVisita.trim() :
+      new Date().toISOString();
+  const pacienteNombre = upperTrim(reporte.pacienteNombre);
+  const pacienteDocumento = upperTrim(reporte.pacienteDocumento);
+  const equipoCodigoInventario = upperTrim(reporte.equipoCodigoInventario);
+  const equipoNombre = upperTrim(reporte.equipoNombre);
+  const equipoSerie = upperTrim(reporte.equipoSerie);
+
+  if (
+    !pacienteNombre ||
+    !pacienteDocumento ||
+    !equipoCodigoInventario ||
+    !equipoNombre ||
+    !equipoSerie
+  ) {
+    throw new HttpsError(
+      "invalid-argument",
+      "Faltan datos de snapshot (paciente/equipo).",
+    );
+  }
+
+  const fotosRaw = Array.isArray(reporte.fotos) ? reporte.fotos : [];
+  if (fotosRaw.length < 1 || fotosRaw.length > 5) {
+    throw new HttpsError(
+      "invalid-argument",
+      "Debes adjuntar entre 1 y 5 fotos.",
+    );
+  }
+  const expectedPrefix = `reportes_equipos/${callerUid}/${reporteId}/`;
+  const fotos = fotosRaw.map((item, idx) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new HttpsError(
+        "invalid-argument",
+        `fotos[${idx}] es inválida.`,
+      );
+    }
+    const foto = item as Record<string, unknown>;
+    const path = assertNonEmptyString(foto.path, `fotos[${idx}].path`);
+    const name = assertNonEmptyString(foto.name, `fotos[${idx}].name`);
+    const contentType = assertNonEmptyString(
+      foto.contentType,
+      `fotos[${idx}].contentType`,
+    );
+    const size =
+      typeof foto.size === "number" && Number.isFinite(foto.size) ?
+        foto.size :
+        Number.NaN;
+
+    if (!path.startsWith(expectedPrefix)) {
+      throw new HttpsError(
+        "invalid-argument",
+        `fotos[${idx}].path no coincide con el reporte.`,
+      );
+    }
+    if (contentType !== "image/jpeg" && contentType !== "image/png") {
+      throw new HttpsError(
+        "invalid-argument",
+        `fotos[${idx}].contentType inválido.`,
+      );
+    }
+    if (!Number.isFinite(size) || size <= 0 || size > 5 * 1024 * 1024) {
+      throw new HttpsError(
+        "invalid-argument",
+        `fotos[${idx}].size inválido.`,
+      );
+    }
+    return {path, name, size, contentType};
   });
 
-  return {ok: true, asignacionId, actaInternaId};
+  const callerSnap = await db.doc(`users/${callerUid}`).get();
+  const callerData = callerSnap.data() as Record<string, unknown> | undefined;
+  const tokenName =
+    typeof request.auth.token.name === "string" ?
+      request.auth.token.name :
+      "";
+  const tokenEmail =
+    typeof request.auth.token.email === "string" ?
+      request.auth.token.email :
+      "";
+  const createdByName =
+    upperTrim(callerData?.nombre || tokenName || tokenEmail) || "VISITADOR";
+
+  const txResult = await db.runTransaction(async (tx) => {
+    const [asignacionSnap, existingSnap, reportByIdSnap] = await Promise.all([
+      tx.get(db.doc(`asignaciones/${idAsignacion}`)),
+      tx.get(
+        db.collection("reportes_equipos")
+          .where("idAsignacion", "==", idAsignacion),
+      ),
+      tx.get(db.doc(`reportes_equipos/${reporteId}`)),
+    ]);
+
+    if (!asignacionSnap.exists) {
+      throw new HttpsError("not-found", "La asignación no existe.");
+    }
+    const asignacionData = asignacionSnap.data() as Record<string, unknown>;
+    const estadoAsignacion =
+      typeof asignacionData.estado === "string" ? asignacionData.estado : "";
+    const idPacienteAsignacion =
+      typeof asignacionData.idPaciente === "string" ?
+        asignacionData.idPaciente :
+        "";
+    const idEquipoAsignacion =
+      typeof asignacionData.idEquipo === "string" ?
+        asignacionData.idEquipo :
+        "";
+    if (estadoAsignacion !== "ACTIVA") {
+      throw new HttpsError(
+        "failed-precondition",
+        "La asignación no está activa.",
+      );
+    }
+    if (
+      idPacienteAsignacion !== idPaciente ||
+      idEquipoAsignacion !== idEquipo
+    ) {
+      throw new HttpsError(
+        "failed-precondition",
+        "La asignación no coincide con paciente/equipo.",
+      );
+    }
+
+    let existingOwnId = "";
+    for (const docSnap of existingSnap.docs) {
+      const data = docSnap.data() as Record<string, unknown>;
+      const estado = typeof data.estado === "string" ? data.estado : "";
+      if (estado !== "ABIERTO" && estado !== "EN_PROCESO") {
+        continue;
+      }
+      const creadoPorUid =
+        typeof data.creadoPorUid === "string" ? data.creadoPorUid : "";
+      if (creadoPorUid === callerUid) {
+        existingOwnId = docSnap.id;
+        break;
+      }
+      throw new HttpsError(
+        "failed-precondition",
+        "Ya existe un reporte activo para esta asignación.",
+      );
+    }
+    if (existingOwnId) {
+      return {reporteId: existingOwnId, alreadyExists: true};
+    }
+
+    if (reportByIdSnap.exists) {
+      const data = reportByIdSnap.data() as Record<string, unknown>;
+      const estado = typeof data.estado === "string" ? data.estado : "";
+      const prevAsignacion =
+        typeof data.idAsignacion === "string" ? data.idAsignacion : "";
+      const prevUid =
+        typeof data.creadoPorUid === "string" ? data.creadoPorUid : "";
+      const isSameOpenReport =
+        (estado === "ABIERTO" || estado === "EN_PROCESO") &&
+        prevAsignacion === idAsignacion &&
+        prevUid === callerUid;
+      if (isSameOpenReport) {
+        return {reporteId, alreadyExists: true};
+      }
+      throw new HttpsError(
+        "already-exists",
+        "El identificador del reporte ya existe.",
+      );
+    }
+
+    const nowIso = new Date().toISOString();
+    const historial = [
+      {
+        fecha: nowIso,
+        estado: "ABIERTO",
+        nota: descripcion,
+        porUid: callerUid,
+        porNombre: createdByName,
+      },
+    ];
+    tx.set(db.doc(`reportes_equipos/${reporteId}`), {
+      estado: "ABIERTO",
+      idAsignacion,
+      idPaciente,
+      idEquipo,
+      fechaVisita,
+      descripcion,
+      fotos,
+      creadoPorUid: callerUid,
+      creadoPorNombre: createdByName,
+      pacienteNombre,
+      pacienteDocumento,
+      equipoCodigoInventario,
+      equipoNombre,
+      equipoSerie,
+      historial,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+
+    return {reporteId, alreadyExists: false};
+  });
+
+  return {
+    ok: true,
+    reporteId: txResult.reporteId,
+    alreadyExists: txResult.alreadyExists,
+  };
 });
 
 /**

@@ -24,6 +24,7 @@ import StatusBadge from '../components/StatusBadge';
 import SignatureImageInput from '../components/SignatureImageInput';
 import HojaVidaFormat from '../components/HojaVidaFormat';
 import { firebaseFunctions } from '../services/firebaseFunctions';
+import { parseCsvRows } from '../services/csv';
 import { storage } from '../services/firebase';
 import {
   saveEquipo,
@@ -42,6 +43,72 @@ import {
   subscribeReportesEquipos,
   subscribeSolicitudesEquiposPacientePendientes,
 } from '../services/firestoreData';
+
+type HistoryRow = {
+  id: string;
+  tipo: 'PACIENTE' | 'PROFESIONAL' | 'MANTENIMIENTO' | 'BAJA';
+  fecha: string;
+  fechaFin?: string;
+  estado?: EstadoAsignacion;
+  consecutivo?: number;
+  nombre: string;
+  doc: string;
+  observacionesEntrega?: string;
+  observacionesDevolucion?: string;
+  estadoFinalEquipo?: EstadoEquipo;
+};
+
+type HistoryReporteRow = {
+  id: string;
+  fecha: string;
+  estado: ReporteEquipo['estado'];
+  nota: string;
+  porNombre?: string;
+  pacienteNombre: string;
+};
+
+type Html2CanvasOptions = {
+  scale?: number;
+  useCORS?: boolean;
+  backgroundColor?: string;
+};
+
+type JsPdfInstance = {
+  addImage: (
+    imageData: string,
+    format: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+  ) => void;
+  save: (filename: string) => void;
+};
+
+type JsPdfConstructor = new (options: {
+  orientation: 'portrait' | 'landscape';
+  unit: 'in' | 'mm' | 'pt';
+  format: 'letter' | string;
+}) => JsPdfInstance;
+
+type PdfWindow = Window & {
+  html2canvas?: (element: HTMLElement, options?: Html2CanvasOptions) => Promise<HTMLCanvasElement>;
+  jspdf?: { jsPDF?: JsPdfConstructor };
+};
+
+const parseError = (err: unknown, fallback: string) => {
+  const rec = typeof err === 'object' && err !== null
+    ? (err as Record<string, unknown>)
+    : {};
+  const code = typeof rec.code === 'string' ? rec.code : '';
+  const message = typeof rec.message === 'string' ? rec.message : fallback;
+  return { code, message };
+};
+
+const formatError = (err: unknown, fallback: string) => {
+  const { code, message } = parseError(err, fallback);
+  return `${code ? `${code}: ` : ''}${message}`;
+};
 
 const Inventory: React.FC = () => {
   const { hasRole, usuario } = useAuth();
@@ -96,8 +163,8 @@ const Inventory: React.FC = () => {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [historyEquipo, setHistoryEquipo] = useState<{
     equipo: EquipoBiomedico;
-    data: any[];
-    reportes: any[];
+    data: HistoryRow[];
+    reportes: HistoryReporteRow[];
   } | null>(null);
 
   // Stats para contadores
@@ -506,11 +573,11 @@ const Inventory: React.FC = () => {
           setSolicitudContext(null);
           setOpenSolicitud(null);
           setSolicitudFotoUrls({});
-        } catch (err: any) {
+        } catch (err: unknown) {
           console.error('Error aprobando solicitud:', err);
           toast({
             tone: 'error',
-            message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo aprobar la solicitud.'}`,
+            message: formatError(err, 'No se pudo aprobar la solicitud.'),
           });
           return;
         }
@@ -529,9 +596,9 @@ const Inventory: React.FC = () => {
       setEquipoFotoPreview(null);
       setRemoveEquipoFoto(false);
       setSerialError(null);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error guardando equipo:', err);
-      toast({ tone: 'error', message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo guardar el equipo.'}` });
+      toast({ tone: 'error', message: formatError(err, 'No se pudo guardar el equipo.') });
     }
   };
 
@@ -555,7 +622,7 @@ const Inventory: React.FC = () => {
       } else {
         setSerialError(null);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error validando serial:', err);
       setSerialError('No se pudo validar el serial en este momento.');
     } finally {
@@ -713,9 +780,9 @@ const Inventory: React.FC = () => {
       await saveTipoEquipo(tipoForm);
       toast({ tone: 'success', message: 'Tipo de equipo guardado.' });
       closeTiposEquipo();
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error guardando tipo de equipo:', err);
-      toast({ tone: 'error', message: err?.message || 'No se pudo guardar el tipo de equipo.' });
+      toast({ tone: 'error', message: parseError(err, 'No se pudo guardar el tipo de equipo.').message });
     } finally {
       setTipoSaving(false);
     }
@@ -734,9 +801,9 @@ const Inventory: React.FC = () => {
     try {
       await deleteTipoEquipo(tipo.id);
       toast({ tone: 'success', message: 'Tipo de equipo eliminado.' });
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error eliminando tipo de equipo:', err);
-      toast({ tone: 'error', message: err?.message || 'No se pudo eliminar el tipo de equipo.' });
+      toast({ tone: 'error', message: parseError(err, 'No se pudo eliminar el tipo de equipo.').message });
     }
   };
 
@@ -847,7 +914,7 @@ const Inventory: React.FC = () => {
         };
       });
 
-    const historialEstado = [];
+    const historialEstado: HistoryRow[] = [];
     if (equipo.fechaMantenimiento) {
       historialEstado.push({
         id: `mantenimiento-${equipo.id}`,
@@ -981,8 +1048,8 @@ const Inventory: React.FC = () => {
       return;
     }
 
-    const win = window as any;
-    const html2canvas = win.html2canvas as ((el: HTMLElement, opts?: any) => Promise<HTMLCanvasElement>) | undefined;
+    const win = window as PdfWindow;
+    const html2canvas = win.html2canvas;
     const JsPdf = win.jspdf?.jsPDF;
 
     if (!html2canvas || !JsPdf) {
@@ -1050,11 +1117,11 @@ const Inventory: React.FC = () => {
     if (!ok) return;
 
     try {
-      await deleteEquipo(equipo.id);
+      await deleteEquipo(equipo);
       toast({ tone: 'success', message: 'Equipo eliminado correctamente.' });
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error eliminando equipo:', err);
-      toast({ tone: 'error', message: err?.message || 'No se pudo eliminar el equipo.' });
+      toast({ tone: 'error', message: parseError(err, 'No se pudo eliminar el equipo.').message });
     }
   };
 
@@ -1108,15 +1175,16 @@ const Inventory: React.FC = () => {
       const text = event.target?.result as string;
       if (!text) return;
 
-      const lines = text.split('\n');
-      const dataLines = lines.slice(1).filter(line => line.trim() !== '');
+      const rows = parseCsvRows(text);
+      const dataLines = rows.slice(1).filter((columns) =>
+        columns.some((col) => col.trim() !== ''),
+      );
 
       let successCount = 0;
       let errorCount = 0;
       let errorMessages: string[] = [];
 
-      for (const [index, line] of dataLines.entries()) {
-        const columns = line.split(','); 
+      for (const [index, columns] of dataLines.entries()) {
         if (columns.length < 4) continue; // Mínimo serie, nombre, marca, modelo
 
         // Índices ajustados al remover CodigoInventario
@@ -1156,9 +1224,10 @@ const Inventory: React.FC = () => {
           }
           await saveEquipo(importedEquipo);
           successCount++;
-        } catch (err: any) {
+        } catch (err: unknown) {
           errorCount++;
-          errorMessages.push(`Fila ${index + 2} (${importedEquipo.nombre}): ${err.message}`);
+          const { message } = parseError(err, 'Error desconocido');
+          errorMessages.push(`Fila ${index + 2} (${importedEquipo.nombre}): ${message}`);
         }
       }
 
@@ -1168,7 +1237,9 @@ const Inventory: React.FC = () => {
       }
       toast({ tone: errorCount > 0 ? 'warning' : 'success', title: 'Importacion CSV', message });
       if (fileInputRef.current) fileInputRef.current.value = ''; 
-      })().catch((err) => toast({ tone: 'error', message: err?.message || 'Error importando CSV' }));
+      })().catch((err: unknown) => {
+        toast({ tone: 'error', message: parseError(err, 'Error importando CSV').message });
+      });
     };
     reader.readAsText(file);
   };

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
-import { collection, doc, getDocs, limit, query, where } from 'firebase/firestore';
+import { deleteObject, getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
+import { collection, doc } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import Layout from '../components/Layout';
 import { toast } from '../services/feedback';
@@ -13,6 +13,7 @@ import {
   createReporteEquipo,
   createSolicitudEquipoPaciente,
   iniciarReporteEnProceso,
+  listFirmasCapturadasVisitador,
   agregarNotaReporte,
   marcarReporteVistoPorVisitador,
   subscribeAsignacionesActivas,
@@ -21,6 +22,7 @@ import {
   subscribeReportesEquipos,
   subscribeReportesEquiposByUser,
   subscribeSolicitudesEquiposPacienteByUser,
+  type FirmaCapturadaVisitador,
 } from '../services/firestoreData';
 import {
   EstadoAsignacion,
@@ -69,6 +71,20 @@ function sanitizeFileName(name: string) {
   return name.replace(/[^\w.\-]+/g, '_').slice(0, 80);
 }
 
+function parseError(err: unknown, fallback: string) {
+  const rec = typeof err === 'object' && err !== null
+    ? (err as Record<string, unknown>)
+    : {};
+  const code = typeof rec.code === 'string' ? rec.code : '';
+  const message = typeof rec.message === 'string' ? rec.message : fallback;
+  return { code, message };
+}
+
+function formatError(err: unknown, fallback: string) {
+  const { code, message } = parseError(err, fallback);
+  return `${code ? `${code}: ` : ''}${message}`;
+}
+
 const Visits: React.FC = () => {
   const { usuario } = useAuth();
   const isVisitador = usuario?.rol === RolUsuario.VISITADOR;
@@ -83,6 +99,9 @@ const Visits: React.FC = () => {
   const [pacientesSinAsignacion, setPacientesSinAsignacion] = useState<PacienteLite[]>([]);
   const [loadingPacientesSinAsignacion, setLoadingPacientesSinAsignacion] = useState(false);
   const [solicitudes, setSolicitudes] = useState<SolicitudEquipoPaciente[]>([]);
+  const [firmasCapturadasHistorial, setFirmasCapturadasHistorial] =
+    useState<FirmaCapturadaVisitador[]>([]);
+  const [loadingFirmasHistorial, setLoadingFirmasHistorial] = useState(false);
 
   // BIOMEDICO data
   const [reportes, setReportes] = useState<ReporteEquipo[]>([]);
@@ -91,6 +110,7 @@ const Visits: React.FC = () => {
     setFirestoreError(null);
 
     if (isVisitador) {
+      let canceled = false;
       const unsubPacientes = subscribePacientesConAsignacionActiva(setPacientes, (e) => {
         console.error('subscribePacientesConAsignacionActiva error:', e);
         setFirestoreError(`No tienes permisos para leer pacientes activos. Detalle: ${e.message}`);
@@ -117,6 +137,24 @@ const Visits: React.FC = () => {
             (e) => setFirestoreError(`No tienes permisos para leer tus solicitudes. Detalle: ${e.message}`),
           )
         : () => {};
+      const loadFirmasHistorial = async () => {
+        if (!usuario?.id) return;
+        setLoadingFirmasHistorial(true);
+        try {
+          const firmas = await listFirmasCapturadasVisitador();
+          if (!canceled) setFirmasCapturadasHistorial(firmas);
+        } catch (err: unknown) {
+          console.error('listFirmasCapturadasVisitador error:', err);
+          if (!canceled) {
+            const { message } = parseError(err, 'Error desconocido');
+            setFirestoreError(
+              `No se pudo cargar historial de firmas. Detalle: ${message}`,
+            );
+          }
+        } finally {
+          if (!canceled) setLoadingFirmasHistorial(false);
+        }
+      };
 
       const loadPacientesSinAsignacion = async () => {
         setLoadingPacientesSinAsignacion(true);
@@ -132,10 +170,11 @@ const Visits: React.FC = () => {
             }))
             .filter((p) => p.id);
           setPacientesSinAsignacion(items);
-        } catch (err: any) {
+        } catch (err: unknown) {
           console.error('listPacientesSinAsignacion error:', err);
+          const { message } = parseError(err, 'Error desconocido');
           setFirestoreError(
-            `No se pudo cargar pacientes sin asignacion. Detalle: ${err?.message || 'Error desconocido'}`,
+            `No se pudo cargar pacientes sin asignacion. Detalle: ${message}`,
           );
         } finally {
           setLoadingPacientesSinAsignacion(false);
@@ -143,7 +182,9 @@ const Visits: React.FC = () => {
       };
 
       loadPacientesSinAsignacion();
+      loadFirmasHistorial();
       return () => {
+        canceled = true;
         unsubPacientes();
         unsubEquipos();
         unsubAsignaciones();
@@ -507,11 +548,11 @@ const Visits: React.FC = () => {
         message: 'Solicitud enviada al biomédico.',
       });
       resetSolicitud();
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error('submitSolicitud error:', e);
       toast({
         tone: 'error',
-        message: `${e?.code ? `${e.code}: ` : ''}${e?.message || 'No se pudo enviar la solicitud.'}`,
+        message: formatError(e, 'No se pudo enviar la solicitud.'),
       });
       setSolicitudSaving(false);
     }
@@ -526,9 +567,7 @@ const Visits: React.FC = () => {
   const [firmaEntrega, setFirmaEntrega] = useState<string | null>(null);
   const [savingFirma, setSavingFirma] = useState(false);
   const [openFirmaView, setOpenFirmaView] = useState<{
-    asignacion: Asignacion;
-    paciente: Paciente;
-    equipo: EquipoBiomedico;
+    firma: FirmaCapturadaVisitador;
   } | null>(null);
 
   const resetFirma = () => {
@@ -561,11 +600,13 @@ const Visits: React.FC = () => {
         firmaEntrega,
         capturadoPorNombre: nombreCaptura,
       });
+      const firmas = await listFirmasCapturadasVisitador();
+      setFirmasCapturadasHistorial(firmas);
       toast({ tone: 'success', message: 'Firma registrada correctamente.' });
       resetFirma();
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error('saveFirmaEntrega error:', e);
-      toast({ tone: 'error', message: `${e?.code ? `${e.code}: ` : ''}${e?.message || 'No se pudo guardar la firma.'}` });
+      toast({ tone: 'error', message: formatError(e, 'No se pudo guardar la firma.') });
       setSavingFirma(false);
     }
   };
@@ -597,8 +638,8 @@ const Visits: React.FC = () => {
       return;
     }
 
-    // Bloqueo de duplicados: 1 reporte ABIERTO por idAsignacion (para evitar reportes repetidos de la misma falla).
-    // Hacemos doble validación: (1) memoria y (2) consulta a Firestore (por si aún no cargó la suscripción).
+    // Bloqueo de duplicados local para UX inmediata.
+    // La validación definitiva se hace en Cloud Function.
     const alreadyOpenLocal = reportes.find(
       (r) => r.idAsignacion === openCreate.asignacion.id && r.estado !== EstadoReporteEquipo.CERRADO,
     );
@@ -612,32 +653,9 @@ const Visits: React.FC = () => {
       resetCreate();
       return;
     }
-    try {
-      const q = query(
-        collection(db, 'reportes_equipos'),
-        where('idAsignacion', '==', openCreate.asignacion.id),
-        where('estado', 'in', [EstadoReporteEquipo.ABIERTO, EstadoReporteEquipo.EN_PROCESO]),
-        where('creadoPorUid', '==', usuario.id),
-        limit(1),
-      );
-      const snap = await getDocs(q);
-      const doc0 = snap.docs[0];
-      if (doc0) {
-        const existing = { id: doc0.id, ...(doc0.data() as Omit<ReporteEquipo, 'id'>) };
-        toast({
-          tone: 'warning',
-          title: 'Reporte duplicado',
-          message: 'Ya existe un reporte ABIERTO o EN PROCESO para esta asignacion. Revisa el detalle para evitar duplicados.',
-        });
-        setOpenReporte(existing);
-        resetCreate();
-        return;
-      }
-    } catch {
-      // Si falla la consulta, seguimos y la seguridad final la imponen las rules (y el flujo normal).
-    }
 
     setCreating(true);
+    const uploadedPaths: string[] = [];
     try {
       const reporteId = doc(collection(db, 'reportes_equipos')).id;
 
@@ -648,6 +666,7 @@ const Visits: React.FC = () => {
         const storagePath = `reportes_equipos/${usuario.id}/${reporteId}/${Date.now()}-${i + 1}-${safeName}`;
         const refFile = storageRef(storage, storagePath);
         await uploadBytes(refFile, f, { contentType: f.type });
+        uploadedPaths.push(storagePath);
         fotos.push({ path: storagePath, name: f.name, size: f.size, contentType: f.type });
       }
 
@@ -670,16 +689,65 @@ const Visits: React.FC = () => {
         equipoSerie: equipo.numeroSerie,
       };
 
-      await createReporteEquipo(reporte);
+      const result = await createReporteEquipo(reporte);
+      if (result.alreadyExists) {
+        await Promise.allSettled(
+          uploadedPaths.map((path) => deleteObject(storageRef(storage, path))),
+        );
+        const existing =
+          reportes.find((r) => r.id === result.reporteId) ||
+          reportes.find(
+            (r) =>
+              r.idAsignacion === asignacion.id &&
+              r.estado !== EstadoReporteEquipo.CERRADO,
+          );
+        toast({
+          tone: 'warning',
+          title: 'Reporte duplicado',
+          message:
+            'Ya existe un reporte ABIERTO o EN PROCESO para esta asignacion.',
+        });
+        if (existing) setOpenReporte(existing);
+        resetCreate();
+        return;
+      }
       toast({
         tone: 'success',
         title: 'Reporte creado',
         message: 'Se notificara al biomedico por email (si esta configurado).',
       });
       resetCreate();
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error('submitReporte error:', e);
-      toast({ tone: 'error', message: `${e?.code ? `${e.code}: ` : ''}${e?.message || 'No se pudo crear el reporte.'}` });
+      const { code } = parseError(e, '');
+      const isDuplicateError =
+        code.includes('failed-precondition') || code.includes('already-exists');
+      if (isDuplicateError && uploadedPaths.length) {
+        await Promise.allSettled(
+          uploadedPaths.map((path) => deleteObject(storageRef(storage, path))),
+        );
+      }
+      if (isDuplicateError) {
+        const existing = reportes.find(
+          (r) =>
+            r.idAsignacion === openCreate.asignacion.id &&
+            r.estado !== EstadoReporteEquipo.CERRADO,
+        );
+        toast({
+          tone: 'warning',
+          title: 'Reporte duplicado',
+          message:
+            'Ya existe un reporte ABIERTO o EN PROCESO para esta asignacion.',
+        });
+        if (existing) {
+          setOpenReporte(existing);
+          resetCreate();
+        } else {
+          setCreating(false);
+        }
+        return;
+      }
+      toast({ tone: 'error', message: formatError(e, 'No se pudo crear el reporte.') });
       setCreating(false);
     }
   };
@@ -742,9 +810,9 @@ const Visits: React.FC = () => {
         porNombre: usuario.nombre,
       });
       toast({ tone: 'success', message: 'Reporte actualizado a EN PROCESO.' });
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error('startProcesoReporte error:', e);
-      toast({ tone: 'error', message: `${e?.code ? `${e.code}: ` : ''}${e?.message || 'No se pudo iniciar el proceso.'}` });
+      toast({ tone: 'error', message: formatError(e, 'No se pudo iniciar el proceso.') });
     } finally {
       setStartingProceso(false);
     }
@@ -767,9 +835,9 @@ const Visits: React.FC = () => {
       });
       toast({ tone: 'success', message: 'Avance registrado.' });
       setNotaProceso('');
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error('addNotaProceso error:', e);
-      toast({ tone: 'error', message: `${e?.code ? `${e.code}: ` : ''}${e?.message || 'No se pudo registrar el avance.'}` });
+      toast({ tone: 'error', message: formatError(e, 'No se pudo registrar el avance.') });
     } finally {
       setAddingNota(false);
     }
@@ -797,9 +865,9 @@ const Visits: React.FC = () => {
       toast({ tone: 'success', message: 'Reporte cerrado correctamente.' });
       setOpenReporte(null);
       setCierreNotas('');
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error('closeReporte error:', e);
-      toast({ tone: 'error', message: `${e?.code ? `${e.code}: ` : ''}${e?.message || 'No se pudo cerrar el reporte.'}` });
+      toast({ tone: 'error', message: formatError(e, 'No se pudo cerrar el reporte.') });
     } finally {
       setClosing(false);
     }
@@ -1063,39 +1131,37 @@ const Visits: React.FC = () => {
                     </div>
                   </div>
                   <div className="text-xs text-gray-500">
-                    Total:{' '}
-                    {
-                      asignacionesActivasEnriquecidas.filter(
-                        ({ a }) => !!a.firmaPacienteEntrega && a.firmaPacienteEntregaCapturadaPorUid === usuario.id,
-                      ).length
-                    }
+                    Total: {firmasCapturadasHistorial.length}
                   </div>
                 </div>
 
                 <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
-                  {asignacionesActivasEnriquecidas.filter(
-                    ({ a }) => !!a.firmaPacienteEntrega && a.firmaPacienteEntregaCapturadaPorUid === usuario.id,
-                  ).length === 0 ? (
+                  {loadingFirmasHistorial ? (
+                    <div className="text-sm text-gray-500">Cargando historial...</div>
+                  ) : firmasCapturadasHistorial.length === 0 ? (
                     <div className="text-sm text-gray-500">Aún no has capturado firmas.</div>
                   ) : (
-                    asignacionesActivasEnriquecidas
-                      .filter(({ a }) => !!a.firmaPacienteEntrega && a.firmaPacienteEntregaCapturadaPorUid === usuario.id)
-                      .slice(0, 6)
-                      .map(({ a, paciente, equipo }) => (
-                        <div key={a.id} className="border rounded-lg p-3 bg-white">
+                    firmasCapturadasHistorial.map((firma) => (
+                        <div key={firma.idAsignacion} className="border rounded-lg p-3 bg-white">
                           <div className="flex items-start justify-between gap-3">
                             <div>
-                              <div className="text-sm font-bold text-gray-900">{paciente!.nombreCompleto}</div>
+                              <div className="text-sm font-bold text-gray-900">
+                                {firma.pacienteNombre}
+                              </div>
                               <div className="text-xs text-gray-500">
-                                Equipo: <span className="font-mono">{equipo!.codigoInventario}</span> ·{' '}
-                                {a.firmaPacienteEntregaCapturadaAt
-                                  ? `Capturada: ${new Date(a.firmaPacienteEntregaCapturadaAt).toLocaleDateString()}`
+                                Equipo:{' '}
+                                <span className="font-mono">
+                                  {firma.equipoCodigoInventario}
+                                </span>{' '}
+                                ·{' '}
+                                {firma.firmaPacienteEntregaCapturadaAt
+                                  ? `Capturada: ${new Date(firma.firmaPacienteEntregaCapturadaAt).toLocaleDateString()}`
                                   : 'Capturada'}
                               </div>
                             </div>
                             <button
                               className="md-btn md-btn-outlined"
-                              onClick={() => setOpenFirmaView({ asignacion: a, paciente: paciente!, equipo: equipo! })}
+                              onClick={() => setOpenFirmaView({ firma })}
                               type="button"
                             >
                               Ver firma
@@ -1367,8 +1433,8 @@ const Visits: React.FC = () => {
               <div>
                 <div className="text-lg font-bold text-gray-900">Firma registrada · Acta de entrega</div>
                 <div className="text-xs text-gray-500">
-                  Paciente: {openFirmaView.paciente.nombreCompleto} · Equipo:{' '}
-                  <span className="font-mono">{openFirmaView.equipo.codigoInventario}</span>
+                  Paciente: {openFirmaView.firma.pacienteNombre} · Equipo:{' '}
+                  <span className="font-mono">{openFirmaView.firma.equipoCodigoInventario}</span>
                 </div>
               </div>
               <button className="md-btn md-btn-outlined" onClick={closeFirmaView} type="button">
@@ -1378,9 +1444,9 @@ const Visits: React.FC = () => {
 
             <div className="p-4 space-y-4">
               <div className="md-card p-4">
-                {openFirmaView.asignacion.firmaPacienteEntrega ? (
+                {openFirmaView.firma.firmaPacienteEntrega ? (
                   <img
-                    src={openFirmaView.asignacion.firmaPacienteEntrega}
+                    src={openFirmaView.firma.firmaPacienteEntrega}
                     alt="Firma paciente"
                     className="w-full max-h-[420px] object-contain bg-white"
                   />
@@ -1388,11 +1454,11 @@ const Visits: React.FC = () => {
                   <div className="text-sm text-gray-500">Sin firma registrada.</div>
                 )}
                 <div className="text-xs text-gray-500 mt-2">
-                  {openFirmaView.asignacion.firmaPacienteEntregaCapturadaAt
-                    ? `Capturada: ${new Date(openFirmaView.asignacion.firmaPacienteEntregaCapturadaAt).toLocaleString()}`
+                  {openFirmaView.firma.firmaPacienteEntregaCapturadaAt
+                    ? `Capturada: ${new Date(openFirmaView.firma.firmaPacienteEntregaCapturadaAt).toLocaleString()}`
                     : 'Capturada'}
-                  {openFirmaView.asignacion.firmaPacienteEntregaCapturadaPorNombre
-                    ? ` · Por: ${openFirmaView.asignacion.firmaPacienteEntregaCapturadaPorNombre}`
+                  {openFirmaView.firma.firmaPacienteEntregaCapturadaPorNombre
+                    ? ` · Por: ${openFirmaView.firma.firmaPacienteEntregaCapturadaPorNombre}`
                     : ''}
                 </div>
               </div>

@@ -73,9 +73,11 @@ Colecciones clave:
 - `solicitudes_equipos_paciente` (visitador propone equipo para inventario)
 - `mantenimientos`
 - `tipos_equipo` (plantillas de hoja de vida)
+- `counters` (contadores transaccionales de consecutivos/códigos)
 
 Reglas relevantes (`firestore.rules`):
 - Visitador: lectura acotada (pacientes activos, asignaciones activas, etc.).
+- Reportes de visita: creación solo por callable `createReporteEquipo` con anti-duplicado global por asignación.
 - Biomédico: escritura de inventario/tipos/calibraciones.
 - Auxiliar: escritura de pacientes/asignaciones/flujos administrativos.
 - Gerencia: lectura.
@@ -98,7 +100,12 @@ Exports en `functions/src/index.ts`:
 - `adminCreateUser`
 - `adminSetUserRole`
 - `listAuxiliares`
+- `createPaciente` (transaccional)
+- `createEquipo` (transaccional)
+- `createAsignacionPaciente` (transaccional)
+- `createReporteEquipo` (transaccional + anti-duplicado por asignación)
 - `listPacientesSinAsignacion`
+- `listFirmasCapturadasVisitador` (historial completo de firmas capturadas)
 - `rebuildVisitadorFlags`
 - `guardarFirmaEntregaVisitador`
 - `defaultEquipoDisponibilidad`
@@ -188,4 +195,3 @@ Entrégame:
 - Confirmar que `firestore.rules`, `storage.rules`, `firestore.indexes.json` estén actualizados.
 - Confirmar build local (`npm run build`).
 - Commit de `docs/HANDOFF.md`.
-

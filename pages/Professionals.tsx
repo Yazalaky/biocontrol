@@ -33,6 +33,16 @@ import {
   type Profesional,
 } from '../types';
 
+type ResumenActaEntrega = {
+  key: string;
+  consecutivo: number;
+  fechaEntregaOriginal: string;
+  totalEquipos: number;
+  estado: 'ACTIVA' | 'FINALIZADA';
+  acta?: ActaProfesional;
+  firstAsignacion: AsignacionProfesional;
+};
+
 const Professionals: React.FC = () => {
   const { usuario, hasRole } = useAuth();
   const canManage = usuario?.rol === RolUsuario.AUXILIAR_ADMINISTRATIVA;
@@ -239,6 +249,61 @@ const Professionals: React.FC = () => {
     );
   }, [asignacionesProfesionales, selectedProfesional]);
 
+  const resumenActasEntrega = useMemo<ResumenActaEntrega[]>(() => {
+    if (!selectedProfesional) return [];
+    if (asignacionesDelProfesional.length === 0) return [];
+
+    const byActa = new Map<string, AsignacionProfesional[]>();
+    const sinActa: AsignacionProfesional[] = [];
+
+    for (const asig of asignacionesDelProfesional) {
+      if (!asig.actaProfesionalId) {
+        sinActa.push(asig);
+        continue;
+      }
+      const existing = byActa.get(asig.actaProfesionalId) || [];
+      existing.push(asig);
+      byActa.set(asig.actaProfesionalId, existing);
+    }
+
+    const rows: ResumenActaEntrega[] = [];
+
+    for (const [actaId, asignacionesActa] of byActa) {
+      const acta = actasProfesionalesById.get(actaId);
+      const first = asignacionesActa[0];
+      const allFinalizadas = asignacionesActa.every((a) => a.estado === EstadoAsignacion.FINALIZADA);
+      const totalEquipos = Math.max(asignacionesActa.length, acta?.items?.length || 0);
+      rows.push({
+        key: actaId,
+        consecutivo: acta?.consecutivo || first.actaProfesionalConsecutivo || first.consecutivo,
+        fechaEntregaOriginal: acta?.fechaEntregaOriginal || first.fechaEntregaOriginal,
+        totalEquipos,
+        estado: allFinalizadas ? 'FINALIZADA' : 'ACTIVA',
+        acta,
+        firstAsignacion: first,
+      });
+    }
+
+    for (const asig of sinActa) {
+      rows.push({
+        key: `legacy-${asig.id}`,
+        consecutivo: asig.consecutivo,
+        fechaEntregaOriginal: asig.fechaEntregaOriginal,
+        totalEquipos: 1,
+        estado: asig.estado === EstadoAsignacion.FINALIZADA ? 'FINALIZADA' : 'ACTIVA',
+        firstAsignacion: asig,
+      });
+    }
+
+    rows.sort((a, b) => {
+      const da = new Date(a.fechaEntregaOriginal).getTime();
+      const db = new Date(b.fechaEntregaOriginal).getTime();
+      return db - da;
+    });
+
+    return rows;
+  }, [selectedProfesional, asignacionesDelProfesional, actasProfesionalesById]);
+
   const openCreate = () => {
     setFormData({});
     setViewMode('create');
@@ -248,7 +313,6 @@ const Professionals: React.FC = () => {
     setSelectedProfesional(p);
     setViewMode('details');
     setEquipoQuery('');
-    setEquipoSeleccionado('');
     setEquipoPickerOpen(false);
   };
 
@@ -435,6 +499,12 @@ const Professionals: React.FC = () => {
     }
   };
 
+  const openActaGrupal = (acta: ActaProfesional) => {
+    setActaData({ kind: 'group', acta, tipo: 'ENTREGA' });
+    setProfessionalSignature(acta.firmaProfesionalEntrega || null);
+    if (acta.firmaAuxiliar) setAdminSignature(acta.firmaAuxiliar);
+  };
+
   const handleVerActa = (asig: AsignacionProfesional, tipo: 'ENTREGA' | 'DEVOLUCION') => {
     if (tipo === 'ENTREGA' && asig.actaProfesionalId) {
       const acta = actasProfesionalesById.get(asig.actaProfesionalId);
@@ -442,9 +512,7 @@ const Professionals: React.FC = () => {
         toast({ tone: 'error', message: 'No se encontró el acta profesional asociada.' });
         return;
       }
-      setActaData({ kind: 'group', acta, tipo: 'ENTREGA' });
-      setProfessionalSignature(acta.firmaProfesionalEntrega || null);
-      if (acta.firmaAuxiliar) setAdminSignature(acta.firmaAuxiliar);
+      openActaGrupal(acta);
       return;
     }
 
@@ -897,6 +965,65 @@ const Professionals: React.FC = () => {
               </div>
             )}
 
+            <div className="md-card p-6">
+              <h3 className="text-md font-bold text-gray-900 mb-4">Actas de Entrega</h3>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-gray-50 border-b text-gray-600">
+                      <th className="p-2 text-left">Acta #</th>
+                      <th className="p-2 text-left">Fecha Entrega</th>
+                      <th className="p-2 text-left">Equipos</th>
+                      <th className="p-2 text-left">Estado</th>
+                      <th className="p-2 text-left">Documento</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {resumenActasEntrega.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="p-6 text-center text-gray-500">
+                          Sin actas registradas.
+                        </td>
+                      </tr>
+                    ) : (
+                      resumenActasEntrega.map((row) => (
+                        <tr key={row.key} className="border-b hover:bg-gray-50">
+                          <td className="p-2 font-mono">{String(row.consecutivo).padStart(4, '0')}</td>
+                          <td className="p-2">{new Date(row.fechaEntregaOriginal).toLocaleDateString()}</td>
+                          <td className="p-2">{row.totalEquipos}</td>
+                          <td className="p-2">
+                            <span
+                              className={`inline-flex px-2 py-0.5 rounded-full text-xs font-semibold border ${
+                                row.estado === 'ACTIVA'
+                                  ? 'bg-blue-50 text-blue-700 border-blue-200'
+                                  : 'bg-gray-100 text-gray-600 border-gray-200'
+                              }`}
+                            >
+                              {row.estado}
+                            </span>
+                          </td>
+                          <td className="p-2">
+                            <button
+                              onClick={() => {
+                                if (row.acta) {
+                                  openActaGrupal(row.acta);
+                                  return;
+                                }
+                                handleVerActa(row.firstAsignacion, 'ENTREGA');
+                              }}
+                              className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 underline"
+                            >
+                              Ver acta entrega
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
             {/* Tabla de asignaciones */}
             <div className="md-card p-6">
               <div className="flex items-center justify-between mb-4">
@@ -965,12 +1092,18 @@ const Professionals: React.FC = () => {
                             </td>
                             <td className="p-2">
                               <div className="flex items-center gap-3">
-                                <button
-                                  onClick={() => handleVerActa(asig, 'ENTREGA')}
-                                  className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 underline"
-                                >
-                                  Ver acta entrega
-                                </button>
+                                {asig.actaProfesionalId ? (
+                                  <span className="text-xs text-gray-500">
+                                    Acta de entrega en tabla superior
+                                  </span>
+                                ) : (
+                                  <button
+                                    onClick={() => handleVerActa(asig, 'ENTREGA')}
+                                    className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 underline"
+                                  >
+                                    Ver acta entrega
+                                  </button>
+                                )}
                                 {asig.estado === EstadoAsignacion.FINALIZADA && (
                                   <button
                                     onClick={() => handleVerActa(asig, 'DEVOLUCION')}

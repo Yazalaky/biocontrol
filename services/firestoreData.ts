@@ -16,8 +16,11 @@ import {
   updateDoc,
   where,
 } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
+import { deleteObject, ref as storageRef } from 'firebase/storage';
 
-import { db } from './firebase';
+import { db, storage } from './firebase';
+import { firebaseFunctions } from './firebaseFunctions';
 import {
   EstadoActaInterna,
   EstadoAsignacion,
@@ -58,6 +61,18 @@ const reportesEquiposCol = collection(db, 'reportes_equipos');
 const mantenimientosCol = collection(db, 'mantenimientos');
 const solicitudesEquiposPacienteCol = collection(db, 'solicitudes_equipos_paciente');
 const tiposEquipoCol = collection(db, 'tipos_equipo');
+
+export type FirmaCapturadaVisitador = {
+  idAsignacion: string;
+  estado: string;
+  pacienteNombre: string;
+  pacienteDocumento: string;
+  equipoCodigoInventario: string;
+  equipoNombre: string;
+  firmaPacienteEntrega: string;
+  firmaPacienteEntregaCapturadaAt?: string;
+  firmaPacienteEntregaCapturadaPorNombre?: string;
+};
 
 export function subscribeCalibraciones(
   onData: (items: CalibracionEquipo[]) => void,
@@ -194,46 +209,10 @@ async function getNextNumber(
   return (typeof last === 'number' && Number.isFinite(last) ? last : 0) + 1;
 }
 
-async function getNextCode(prefix: string): Promise<string> {
-  const q = query(equiposCol);
-  const snap = await getDocs(q);
-  const used = new Set<number>();
-  let max = 0;
-  for (const docSnap of snap.docs) {
-    const code = docSnap.data()?.codigoInventario;
-    if (typeof code !== 'string' || !code.startsWith(prefix)) continue;
-    const n = parseInt(code.slice(prefix.length), 10);
-    if (!Number.isFinite(n) || n <= 0) continue;
-    used.add(n);
-    if (n > max) max = n;
-  }
-  for (let i = 1; i <= max + 1; i += 1) {
-    if (!used.has(i)) {
-      return `${prefix}${String(i).padStart(3, '0')}`;
-    }
-  }
-  return `${prefix}001`;
-}
-
 const normalizeTipoPropiedad = (tipo?: TipoPropiedad) => {
   if (tipo === TipoPropiedad.PROPIO) return TipoPropiedad.MEDICUC;
   if (tipo === TipoPropiedad.EXTERNO) return TipoPropiedad.ALQUILADO;
   return tipo || TipoPropiedad.MEDICUC;
-};
-
-const prefixForTipo = (tipo?: TipoPropiedad) => {
-  const normalized = normalizeTipoPropiedad(tipo);
-  switch (normalized) {
-    case TipoPropiedad.PACIENTE:
-      return 'MBP-';
-    case TipoPropiedad.ALQUILADO:
-      return 'MBA-';
-    case TipoPropiedad.EMPLEADO:
-      return 'MBE-';
-    case TipoPropiedad.MEDICUC:
-    default:
-      return 'MBG-';
-  }
 };
 
 export function subscribePacientes(onData: (pacientes: Paciente[]) => void, onError?: (e: Error) => void) {
@@ -780,48 +759,35 @@ export async function marcarReporteVistoPorVisitador(params: { idReporte: string
 }
 
 export async function createReporteEquipo(reporte: ReporteEquipo) {
-  const ref = doc(reportesEquiposCol, reporte.id);
-  const { id, historial, ...rest } = reporte;
-  const normalizedRest: Omit<ReporteEquipo, 'id' | 'historial'> = {
-    ...rest,
-    descripcion: upper(reporte.descripcion),
-    pacienteNombre: upper(reporte.pacienteNombre),
-    pacienteDocumento: upper(reporte.pacienteDocumento),
-    equipoCodigoInventario: upper(reporte.equipoCodigoInventario),
-    equipoNombre: upper(reporte.equipoNombre),
-    equipoSerie: upper(reporte.equipoSerie),
-    creadoPorNombre: upper(reporte.creadoPorNombre),
-    diagnostico: upperOptional(reporte.diagnostico),
-    planReparacion: upperOptional(reporte.planReparacion),
-    cierreNotas: upperOptional(reporte.cierreNotas),
-    enProcesoPorNombre: upperOptional(reporte.enProcesoPorNombre),
-    cerradoPorNombre: upperOptional(reporte.cerradoPorNombre),
+  const fn = httpsCallable(firebaseFunctions, 'createReporteEquipo');
+  const res = await fn({
+    reporte: {
+      reporteId: reporte.id,
+      idAsignacion: reporte.idAsignacion,
+      idPaciente: reporte.idPaciente,
+      idEquipo: reporte.idEquipo,
+      fechaVisita: reporte.fechaVisita,
+      descripcion: reporte.descripcion,
+      fotos: reporte.fotos,
+      pacienteNombre: reporte.pacienteNombre,
+      pacienteDocumento: reporte.pacienteDocumento,
+      equipoCodigoInventario: reporte.equipoCodigoInventario,
+      equipoNombre: reporte.equipoNombre,
+      equipoSerie: reporte.equipoSerie,
+    },
+  });
+  const data = res.data as {
+    ok?: boolean;
+    reporteId?: string;
+    alreadyExists?: boolean;
   };
-  const normalizedHistorial =
-    historial?.map((entry) => ({
-      ...entry,
-      nota: upper(entry.nota),
-      porNombre: upper(entry.porNombre),
-    })) || undefined;
-  const nowIso = new Date().toISOString();
-  const historialFinal =
-    normalizedHistorial && normalizedHistorial.length
-      ? normalizedHistorial
-      : [
-          {
-            fecha: nowIso,
-            estado: reporte.estado,
-            nota: upper(reporte.descripcion),
-            porUid: reporte.creadoPorUid,
-            porNombre: upper(reporte.creadoPorNombre),
-          },
-        ];
-  const payload = stripUndefinedDeep({
-    ...normalizedRest,
-    historial: historialFinal,
-  }) as any;
-  payload.createdAt = serverTimestamp();
-  await setDoc(ref, payload);
+  if (!data?.ok || typeof data.reporteId !== 'string') {
+    throw new Error('Respuesta inválida al crear reporte.');
+  }
+  return {
+    reporteId: data.reporteId,
+    alreadyExists: data.alreadyExists === true,
+  };
 }
 
 export async function iniciarReporteEnProceso(params: {
@@ -1150,9 +1116,9 @@ export async function savePaciente(paciente: Paciente) {
     return;
   }
 
-  const consecutivo = await getNextNumber('pacientes');
-  const { id: _id, ...rest } = normalized;
-  await addDoc(pacientesCol, stripUndefinedDeep({ ...rest, consecutivo }) as any);
+  const { id: _id, consecutivo: _consecutivo, ...rest } = normalized;
+  const fn = httpsCallable(firebaseFunctions, 'createPaciente');
+  await fn({ paciente: stripUndefinedDeep(rest) });
 }
 
 export async function saveEquipo(equipo: EquipoBiomedico): Promise<string | undefined> {
@@ -1212,21 +1178,11 @@ export async function saveEquipo(equipo: EquipoBiomedico): Promise<string | unde
     return;
   }
 
-  const codigoInventarioNew = await getNextCode(prefixForTipo(normalized.tipoPropiedad));
-  const { id: _id, ...rest } = normalized;
-  // Por defecto, los equipos nuevos no quedan disponibles para entrega (legacy: equipos antiguos no tienen el campo).
-  const disponibleParaEntrega =
-    typeof normalized.disponibleParaEntrega === 'boolean' ? normalized.disponibleParaEntrega : false;
-  const ref = await addDoc(
-    equiposCol,
-    stripUndefinedDeep({
-      ...rest,
-      codigoInventario: codigoInventarioNew,
-      disponibleParaEntrega,
-      numeroSerie,
-    }) as any,
-  );
-  return ref.id;
+  const { id: _id, codigoInventario: _codigoInventario, ...rest } = normalized;
+  const fn = httpsCallable(firebaseFunctions, 'createEquipo');
+  const res = await fn({ equipo: stripUndefinedDeep(rest) });
+  const data = res.data as { id?: unknown };
+  return typeof data.id === 'string' ? data.id : undefined;
 }
 
 export async function updateEquipoFoto(id: string, foto: EquipoFoto) {
@@ -1350,8 +1306,20 @@ export async function isNumeroSerieDisponible(numeroSerie: string, excludeId?: s
   return !duplicatedSerieDoc;
 }
 
-export async function deleteEquipo(id: string) {
-  const ref = doc(equiposCol, id);
+export async function deleteEquipo(equipo: Pick<EquipoBiomedico, 'id' | 'fotoEquipo'>) {
+  const fotoPath = equipo.fotoEquipo?.path;
+  if (fotoPath) {
+    try {
+      await deleteObject(storageRef(storage, fotoPath));
+    } catch (err: any) {
+      const code = typeof err?.code === 'string' ? err.code : '';
+      if (!code.includes('object-not-found')) {
+        throw err;
+      }
+    }
+  }
+
+  const ref = doc(equiposCol, equipo.id);
   await deleteDoc(ref);
 }
 
@@ -1365,55 +1333,13 @@ export async function asignarEquipo(params: {
   auxiliarUid?: string;
   fechaAsignacionIso?: string;
 }): Promise<Asignacion> {
-  const {
-    idPaciente,
-    idEquipo,
-    observacionesEntrega,
-    usuarioAsigna,
-    firmaAuxiliar,
-    auxiliarNombre,
-    auxiliarUid,
-    fechaAsignacionIso,
-  } = params;
-
-  const activeEquipoQ = query(
-    asignacionesCol,
-    where('idEquipo', '==', idEquipo),
-    where('estado', '==', EstadoAsignacion.ACTIVA),
-    limit(1),
-  );
-  const activeEquipoProfesionalQ = query(
-    asignacionesProfesionalesCol,
-    where('idEquipo', '==', idEquipo),
-    where('estado', '==', EstadoAsignacion.ACTIVA),
-    limit(1),
-  );
-  const [activeEquipoSnap, activeEquipoProfesionalSnap] = await Promise.all([
-    getDocs(activeEquipoQ),
-    getDocs(activeEquipoProfesionalQ),
-  ]);
-  if (!activeEquipoSnap.empty || !activeEquipoProfesionalSnap.empty) throw new Error('El equipo no está disponible');
-
-  const consecutivo = await getNextNumber('asignaciones');
-  const nowIso = new Date().toISOString();
-  const fechaAsignacion = fechaAsignacionIso || nowIso;
-
-  const asignacion: Omit<Asignacion, 'id'> = {
-    consecutivo,
-    idPaciente,
-    idEquipo,
-    fechaAsignacion,
-    fechaActualizacionEntrega: nowIso,
-    estado: EstadoAsignacion.ACTIVA,
-    observacionesEntrega: upper(observacionesEntrega),
-    firmaAuxiliar,
-    usuarioAsigna: upper(usuarioAsigna),
-    auxiliarNombre: auxiliarNombre ? upper(auxiliarNombre) : undefined,
-    auxiliarUid,
-  };
-
-  const docRef = await addDoc(asignacionesCol, stripUndefinedDeep(asignacion) as any);
-  return { id: docRef.id, ...asignacion };
+  const fn = httpsCallable(firebaseFunctions, 'createAsignacionPaciente');
+  const res = await fn({ asignacion: stripUndefinedDeep(params) });
+  const data = res.data as { asignacion?: Asignacion };
+  if (!data?.asignacion) {
+    throw new Error('No se pudo crear la asignación.');
+  }
+  return data.asignacion;
 }
 
 export async function devolverEquipo(params: {
@@ -1503,4 +1429,13 @@ export async function guardarFirmaEntregaVisitador(params: {
       firmaPacienteEntregaCapturadaPorNombre: upper(params.capturadoPorNombre),
     }) as any,
   );
+}
+
+export async function listFirmasCapturadasVisitador():
+Promise<FirmaCapturadaVisitador[]> {
+  const fn = httpsCallable(firebaseFunctions, 'listFirmasCapturadasVisitador');
+  const res = await fn();
+  const data = res.data as { firmas?: unknown };
+  if (!Array.isArray(data?.firmas)) return [];
+  return data.firmas as FirmaCapturadaVisitador[];
 }

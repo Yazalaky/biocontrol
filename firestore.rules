@@ -10,6 +10,10 @@ service cloud.firestore {
       return /databases/$(database)/documents/users/$(request.auth.uid);
     }
 
+    function adminPath() {
+      return /databases/$(database)/documents/admins/$(request.auth.uid);
+    }
+
     function userRole() {
       return isSignedIn() && exists(userPath()) ? get(userPath()).data.rol : null;
     }
@@ -34,9 +38,18 @@ service cloud.firestore {
       return hasRole("GERENCIA");
     }
 
+    function hasValidRole() {
+      return isVisitador() || isAuxiliar() || isBiomedico() || isGerencia();
+    }
+
     function isAdmin() {
       return isSignedIn()
-        && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+        && exists(adminPath())
+        && get(adminPath()).data.enabled == true;
+    }
+
+    function hasAccessRole() {
+      return hasValidRole() || isAdmin();
     }
 
     // --- USERS ---
@@ -54,7 +67,9 @@ service cloud.firestore {
     // --- PACIENTES ---
     match /pacientes/{id} {
       // VISITADOR: puede ver pacientes activos (para rutero)
-      allow read: if isSignedIn() && (!isVisitador() || resource.data.estado == "ACTIVO");
+      allow read: if isSignedIn()
+        && hasAccessRole()
+        && (!isVisitador() || resource.data.estado == "ACTIVO");
       // escritura
       allow create, delete: if isSignedIn() && isAuxiliar();
       allow update: if isSignedIn() && (
@@ -85,7 +100,9 @@ service cloud.firestore {
     // --- EQUIPOS ---
     match /equipos/{id} {
       // VISITADOR: solo puede ver equipos con asignación activa
-      allow read: if isSignedIn() && (!isVisitador() || resource.data.asignadoActivo == true);
+      allow read: if isSignedIn()
+        && hasAccessRole()
+        && (!isVisitador() || resource.data.asignadoActivo == true);
       allow create, update, delete: if isSignedIn() && isBiomedico();
 
       // --- CALIBRACIONES (subcolección) ---
@@ -107,7 +124,9 @@ service cloud.firestore {
     // --- ASIGNACIONES ---
     match /asignaciones/{id} {
       // VISITADOR: solo puede ver asignaciones activas
-      allow read: if isSignedIn() && (!isVisitador() || resource.data.estado == "ACTIVA");
+      allow read: if isSignedIn()
+        && hasAccessRole()
+        && (!isVisitador() || resource.data.estado == "ACTIVA");
       // crear solo auxiliar
       allow create: if isSignedIn() && isAuxiliar();
 
@@ -150,13 +169,13 @@ service cloud.firestore {
     // --- ACTAS INTERNAS (biomedico -> auxiliar) ---
     match /actas_internas/{id} {
       // No se usan en VISITADOR
-      allow read: if isSignedIn() && !isVisitador();
+      allow read: if isSignedIn() && (isAuxiliar() || isGerencia() || isBiomedico() || isAdmin());
       allow create, update, delete: if false;
     }
 
     // --- TIPOS DE EQUIPO (plantillas de hoja de vida) ---
     match /tipos_equipo/{id} {
-      allow read: if isSignedIn();
+      allow read: if isSignedIn() && hasAccessRole();
       allow create, update, delete: if isSignedIn() && isBiomedico();
     }
 
@@ -170,13 +189,9 @@ service cloud.firestore {
           && get(/databases/$(database)/documents/asignaciones/$(request.resource.data.idAsignacion)).data.idEquipo == request.resource.data.idEquipo;
       }
 
-      // VISITADOR crea reportes (1 sola escritura)
-      allow create: if isSignedIn()
-        && isVisitador()
-        && request.resource.data.estado == "ABIERTO"
-        && request.resource.data.creadoPorUid == request.auth.uid
-        && request.resource.data.fotos.size() <= 5
-        && asignacionActivaMatch();
+      // Creación solo por Cloud Function (Admin SDK).
+      // Se evita bypass del anti-duplicado global por asignación.
+      allow create: if false;
 
       // Lectura: biomédico/gerencia pueden ver todo; visitador solo lo suyo
       allow read: if isSignedIn() && (

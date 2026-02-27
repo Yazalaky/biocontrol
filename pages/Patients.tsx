@@ -17,6 +17,7 @@ import { useAuth } from '../contexts/AuthContext';
 import StatusBadge from '../components/StatusBadge';
 import ActaFormat from '../components/ActaFormat';
 import SignaturePad from '../components/SignaturePad';
+import { parseCsvRows } from '../services/csv';
 import {
   asignarEquipo,
   devolverEquipo,
@@ -29,6 +30,69 @@ import {
   subscribePacientes,
   validarSalidaPaciente,
 } from '../services/firestoreData';
+
+type AsignacionConEquipo = Asignacion & { nombreEquipo: string };
+type TipoDocumentoPaciente = Paciente['tipoDocumento'];
+
+const parseError = (err: unknown, fallback: string) => {
+  const rec = typeof err === 'object' && err !== null
+    ? (err as Record<string, unknown>)
+    : {};
+  const code = typeof rec.code === 'string' ? rec.code : '';
+  const message = typeof rec.message === 'string' ? rec.message : fallback;
+  return { code, message };
+};
+
+const formatError = (err: unknown, fallback: string) => {
+  const { code, message } = parseError(err, fallback);
+  return `${code ? `${code}: ` : ''}${message}`;
+};
+
+const parseTipoDocumento = (raw?: string): TipoDocumentoPaciente =>
+  (() => {
+    switch ((raw || '').trim().toUpperCase()) {
+      case 'CC':
+        return 'CC';
+      case 'TI':
+        return 'TI';
+      case 'CE':
+        return 'CE';
+      case 'RC':
+        return 'RC';
+      default:
+        return 'CC';
+    }
+  })();
+
+const parseZona = (raw?: string): Paciente['zona'] => {
+  switch ((raw || '').trim().toUpperCase()) {
+    case 'GIRON':
+      return 'GIRON';
+    case 'BGA1':
+      return 'BGA1';
+    case 'BGA2':
+      return 'BGA2';
+    case 'PIEDECUESTA':
+      return 'PIEDECUESTA';
+    case 'FLORIDABLANCA':
+      return 'FLORIDABLANCA';
+    default:
+      return undefined;
+  }
+};
+
+const parseRegimen = (raw?: string): RegimenPaciente | undefined => {
+  switch ((raw || '').trim().toUpperCase()) {
+    case 'CONTRIBUTIVO':
+      return 'CONTRIBUTIVO';
+    case 'SUBSIDIADO':
+      return 'SUBSIDIADO';
+    case 'ESPECIAL':
+      return 'ESPECIAL';
+    default:
+      return undefined;
+  }
+};
 
 const Patients: React.FC = () => {
   const { usuario } = useAuth();
@@ -55,7 +119,7 @@ const Patients: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Assignment State
-  const [asignaciones, setAsignaciones] = useState<Asignacion[]>([]);
+  const [asignaciones, setAsignaciones] = useState<AsignacionConEquipo[]>([]);
   const [equipoSeleccionado, setEquipoSeleccionado] = useState('');
   const [equipoQuery, setEquipoQuery] = useState('');
   const [equipoPickerOpen, setEquipoPickerOpen] = useState(false);
@@ -76,7 +140,7 @@ const Patients: React.FC = () => {
   };
   
   // Return State
-  const [asignacionADevolver, setAsignacionADevolver] = useState<Asignacion | null>(null);
+  const [asignacionADevolver, setAsignacionADevolver] = useState<AsignacionConEquipo | null>(null);
   const [obsDevolucion, setObsDevolucion] = useState('');
   const [estadoDevolucion, setEstadoDevolucion] = useState<EstadoEquipo>(EstadoEquipo.DISPONIBLE);
 
@@ -237,7 +301,7 @@ const Patients: React.FC = () => {
         ...a,
         nombreEquipo: equiposById.get(a.idEquipo)?.nombre || 'Equipo'
       }));
-      setAsignaciones(enriched as any);
+      setAsignaciones(enriched);
     }
   }, [selectedPaciente, allAsignaciones, equiposById]);
 
@@ -353,13 +417,13 @@ const Patients: React.FC = () => {
       // Si existe consecutivo (edición), lo mantiene. Si no, 0 (el backend lo recalcula si es nuevo).
       consecutivo: formData.consecutivo || 0, 
       nombreCompleto: formData.nombreCompleto || '',
-      tipoDocumento: formData.tipoDocumento as any || 'CC',
+      tipoDocumento: parseTipoDocumento(formData.tipoDocumento),
       numeroDocumento: formData.numeroDocumento || '',
       direccion: formData.direccion || '',
       barrio: formData.barrio || '',
-      zona: formData.zona as any,
+      zona: parseZona(formData.zona),
       eps: formData.eps || 'Particular',
-      regimen: (formData.regimen as RegimenPaciente) || undefined,
+      regimen: parseRegimen(formData.regimen),
       fechaInicioPrograma: formData.fechaInicioPrograma || new Date().toISOString(),
       horasPrestadas: formData.horasPrestadas || '', 
       tipoServicio: formData.tipoServicio || '',
@@ -381,9 +445,9 @@ const Patients: React.FC = () => {
       } else {
           setViewMode('list');
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error guardando paciente:', err);
-      toast({ tone: 'error', message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo guardar el paciente.'}` });
+      toast({ tone: 'error', message: formatError(err, 'No se pudo guardar el paciente.') });
     }
   };
 
@@ -461,22 +525,20 @@ const Patients: React.FC = () => {
       const text = event.target?.result as string;
       if (!text) return;
 
-      const lines = text.split('\n');
+      const rows = parseCsvRows(text);
       // Ignorar cabecera (index 0)
-      const dataLines = lines.slice(1).filter(line => line.trim() !== '');
+      const dataLines = rows.slice(1).filter((columns) =>
+        columns.some((col) => col.trim() !== ''),
+      );
 
       let successCount = 0;
       let errorCount = 0;
       let errorMessages: string[] = [];
 
-      for (const [index, line] of dataLines.entries()) {
-        const columns = line.split(','); 
+      for (const [index, columns] of dataLines.entries()) {
         if (columns.length < 6) continue; 
 
-        const regimenRaw = (columns[11]?.trim() || '').toUpperCase();
-        const regimenParsed = (['CONTRIBUTIVO', 'SUBSIDIADO', 'ESPECIAL'] as const).includes(regimenRaw as any)
-          ? (regimenRaw as RegimenPaciente)
-          : undefined;
+        const regimenParsed = parseRegimen(columns[11]);
         const hasRegimenColumn = Boolean(regimenParsed);
         const offset = hasRegimenColumn ? 1 : 0;
 
@@ -485,7 +547,7 @@ const Patients: React.FC = () => {
           id: '',
           consecutivo: 0,
           nombreCompleto: columns[0]?.trim() || 'Sin Nombre',
-          tipoDocumento: (columns[1]?.trim() as any) || 'CC',
+          tipoDocumento: parseTipoDocumento(columns[1]),
           numeroDocumento: columns[2]?.trim() || '',
           direccion: columns[3]?.trim() || '',
           barrio: columns[4]?.trim() || '',
@@ -502,7 +564,7 @@ const Patients: React.FC = () => {
           horasPrestadas: columns[12 + offset]?.trim() || '',
           tipoServicio: columns[13 + offset]?.trim() || '',
           diagnostico: columns[14 + offset]?.trim() || '',
-          zona: (columns[15 + offset]?.trim() as any) || undefined,
+          zona: parseZona(columns[15 + offset]),
           estado: EstadoPaciente.ACTIVO
         };
 
@@ -512,9 +574,10 @@ const Patients: React.FC = () => {
           }
           await savePaciente(importedPaciente);
           successCount++;
-        } catch (err: any) {
+        } catch (err: unknown) {
           errorCount++;
-          errorMessages.push(`Fila ${index + 2} (${importedPaciente.nombreCompleto}): ${err.message}`);
+          const { message } = parseError(err, 'Error desconocido');
+          errorMessages.push(`Fila ${index + 2} (${importedPaciente.nombreCompleto}): ${message}`);
         }
       }
 
@@ -524,7 +587,9 @@ const Patients: React.FC = () => {
       }
       toast({ tone: errorCount > 0 ? 'warning' : 'success', title: 'Importacion CSV', message });
       if (fileInputRef.current) fileInputRef.current.value = ''; 
-      })().catch((err) => toast({ tone: 'error', message: err?.message || 'Error importando CSV' }));
+      })().catch((err: unknown) => {
+        toast({ tone: 'error', message: parseError(err, 'Error importando CSV').message });
+      });
     };
     reader.readAsText(file);
   };
@@ -569,9 +634,9 @@ const Patients: React.FC = () => {
         setActaData({ asig: nuevaAsignacion, equipo, tipo: 'ENTREGA' });
         setPatientSignature(null);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error asignando equipo:', err);
-      toast({ tone: 'error', message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo asignar el equipo.'}` });
+      toast({ tone: 'error', message: formatError(err, 'No se pudo asignar el equipo.') });
     }
   };
 
@@ -586,9 +651,9 @@ const Patients: React.FC = () => {
       toast({ tone: 'success', message: 'Equipo devuelto. Acta de devolucion generada y almacenada en historial.' });
       setAsignacionADevolver(null);
       setObsDevolucion('');
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error registrando devolución:', err);
-      toast({ tone: 'error', message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo registrar la devolucion.'}` });
+      toast({ tone: 'error', message: formatError(err, 'No se pudo registrar la devolucion.') });
     }
   };
 
@@ -597,9 +662,9 @@ const Patients: React.FC = () => {
     let success = false;
     try {
       success = await validarSalidaPaciente(selectedPaciente.id);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error registrando salida:', err);
-      toast({ tone: 'error', message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo registrar la salida.'}` });
+      toast({ tone: 'error', message: formatError(err, 'No se pudo registrar la salida.') });
       return;
     }
     if (!success) {
@@ -633,9 +698,9 @@ const Patients: React.FC = () => {
         dataUrl: patientSignature,
       });
       toast({ tone: 'success', message: 'Firma del paciente/familiar guardada correctamente.' });
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error guardando firma paciente:', err);
-      toast({ tone: 'error', message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo guardar la firma del paciente/familiar.'}` });
+      toast({ tone: 'error', message: formatError(err, 'No se pudo guardar la firma del paciente/familiar.') });
     } finally {
       setSavingPatientSig(false);
     }
@@ -660,9 +725,9 @@ const Patients: React.FC = () => {
         return { ...prev, asig: { ...prev.asig, firmaAuxiliar: adminSignature } };
       });
       toast({ tone: 'success', message: 'Firma del auxiliar guardada correctamente.' });
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error guardando firma auxiliar:', err);
-      toast({ tone: 'error', message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo guardar la firma del auxiliar.'}` });
+      toast({ tone: 'error', message: formatError(err, 'No se pudo guardar la firma del auxiliar.') });
     } finally {
       setSavingAdminSig(false);
     }
@@ -692,11 +757,11 @@ const Patients: React.FC = () => {
             if (!prev) return prev;
             return { ...prev, asig: { ...prev.asig, firmaAuxiliar: res } };
           });
-        } catch (err: any) {
+        } catch (err: unknown) {
           console.error('Error guardando firma auxiliar (upload):', err);
           toast({
             tone: 'error',
-            message: `${err?.code ? `${err.code}: ` : ''}${err?.message || 'No se pudo guardar la firma del auxiliar en Firestore.'}`,
+            message: formatError(err, 'No se pudo guardar la firma del auxiliar en Firestore.'),
           });
         }
       }
@@ -770,7 +835,7 @@ const Patients: React.FC = () => {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700">Tipo Documento</label>
-                  <select className="w-full border p-2.5 rounded-md" value={formData.tipoDocumento || 'CC'} onChange={e => setFormData({...formData, tipoDocumento: e.target.value as any})}>
+                  <select className="w-full border p-2.5 rounded-md" value={formData.tipoDocumento || 'CC'} onChange={e => setFormData({...formData, tipoDocumento: parseTipoDocumento(e.target.value)})}>
                     <option value="CC">Cédula de Ciudadanía</option>
                     <option value="TI">Tarjeta Identidad</option>
                     <option value="CE">Cédula Extranjería</option>
@@ -850,7 +915,7 @@ const Patients: React.FC = () => {
                   <select
                     className="w-full border p-2.5 rounded-md"
                     value={formData.regimen || ''}
-                    onChange={e => setFormData({...formData, regimen: (e.target.value as RegimenPaciente) || undefined})}
+                    onChange={e => setFormData({...formData, regimen: parseRegimen(e.target.value)})}
                   >
                     <option value="">-- Seleccione Régimen --</option>
                     <option value="CONTRIBUTIVO">CONTRIBUTIVO</option>
@@ -1125,7 +1190,7 @@ const Patients: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y">
-                    {asignaciones.map((asig: any) => (
+                    {asignaciones.map((asig) => (
                       <tr key={asig.id}>
                         <td className="p-2 font-mono text-xs font-bold text-gray-600">
                           {asig.consecutivo ? String(asig.consecutivo).padStart(4, '0') : 'N/A'}
@@ -1182,7 +1247,7 @@ const Patients: React.FC = () => {
             <div className="bg-white p-6 rounded-lg max-w-md w-full">
               <h3 className="text-lg font-bold mb-4">Registrar Devolución</h3>
               <p className="text-sm text-gray-600 mb-4">
-                Equipo: {asignacionADevolver && (asignacionADevolver as any).nombreEquipo}
+                Equipo: {asignacionADevolver?.nombreEquipo}
               </p>
               <div className="space-y-4">
                 <div>
