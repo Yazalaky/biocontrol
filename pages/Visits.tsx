@@ -372,6 +372,7 @@ const Visits: React.FC = () => {
   const [solicitudObservaciones, setSolicitudObservaciones] = useState('');
   const [solicitudFiles, setSolicitudFiles] = useState<File[]>([]);
   const [solicitudSaving, setSolicitudSaving] = useState(false);
+  const reporteCameraRef = useRef<HTMLInputElement>(null);
   const solicitudCameraRef = useRef<HTMLInputElement>(null);
 
   const previews = useMemo(() => files.map((f) => ({ file: f, url: URL.createObjectURL(f) })), [files]);
@@ -1504,7 +1505,24 @@ const Visits: React.FC = () => {
                     onChange={(e) => onPickFiles(e.target.files)}
                     disabled={creating}
                   />
+                  <input
+                    ref={reporteCameraRef}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    className="hidden"
+                    onChange={(e) => onPickFiles(e.target.files)}
+                    disabled={creating}
+                  />
                   <div className="text-xs text-gray-500 mt-1">Máximo {MAX_MB}MB por foto.</div>
+                  <button
+                    type="button"
+                    className="md-btn md-btn-outlined mt-2"
+                    onClick={() => reporteCameraRef.current?.click()}
+                    disabled={creating}
+                  >
+                    Tomar foto
+                  </button>
                 </div>
               </div>
 
