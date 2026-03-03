@@ -6,6 +6,37 @@ export enum RolUsuario {
   VISITADOR = 'VISITADOR',
 }
 
+export type EmpresaId = string;
+export type SedeId = string;
+
+export interface OrgContext {
+  empresaId: EmpresaId;
+  sedeId: SedeId;
+}
+
+export interface OrgScope {
+  empresaId: EmpresaId;
+  sedeId: SedeId;
+}
+
+export interface Empresa {
+  id: EmpresaId;
+  nombre: string;
+  activo: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface Sede {
+  id: SedeId;
+  empresaId: EmpresaId;
+  nombre: string;
+  activo: boolean;
+  usaConsultorios?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 // Estados del Paciente
 export enum EstadoPaciente {
   ACTIVO = 'ACTIVO',
@@ -134,11 +165,17 @@ export interface Usuario {
   id: string;
   nombre: string;
   rol: RolUsuario;
+  empresaId?: EmpresaId;
+  sedeId?: SedeId;
+  scope?: OrgScope[];
+  isGlobalRead?: boolean;
 }
 
 export interface Profesional {
   id: string;
   consecutivo: number;
+  empresaId?: EmpresaId;
+  sedeId?: SedeId;
   nombre: string;
   cedula: string;
   direccion: string;
@@ -153,6 +190,8 @@ export interface Profesional {
 export interface Paciente {
   id: string; // ID interno (UUID)
   consecutivo: number; // ID visible (Contador 1, 2, 3...)
+  empresaId?: EmpresaId;
+  sedeId?: SedeId;
   nombreCompleto: string;
   tipoDocumento: 'CC' | 'TI' | 'CE' | 'RC';
   numeroDocumento: string;
@@ -185,6 +224,8 @@ export interface Paciente {
 // Modelo de Equipo Biomédico
 export interface EquipoBiomedico {
   id: string;
+  empresaId?: EmpresaId;
+  sedeId?: SedeId;
   codigoInventario: string;
   numeroSerie: string; 
   nombre: string;
@@ -231,6 +272,8 @@ export interface EquipoBiomedico {
 export interface Asignacion {
   id: string;
   consecutivo: number; 
+  empresaId?: EmpresaId;
+  sedeId?: SedeId;
   idPaciente: string;
   idEquipo: string;
   fechaAsignacion: string;
@@ -260,6 +303,8 @@ export interface Asignacion {
 export interface AsignacionProfesional {
   id: string;
   consecutivo: number;
+  empresaId?: EmpresaId;
+  sedeId?: SedeId;
   idProfesional: string;
   idEquipo: string;
   actaProfesionalId?: string;
@@ -297,6 +342,8 @@ export interface ActaProfesionalItem {
 export interface ActaProfesional {
   id: string;
   consecutivo: number;
+  empresaId?: EmpresaId;
+  sedeId?: SedeId;
   idProfesional: string;
   fechaEntregaOriginal: string;
   fechaActualizacionEntrega: string;
@@ -334,6 +381,8 @@ export interface ActaInternaItem {
 export interface ActaInterna {
   id: string;
   consecutivo: number;
+  empresaId?: EmpresaId;
+  sedeId?: SedeId;
   fecha: string; // ISO
   ciudad: string;
   sede: string;
@@ -388,6 +437,8 @@ export interface CalibracionCertificado {
 
 export interface CalibracionEquipo {
   id: string;
+  empresaId?: EmpresaId;
+  sedeId?: SedeId;
   equipoId: string;
   fecha: string; // ISO
   proximaFecha?: string; // ISO
@@ -410,6 +461,8 @@ export interface ReporteEquipoHistorial {
 
 export interface ReporteEquipo {
   id: string;
+  empresaId?: EmpresaId;
+  sedeId?: SedeId;
   estado: EstadoReporteEquipo;
   idAsignacion: string;
   idPaciente: string;
@@ -463,6 +516,8 @@ export interface MantenimientoHistorial {
 export interface Mantenimiento {
   id: string;
   consecutivo: number;
+  empresaId?: EmpresaId;
+  sedeId?: SedeId;
   tipo: TipoMantenimiento;
   estado: EstadoMantenimiento;
   fecha: string; // ISO
@@ -499,6 +554,8 @@ export interface Mantenimiento {
 
 export interface SolicitudEquipoPaciente {
   id: string;
+  empresaId?: EmpresaId;
+  sedeId?: SedeId;
   estado: EstadoSolicitudEquipoPaciente;
   idPaciente: string;
   pacienteNombre: string;

@@ -61,6 +61,8 @@ Definidas en `App.tsx`:
 Colecciones clave:
 - `users` (nombre + rol)
 - `admins` (flag admin UI)
+- `empresas` (catálogo organizacional)
+- `sedes` (catálogo por empresa; incluye `usaConsultorios`)
 - `pacientes`
 - `profesionales`
 - `equipos`
@@ -74,6 +76,12 @@ Colecciones clave:
 - `mantenimientos`
 - `tipos_equipo` (plantillas de hoja de vida)
 - `counters` (contadores transaccionales de consecutivos/códigos)
+
+Contexto organizacional (fase 1):
+- Se agregan campos `empresaId` y `sedeId` en entidades operativas nuevas.
+- Default actual para legacy/altas sin contexto explícito:
+  - `empresaId = MEDICUC`
+  - `sedeId = BUCARAMANGA`
 
 Reglas relevantes (`firestore.rules`):
 - Visitador: lectura acotada (pacientes activos, asignaciones activas, etc.).
@@ -100,6 +108,8 @@ Exports en `functions/src/index.ts`:
 - `adminCreateUser`
 - `adminSetUserRole`
 - `listAuxiliares`
+- `seedOrgCatalogPhase1` (admin; crea/actualiza catálogo inicial)
+- `backfillOrgContextPhase1` (admin; completa `empresaId/sedeId` legacy)
 - `createPaciente` (transaccional)
 - `createEquipo` (transaccional)
 - `createAsignacionPaciente` (transaccional)

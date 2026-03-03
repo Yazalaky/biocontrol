@@ -124,6 +124,13 @@ const TIPO_PROPIEDAD_VALUES = [
   "ALQUILADO",
   "EMPLEADO",
 ] as const;
+const DEFAULT_EMPRESA_ID = "MEDICUC";
+const DEFAULT_SEDE_ID = "BUCARAMANGA";
+
+type OrgContext = {
+  empresaId: string;
+  sedeId: string;
+};
 
 /**
  * Convierte un valor a string trim + UPPERCASE.
@@ -151,6 +158,41 @@ function normalizeTipoPropiedad(value: unknown) {
     "tipoPropiedad inválido. Valores permitidos: " +
       "MEDICUC, PACIENTE, ALQUILADO, EMPLEADO.",
   );
+}
+
+/**
+ * Normaliza IDs de contexto organizacional.
+ * @param {unknown} value Valor recibido.
+ * @param {string} fallback Fallback por defecto.
+ * @return {string} ID normalizado.
+ */
+function normalizeOrgId(value: unknown, fallback: string): string {
+  if (typeof value !== "string") return fallback;
+  const normalized = value.trim().toUpperCase();
+  return normalized || fallback;
+}
+
+/**
+ * Construye contexto org con defaults.
+ * @param {Record<string, unknown>|undefined} data Doc fuente.
+ * @return {OrgContext} Contexto normalizado.
+ */
+function buildOrgContext(data?: Record<string, unknown>): OrgContext {
+  return {
+    empresaId: normalizeOrgId(data?.empresaId, DEFAULT_EMPRESA_ID),
+    sedeId: normalizeOrgId(data?.sedeId, DEFAULT_SEDE_ID),
+  };
+}
+
+/**
+ * Lee contexto org del usuario.
+ * @param {string} uid UID de usuario.
+ * @return {Promise<OrgContext>} Contexto normalizado.
+ */
+async function getUserOrgContext(uid: string): Promise<OrgContext> {
+  const snap = await db.doc(`users/${uid}`).get();
+  const data = snap.exists ? (snap.data() as Record<string, unknown>) : {};
+  return buildOrgContext(data);
 }
 
 /**
@@ -337,11 +379,19 @@ export const syncUserProfile = authTriggers.user().onCreate(async (user) => {
   const existing = await userRef.get();
   if (existing.exists) return;
 
+  const defaultScope = [
+    {empresaId: DEFAULT_EMPRESA_ID, sedeId: DEFAULT_SEDE_ID},
+  ];
+
   await userRef.set(
     {
       nombre: user.displayName ?? user.email ?? "Usuario",
       email: user.email ?? null,
       rol: null,
+      empresaId: DEFAULT_EMPRESA_ID,
+      sedeId: DEFAULT_SEDE_ID,
+      scope: defaultScope,
+      isGlobalRead: false,
       createdAt: FieldValue.serverTimestamp(),
     },
     {merge: true},
@@ -366,12 +416,21 @@ export const adminCreateUser = onCall(async (request) => {
     password?: unknown;
     nombre?: unknown;
     rol?: unknown;
+    empresaId?: unknown;
+    sedeId?: unknown;
+    isGlobalRead?: unknown;
   };
 
   const email = typeof data.email === "string" ? data.email.trim() : "";
   const password = typeof data.password === "string" ? data.password : "";
   const nombre = typeof data.nombre === "string" ? data.nombre.trim() : "";
   assertAllowedRole(data.rol);
+  const org = buildOrgContext({
+    empresaId: data.empresaId,
+    sedeId: data.sedeId,
+  });
+  const isGlobalRead =
+    data.rol === "GERENCIA" || data.isGlobalRead === true;
 
   if (!email) throw new HttpsError("invalid-argument", "email es requerido.");
   if (password.length < 6) {
@@ -393,6 +452,10 @@ export const adminCreateUser = onCall(async (request) => {
         nombre: nombre || user.displayName || user.email || "Usuario",
         email: user.email ?? null,
         rol: data.rol,
+        empresaId: org.empresaId,
+        sedeId: org.sedeId,
+        scope: [{empresaId: org.empresaId, sedeId: org.sedeId}],
+        isGlobalRead,
         createdAt: FieldValue.serverTimestamp(),
         createdBy: request.auth.uid,
       },
@@ -431,17 +494,33 @@ export const adminSetUserRole = onCall(async (request) => {
     uid?: unknown;
     rol?: unknown;
     nombre?: unknown;
+    empresaId?: unknown;
+    sedeId?: unknown;
+    isGlobalRead?: unknown;
   };
   const uid = typeof data.uid === "string" ? data.uid.trim() : "";
+  if (!uid) throw new HttpsError("invalid-argument", "uid es requerido.");
   assertAllowedRole(data.rol);
   const nombre = typeof data.nombre === "string" ? data.nombre.trim() : "";
-
-  if (!uid) throw new HttpsError("invalid-argument", "uid es requerido.");
+  const currentSnap = await db.doc(`users/${uid}`).get();
+  const currentData = currentSnap.exists ?
+    (currentSnap.data() as Record<string, unknown>) :
+    {};
+  const org = buildOrgContext({
+    empresaId: data.empresaId ?? currentData.empresaId,
+    sedeId: data.sedeId ?? currentData.sedeId,
+  });
+  const isGlobalRead =
+    data.rol === "GERENCIA" || data.isGlobalRead === true;
 
   await db.doc(`users/${uid}`).set(
     {
       rol: data.rol,
       ...(nombre ? {nombre} : {}),
+      empresaId: org.empresaId,
+      sedeId: org.sedeId,
+      scope: [{empresaId: org.empresaId, sedeId: org.sedeId}],
+      isGlobalRead,
       updatedAt: FieldValue.serverTimestamp(),
       updatedBy: request.auth.uid,
     },
@@ -489,6 +568,178 @@ export const listAuxiliares = onCall(async (request) => {
 });
 
 /**
+ * Completa contexto organizacional en una colección operativa.
+ * @param {string} collectionName Nombre de colección.
+ * @return {Promise<number>} Cantidad de documentos actualizados.
+ */
+async function backfillCollectionOrgContext(
+  collectionName: string,
+): Promise<number> {
+  const snap = await db.collection(collectionName).get();
+  let updated = 0;
+  let writes = 0;
+  let batch = db.batch();
+
+  for (const docSnap of snap.docs) {
+    const data = docSnap.data() as Record<string, unknown>;
+    const org = buildOrgContext(data);
+    const currentEmpresa = normalizeOrgId(data.empresaId, org.empresaId);
+    const currentSede = normalizeOrgId(data.sedeId, org.sedeId);
+    const needsUpdate =
+      currentEmpresa !== org.empresaId ||
+      currentSede !== org.sedeId ||
+      typeof data.empresaId !== "string" ||
+      typeof data.sedeId !== "string";
+    if (!needsUpdate) continue;
+
+    batch.set(
+      docSnap.ref,
+      {
+        empresaId: org.empresaId,
+        sedeId: org.sedeId,
+      },
+      {merge: true},
+    );
+    updated += 1;
+    writes += 1;
+
+    if (writes >= 400) {
+      await batch.commit();
+      batch = db.batch();
+      writes = 0;
+    }
+  }
+
+  if (writes > 0) await batch.commit();
+  return updated;
+}
+
+/**
+ * Completa contexto organizacional y scope en documentos de usuarios.
+ * @return {Promise<number>} Cantidad de documentos actualizados.
+ */
+async function backfillUsersOrgContext(): Promise<number> {
+  const snap = await db.collection("users").get();
+  let updated = 0;
+  let writes = 0;
+  let batch = db.batch();
+
+  for (const docSnap of snap.docs) {
+    const data = docSnap.data() as Record<string, unknown>;
+    const org = buildOrgContext(data);
+    const role = typeof data.rol === "string" ? data.rol : "";
+    const isGlobalRead =
+      data.isGlobalRead === true || role === "GERENCIA";
+    const currentScope = Array.isArray(data.scope) ? data.scope : [];
+    const hasAnyScope = currentScope.length > 0;
+    const needsUpdate =
+      typeof data.empresaId !== "string" ||
+      typeof data.sedeId !== "string" ||
+      data.isGlobalRead !== isGlobalRead ||
+      !hasAnyScope;
+    if (!needsUpdate) continue;
+
+    batch.set(
+      docSnap.ref,
+      {
+        empresaId: org.empresaId,
+        sedeId: org.sedeId,
+        scope: [{empresaId: org.empresaId, sedeId: org.sedeId}],
+        isGlobalRead,
+      },
+      {merge: true},
+    );
+    updated += 1;
+    writes += 1;
+
+    if (writes >= 400) {
+      await batch.commit();
+      batch = db.batch();
+      writes = 0;
+    }
+  }
+
+  if (writes > 0) await batch.commit();
+  return updated;
+}
+
+export const seedOrgCatalogPhase1 = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
+  }
+  await assertCallerIsAdmin(request.auth.uid);
+
+  const now = FieldValue.serverTimestamp();
+  const batch = db.batch();
+  batch.set(
+    db.doc("empresas/MEDICUC"),
+    {nombre: "MEDICUC", activo: true, updatedAt: now},
+    {merge: true},
+  );
+  batch.set(
+    db.doc("empresas/ALIADOS"),
+    {nombre: "ALIADOS", activo: true, updatedAt: now},
+    {merge: true},
+  );
+  batch.set(
+    db.doc("sedes/BUCARAMANGA"),
+    {
+      empresaId: "MEDICUC",
+      nombre: "BUCARAMANGA",
+      activo: true,
+      usaConsultorios: false,
+      updatedAt: now,
+    },
+    {merge: true},
+  );
+  batch.set(
+    db.doc("sedes/ALIADOS_BGA"),
+    {
+      empresaId: "ALIADOS",
+      nombre: "ALIADOS BUCARAMANGA",
+      activo: true,
+      usaConsultorios: true,
+      updatedAt: now,
+    },
+    {merge: true},
+  );
+  await batch.commit();
+  return {ok: true};
+});
+
+export const backfillOrgContextPhase1 = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
+  }
+  await assertCallerIsAdmin(request.auth.uid);
+
+  const collections = [
+    "pacientes",
+    "profesionales",
+    "equipos",
+    "asignaciones",
+    "asignaciones_profesionales",
+    "actas_profesionales",
+    "actas_internas",
+    "reportes_equipos",
+    "mantenimientos",
+    "solicitudes_equipos_paciente",
+  ];
+  const stats: Record<string, number> = {};
+  for (const name of collections) {
+    stats[name] = await backfillCollectionOrgContext(name);
+  }
+  stats.users = await backfillUsersOrgContext();
+  return {ok: true, stats};
+});
+
+/**
  * 3.2) Crear paciente (transaccional).
  * Asigna consecutivo único y evita colisiones por concurrencia.
  */
@@ -500,12 +751,17 @@ export const createPaciente = onCall(async (request) => {
     );
   }
   await assertCallerHasRole(request.auth.uid, "AUXILIAR_ADMINISTRATIVA");
+  const callerOrg = await getUserOrgContext(request.auth.uid);
 
   const raw = (request.data as {paciente?: unknown})?.paciente;
   if (!raw || typeof raw !== "object") {
     throw new HttpsError("invalid-argument", "paciente es requerido.");
   }
   const paciente = raw as Record<string, unknown>;
+  const orgContext = buildOrgContext({
+    empresaId: paciente.empresaId ?? callerOrg.empresaId,
+    sedeId: paciente.sedeId ?? callerOrg.sedeId,
+  });
 
   const nombreCompleto = upperTrim(paciente.nombreCompleto);
   const tipoDocumento = upperTrim(paciente.tipoDocumento);
@@ -589,6 +845,7 @@ export const createPaciente = onCall(async (request) => {
   }
 
   const pacienteData: Record<string, unknown> = {
+    ...orgContext,
     nombreCompleto,
     tipoDocumento,
     numeroDocumento,
@@ -655,12 +912,17 @@ export const createEquipo = onCall(async (request) => {
     );
   }
   await assertCallerHasRole(request.auth.uid, "INGENIERO_BIOMEDICO");
+  const callerOrg = await getUserOrgContext(request.auth.uid);
 
   const raw = (request.data as {equipo?: unknown})?.equipo;
   if (!raw || typeof raw !== "object") {
     throw new HttpsError("invalid-argument", "equipo es requerido.");
   }
   const equipo = raw as Record<string, unknown>;
+  const orgContext = buildOrgContext({
+    empresaId: equipo.empresaId ?? callerOrg.empresaId,
+    sedeId: equipo.sedeId ?? callerOrg.sedeId,
+  });
 
   const numeroSerie = upperTrim(equipo.numeroSerie);
   const nombre = upperTrim(equipo.nombre);
@@ -706,6 +968,7 @@ export const createEquipo = onCall(async (request) => {
     const codigoInventario = await nextCodigoInventarioInTx(tx, tipoPropiedad);
     const equipoRef = db.collection("equipos").doc();
     const payload: Record<string, unknown> = {
+      ...orgContext,
       codigoInventario,
       numeroSerie,
       nombre,
@@ -788,12 +1051,17 @@ export const createAsignacionPaciente = onCall(async (request) => {
     );
   }
   await assertCallerHasRole(request.auth.uid, "AUXILIAR_ADMINISTRATIVA");
+  const callerOrg = await getUserOrgContext(request.auth.uid);
 
   const raw = (request.data as {asignacion?: unknown})?.asignacion;
   if (!raw || typeof raw !== "object") {
     throw new HttpsError("invalid-argument", "asignacion es requerida.");
   }
   const data = raw as Record<string, unknown>;
+  const requestedOrg = buildOrgContext({
+    empresaId: data.empresaId ?? callerOrg.empresaId,
+    sedeId: data.sedeId ?? callerOrg.sedeId,
+  });
 
   const idPaciente = assertNonEmptyString(data.idPaciente, "idPaciente");
   const idEquipo = assertNonEmptyString(data.idEquipo, "idEquipo");
@@ -819,6 +1087,24 @@ export const createAsignacionPaciente = onCall(async (request) => {
     if (!equipoSnap.exists) {
       throw new HttpsError("not-found", "El equipo no existe.");
     }
+    const pacienteData = pacienteSnap.data() as Record<string, unknown>;
+    const equipoData = equipoSnap.data() as Record<string, unknown>;
+    const pacienteOrg = buildOrgContext(pacienteData);
+    const equipoOrg = buildOrgContext(equipoData);
+    if (
+      pacienteOrg.empresaId !== equipoOrg.empresaId ||
+      pacienteOrg.sedeId !== equipoOrg.sedeId
+    ) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Paciente y equipo pertenecen a contextos distintos.",
+      );
+    }
+    const asignacionOrg =
+      pacienteOrg.empresaId === equipoOrg.empresaId &&
+      pacienteOrg.sedeId === equipoOrg.sedeId ?
+        pacienteOrg :
+        requestedOrg;
 
     const [activePacienteSnap, activeProfesionalSnap] = await Promise.all([
       tx.get(
@@ -849,6 +1135,7 @@ export const createAsignacionPaciente = onCall(async (request) => {
     const nowIso = new Date().toISOString();
     const asignacionRef = db.collection("asignaciones").doc();
     const asignacion = {
+      ...asignacionOrg,
       consecutivo,
       idPaciente,
       idEquipo,
@@ -875,6 +1162,7 @@ export const createAsignacionPaciente = onCall(async (request) => {
 
     return {
       id: asignacionRef.id,
+      ...asignacionOrg,
       consecutivo,
       idPaciente,
       idEquipo,
@@ -1425,6 +1713,7 @@ export const createInternalActa = onCall(async (request) => {
 
   const callerUid = request.auth.uid;
   await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
+  const orgContext = await getUserOrgContext(callerUid);
 
   const data = request.data as {
     recibeEmail?: unknown;
@@ -1578,6 +1867,7 @@ export const createInternalActa = onCall(async (request) => {
 
   const estado: InternalActaEstado = "ENVIADA";
   batch.set(actaRef, {
+    ...orgContext,
     consecutivo,
     fecha: fechaIso,
     ciudad,
@@ -1814,6 +2104,7 @@ export const approveSolicitudEquipoPaciente = onCall(async (request) => {
   }
 
   const solicitud = solicitudSnap.data() as Record<string, unknown>;
+  const solicitudOrg = buildOrgContext(solicitud);
   const estado = typeof solicitud.estado === "string" ? solicitud.estado : "";
   if (estado !== "PENDIENTE") {
     throw new HttpsError(
@@ -1986,6 +2277,7 @@ export const approveSolicitudEquipoPaciente = onCall(async (request) => {
       const nowIso = new Date().toISOString();
       const asignacionRef = db.collection("asignaciones").doc();
       tx.set(asignacionRef, {
+        ...solicitudOrg,
         consecutivo,
         idPaciente: idPacienteTx,
         idEquipo: equipoId,
@@ -2000,6 +2292,7 @@ export const approveSolicitudEquipoPaciente = onCall(async (request) => {
       });
 
       tx.update(solicitudRef, {
+        ...solicitudOrg,
         estado: "APROBADA",
         aprobadoAt: nowIso,
         aprobadoPorUid: callerUid,
@@ -2072,6 +2365,7 @@ export const approveSolicitudEquipoPaciente = onCall(async (request) => {
 
     const batch = db.batch();
     batch.set(actaRef, {
+      ...solicitudOrg,
       consecutivo,
       fecha: new Date().toISOString(),
       ciudad: "",
@@ -2098,6 +2392,7 @@ export const approveSolicitudEquipoPaciente = onCall(async (request) => {
       updatedAt: FieldValue.serverTimestamp(),
     });
     batch.update(solicitudRef, {
+      ...solicitudOrg,
       estado: "APROBADA",
       aprobadoAt: new Date().toISOString(),
       aprobadoPorUid: callerUid,
@@ -2272,6 +2567,7 @@ export const createReporteEquipo = onCall(async (request) => {
         "La asignación no coincide con paciente/equipo.",
       );
     }
+    const asignacionOrg = buildOrgContext(asignacionData);
 
     let existingOwnId = "";
     for (const docSnap of existingSnap.docs) {
@@ -2326,6 +2622,7 @@ export const createReporteEquipo = onCall(async (request) => {
       },
     ];
     tx.set(db.doc(`reportes_equipos/${reporteId}`), {
+      ...asignacionOrg,
       estado: "ABIERTO",
       idAsignacion,
       idPaciente,

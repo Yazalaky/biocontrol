@@ -21,7 +21,11 @@ import { deleteObject, ref as storageRef } from 'firebase/storage';
 
 import { db, storage } from './firebase';
 import { firebaseFunctions } from './firebaseFunctions';
+import { withOrgContext } from './orgContext';
 import {
+  type Empresa,
+  type OrgContext,
+  type Sede,
   EstadoActaInterna,
   EstadoAsignacion,
   EstadoEquipo,
@@ -61,6 +65,8 @@ const reportesEquiposCol = collection(db, 'reportes_equipos');
 const mantenimientosCol = collection(db, 'mantenimientos');
 const solicitudesEquiposPacienteCol = collection(db, 'solicitudes_equipos_paciente');
 const tiposEquipoCol = collection(db, 'tipos_equipo');
+const empresasCol = collection(db, 'empresas');
+const sedesCol = collection(db, 'sedes');
 
 export type FirmaCapturadaVisitador = {
   idAsignacion: string;
@@ -89,6 +95,30 @@ export function subscribeCalibraciones(
   );
 }
 
+export function subscribeEmpresas(onData: (empresas: Empresa[]) => void, onError?: (e: Error) => void) {
+  const q = query(empresasCol, orderBy('nombre', 'asc'));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const empresas = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Empresa, 'id'>) }));
+      onData(empresas);
+    },
+    (err) => onError?.(err as unknown as Error),
+  );
+}
+
+export function subscribeSedes(onData: (sedes: Sede[]) => void, onError?: (e: Error) => void) {
+  const q = query(sedesCol, orderBy('nombre', 'asc'));
+  return onSnapshot(
+    q,
+    (snap) => {
+      const sedes = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Sede, 'id'>) }));
+      onData(sedes);
+    },
+    (err) => onError?.(err as unknown as Error),
+  );
+}
+
 function assertRoleString(value: string, allowed: readonly string[], fieldName: string) {
   if (!allowed.includes(value)) {
     throw new Error(`${fieldName} inválido: "${value}". Valores permitidos: ${allowed.join(', ')}`);
@@ -109,6 +139,9 @@ function stripUndefinedDeep<T>(value: T): T {
   }
   return value;
 }
+
+const withContext = <T extends object>(payload: T, context?: Partial<OrgContext>) =>
+  stripUndefinedDeep(withOrgContext(payload, context));
 
 const upper = (value: string) => value.toUpperCase();
 const upperOptional = (value?: string | null) => (typeof value === 'string' ? value.toUpperCase() : value);
@@ -372,7 +405,7 @@ export async function saveProfesional(profesional: Profesional) {
   if (normalized.id) {
     const ref = doc(profesionalesCol, normalized.id);
     const { id, ...rest } = normalized;
-    await updateDoc(ref, stripUndefinedDeep(rest) as any);
+    await updateDoc(ref, withContext(rest) as any);
     return;
   }
 
@@ -380,7 +413,7 @@ export async function saveProfesional(profesional: Profesional) {
   const { id: _id, ...rest } = normalized;
   await addDoc(
     profesionalesCol,
-    stripUndefinedDeep({ ...rest, consecutivo, createdAt: new Date().toISOString() }) as any,
+    withContext({ ...rest, consecutivo, createdAt: new Date().toISOString() }) as any,
   );
 }
 
@@ -394,6 +427,7 @@ export async function createActaProfesional(params: {
   uidAsigna?: string;
   firmaAuxiliar?: string;
   items: ActaProfesionalItem[];
+  context?: Partial<OrgContext>;
 }): Promise<ActaProfesional> {
   const {
     idProfesional,
@@ -405,6 +439,7 @@ export async function createActaProfesional(params: {
     uidAsigna,
     firmaAuxiliar,
     items,
+    context,
   } = params;
 
   const consecutivo = await getNextNumber('actas_profesionales');
@@ -425,8 +460,9 @@ export async function createActaProfesional(params: {
     updatedAt: nowIso,
   };
 
-  const docRef = await addDoc(actasProfesionalesCol, stripUndefinedDeep(acta) as any);
-  return { id: docRef.id, ...acta };
+  const payload = withContext(acta, context);
+  const docRef = await addDoc(actasProfesionalesCol, payload as any);
+  return { id: docRef.id, ...payload };
 }
 
 export async function asignarEquipoProfesional(params: {
@@ -441,6 +477,7 @@ export async function asignarEquipoProfesional(params: {
   firmaAuxiliar?: string;
   actaProfesionalId?: string;
   actaProfesionalConsecutivo?: number;
+  context?: Partial<OrgContext>;
 }): Promise<AsignacionProfesional> {
   const {
     idProfesional,
@@ -454,6 +491,7 @@ export async function asignarEquipoProfesional(params: {
     firmaAuxiliar,
     actaProfesionalId,
     actaProfesionalConsecutivo,
+    context,
   } = params;
 
   // Bloqueo: no permitir si está activo en pacientes o profesionales.
@@ -498,8 +536,9 @@ export async function asignarEquipoProfesional(params: {
     uidAsigna,
   };
 
-  const docRef = await addDoc(asignacionesProfesionalesCol, stripUndefinedDeep(asignacion) as any);
-  return { id: docRef.id, ...asignacion };
+  const payload = withContext(asignacion, context);
+  const docRef = await addDoc(asignacionesProfesionalesCol, payload as any);
+  return { id: docRef.id, ...payload };
 }
 
 export async function guardarFirmaProfesionalActa(params: { idActa: string; dataUrl: string | null }) {
@@ -760,20 +799,23 @@ export async function marcarReporteVistoPorVisitador(params: { idReporte: string
 
 export async function createReporteEquipo(reporte: ReporteEquipo) {
   const fn = httpsCallable(firebaseFunctions, 'createReporteEquipo');
+  const payload = withContext(reporte);
   const res = await fn({
     reporte: {
-      reporteId: reporte.id,
-      idAsignacion: reporte.idAsignacion,
-      idPaciente: reporte.idPaciente,
-      idEquipo: reporte.idEquipo,
-      fechaVisita: reporte.fechaVisita,
-      descripcion: reporte.descripcion,
-      fotos: reporte.fotos,
-      pacienteNombre: reporte.pacienteNombre,
-      pacienteDocumento: reporte.pacienteDocumento,
-      equipoCodigoInventario: reporte.equipoCodigoInventario,
-      equipoNombre: reporte.equipoNombre,
-      equipoSerie: reporte.equipoSerie,
+      reporteId: payload.id,
+      idAsignacion: payload.idAsignacion,
+      idPaciente: payload.idPaciente,
+      idEquipo: payload.idEquipo,
+      fechaVisita: payload.fechaVisita,
+      descripcion: payload.descripcion,
+      fotos: payload.fotos,
+      pacienteNombre: payload.pacienteNombre,
+      pacienteDocumento: payload.pacienteDocumento,
+      equipoCodigoInventario: payload.equipoCodigoInventario,
+      equipoNombre: payload.equipoNombre,
+      equipoSerie: payload.equipoSerie,
+      empresaId: payload.empresaId,
+      sedeId: payload.sedeId,
     },
   });
   const data = res.data as {
@@ -933,10 +975,11 @@ const normalizeMantenimientoUpdate = (value: Partial<Mantenimiento>): Partial<Ma
 export async function createMantenimiento(mantenimiento: Omit<Mantenimiento, 'id' | 'consecutivo'>) {
   const consecutivo = await getNextNumber('mantenimientos');
   const ref = doc(mantenimientosCol);
-  const payload = normalizeMantenimientoPayload({
+  const normalized = normalizeMantenimientoPayload({
     ...mantenimiento,
     consecutivo,
   });
+  const payload = withContext(normalized);
   await setDoc(ref, payload as any);
   return { id: ref.id, ...payload };
 }
@@ -975,7 +1018,7 @@ export async function createSolicitudEquipoPaciente(solicitud: SolicitudEquipoPa
   };
   await setDoc(
     ref,
-    stripUndefinedDeep({
+    withContext({
       ...normalizedRest,
       createdAt: createdAt || new Date().toISOString(),
     }) as any,
@@ -1112,13 +1155,13 @@ export async function savePaciente(paciente: Paciente) {
   if (normalized.id) {
     const ref = doc(pacientesCol, normalized.id);
     const { id, ...rest } = normalized;
-    await updateDoc(ref, stripUndefinedDeep(rest) as any);
+    await updateDoc(ref, withContext(rest) as any);
     return;
   }
 
   const { id: _id, consecutivo: _consecutivo, ...rest } = normalized;
   const fn = httpsCallable(firebaseFunctions, 'createPaciente');
-  await fn({ paciente: stripUndefinedDeep(rest) });
+  await fn({ paciente: withContext(rest) });
 }
 
 export async function saveEquipo(equipo: EquipoBiomedico): Promise<string | undefined> {
@@ -1167,7 +1210,7 @@ export async function saveEquipo(equipo: EquipoBiomedico): Promise<string | unde
 
     const ref = doc(equiposCol, normalized.id);
     const { id, ...rest } = normalized;
-    const payload = stripUndefinedDeep({ ...rest, numeroSerie, codigoInventario }) as any;
+    const payload = withContext({ ...rest, numeroSerie, codigoInventario }) as any;
     if (normalizeTipoPropiedad(normalized.tipoPropiedad) !== TipoPropiedad.ALQUILADO) {
       payload.empresaAlquiler = deleteField();
     }
@@ -1180,7 +1223,7 @@ export async function saveEquipo(equipo: EquipoBiomedico): Promise<string | unde
 
   const { id: _id, codigoInventario: _codigoInventario, ...rest } = normalized;
   const fn = httpsCallable(firebaseFunctions, 'createEquipo');
-  const res = await fn({ equipo: stripUndefinedDeep(rest) });
+  const res = await fn({ equipo: withContext(rest) });
   const data = res.data as { id?: unknown };
   return typeof data.id === 'string' ? data.id : undefined;
 }
@@ -1226,6 +1269,7 @@ export async function addCalibracionEquipo(params: {
   certificado: CalibracionCertificado;
   creadoPorUid: string;
   creadoPorNombre: string;
+  context?: Partial<OrgContext>;
 }) {
   const {
     equipoId,
@@ -1237,9 +1281,10 @@ export async function addCalibracionEquipo(params: {
     certificado,
     creadoPorUid,
     creadoPorNombre,
+    context,
   } = params;
   const col = collection(db, 'equipos', equipoId, 'calibraciones');
-  const payload: Omit<CalibracionEquipo, 'id'> = stripUndefinedDeep({
+  const payload: Omit<CalibracionEquipo, 'id'> = withContext({
     equipoId,
     fecha,
     proximaFecha,
@@ -1250,7 +1295,7 @@ export async function addCalibracionEquipo(params: {
     creadoPorUid,
     creadoPorNombre,
     createdAt: new Date().toISOString(),
-  }) as any;
+  }, context) as any;
 
   await addDoc(col, payload as any);
 
@@ -1332,9 +1377,11 @@ export async function asignarEquipo(params: {
   auxiliarNombre?: string;
   auxiliarUid?: string;
   fechaAsignacionIso?: string;
+  context?: Partial<OrgContext>;
 }): Promise<Asignacion> {
+  const { context, ...rest } = params;
   const fn = httpsCallable(firebaseFunctions, 'createAsignacionPaciente');
-  const res = await fn({ asignacion: stripUndefinedDeep(params) });
+  const res = await fn({ asignacion: withContext(rest, context) });
   const data = res.data as { asignacion?: Asignacion };
   if (!data?.asignacion) {
     throw new Error('No se pudo crear la asignación.');

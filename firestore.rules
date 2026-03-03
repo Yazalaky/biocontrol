@@ -64,6 +64,16 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
+    // --- CATALOGO ORGANIZACIONAL ---
+    match /empresas/{id} {
+      allow read: if isSignedIn() && hasAccessRole();
+      allow create, update, delete: if false;
+    }
+    match /sedes/{id} {
+      allow read: if isSignedIn() && hasAccessRole();
+      allow create, update, delete: if false;
+    }
+
     // --- PACIENTES ---
     match /pacientes/{id} {
       // VISITADOR: puede ver pacientes activos (para rutero)
