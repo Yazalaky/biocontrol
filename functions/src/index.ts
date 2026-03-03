@@ -54,8 +54,7 @@ function assertAllowedRole(value: unknown): asserts value is AllowedRole {
  * @param {string} uid UID del usuario autenticado que invoca la función.
  */
 async function assertCallerIsAdmin(uid: string) {
-  const snap = await db.doc(`admins/${uid}`).get();
-  const enabled = snap.exists && snap.data()?.enabled === true;
+  const enabled = await isCallerAdminEnabled(uid);
   if (!enabled) {
     throw new HttpsError(
       "permission-denied",
@@ -103,8 +102,7 @@ async function assertCallerHasRole(uid: string, role: AllowedRole) {
  * @param {AllowedRole} role Rol requerido si no es admin.
  */
 async function assertCallerIsAdminOrHasRole(uid: string, role: AllowedRole) {
-  const adminSnap = await db.doc(`admins/${uid}`).get();
-  const enabled = adminSnap.exists && adminSnap.data()?.enabled === true;
+  const enabled = await isCallerAdminEnabled(uid);
   if (enabled) return;
   await assertCallerHasRole(uid, role);
 }
@@ -130,6 +128,11 @@ const DEFAULT_SEDE_ID = "BUCARAMANGA";
 type OrgContext = {
   empresaId: string;
   sedeId: string;
+};
+
+type UserAccessContext = OrgContext & {
+  isGlobalRead: boolean;
+  scope: OrgContext[];
 };
 
 /**
@@ -185,6 +188,88 @@ function buildOrgContext(data?: Record<string, unknown>): OrgContext {
 }
 
 /**
+ * Evalúa si dos contextos organizacionales son iguales.
+ * @param {OrgContext} a Contexto A.
+ * @param {OrgContext} b Contexto B.
+ * @return {boolean} true si empresa/sede coinciden.
+ */
+function isSameOrg(a: OrgContext, b: OrgContext): boolean {
+  return a.empresaId === b.empresaId && a.sedeId === b.sedeId;
+}
+
+/**
+ * Retorna clave única de contexto.
+ * @param {OrgContext} org Contexto.
+ * @return {string} Clave serializada.
+ */
+function orgContextKey(org: OrgContext): string {
+  return `${org.empresaId}::${org.sedeId}`;
+}
+
+/**
+ * Construye lista de scope normalizada.
+ * @param {unknown} value Scope recibido.
+ * @param {OrgContext} fallback Contexto por defecto.
+ * @return {OrgContext[]} Scope normalizado y sin duplicados.
+ */
+function normalizeScope(value: unknown, fallback: OrgContext): OrgContext[] {
+  const raw = Array.isArray(value) ? value : [];
+  const parsed = raw
+    .filter((item) => item && typeof item === "object")
+    .map((item) => buildOrgContext(item as Record<string, unknown>));
+  const base = parsed.length > 0 ? parsed : [fallback];
+  const out: OrgContext[] = [];
+  const keys = new Set<string>();
+  for (const item of [...base, fallback]) {
+    const key = orgContextKey(item);
+    if (keys.has(key)) continue;
+    keys.add(key);
+    out.push(item);
+  }
+  return out;
+}
+
+/**
+ * Evalúa si un usuario puede operar en un contexto objetivo.
+ * @param {UserAccessContext} access Acceso del caller.
+ * @param {OrgContext} targetOrg Contexto objetivo.
+ * @return {boolean} true si está autorizado.
+ */
+function hasOrgAccess(
+  access: UserAccessContext,
+  targetOrg: OrgContext,
+): boolean {
+  if (access.isGlobalRead) return true;
+  if (isSameOrg(access, targetOrg)) return true;
+  return access.scope.some((item) => isSameOrg(item, targetOrg));
+}
+
+/**
+ * Valida que el contexto objetivo esté dentro del acceso del caller.
+ * @param {UserAccessContext} access Acceso del caller.
+ * @param {OrgContext} targetOrg Contexto objetivo.
+ * @param {string} message Mensaje de error.
+ */
+function assertHasOrgAccessOrThrow(
+  access: UserAccessContext,
+  targetOrg: OrgContext,
+  message: string,
+) {
+  if (hasOrgAccess(access, targetOrg)) return;
+  throw new HttpsError("permission-denied", message);
+}
+
+/**
+ * Indica si un usuario tiene flag admin habilitado.
+ * @param {string} uid UID de usuario.
+ * @return {Promise<boolean>} true si está habilitado.
+ */
+async function isCallerAdminEnabled(uid: string): Promise<boolean> {
+  const snap = await db.doc(`admins/${uid}`).get();
+  return snap.exists && snap.data()?.enabled === true;
+}
+
+/**
  * Lee contexto org del usuario.
  * @param {string} uid UID de usuario.
  * @return {Promise<OrgContext>} Contexto normalizado.
@@ -193,6 +278,23 @@ async function getUserOrgContext(uid: string): Promise<OrgContext> {
   const snap = await db.doc(`users/${uid}`).get();
   const data = snap.exists ? (snap.data() as Record<string, unknown>) : {};
   return buildOrgContext(data);
+}
+
+/**
+ * Lee contexto de acceso del usuario.
+ * @param {string} uid UID de usuario.
+ * @return {Promise<UserAccessContext>} Org + flag global.
+ */
+async function getUserAccessContext(uid: string): Promise<UserAccessContext> {
+  const snap = await db.doc(`users/${uid}`).get();
+  const data = snap.exists ? (snap.data() as Record<string, unknown>) : {};
+  const primary = buildOrgContext(data);
+  const role = typeof data.rol === "string" ? data.rol : "";
+  return {
+    ...primary,
+    isGlobalRead: data.isGlobalRead === true || role === "GERENCIA",
+    scope: normalizeScope(data.scope, primary),
+  };
 }
 
 /**
@@ -418,6 +520,7 @@ export const adminCreateUser = onCall(async (request) => {
     rol?: unknown;
     empresaId?: unknown;
     sedeId?: unknown;
+    scope?: unknown;
     isGlobalRead?: unknown;
   };
 
@@ -429,6 +532,8 @@ export const adminCreateUser = onCall(async (request) => {
     empresaId: data.empresaId,
     sedeId: data.sedeId,
   });
+  const scope = normalizeScope(data.scope, org);
+  const primaryOrg = scope[0];
   const isGlobalRead =
     data.rol === "GERENCIA" || data.isGlobalRead === true;
 
@@ -452,9 +557,9 @@ export const adminCreateUser = onCall(async (request) => {
         nombre: nombre || user.displayName || user.email || "Usuario",
         email: user.email ?? null,
         rol: data.rol,
-        empresaId: org.empresaId,
-        sedeId: org.sedeId,
-        scope: [{empresaId: org.empresaId, sedeId: org.sedeId}],
+        empresaId: primaryOrg.empresaId,
+        sedeId: primaryOrg.sedeId,
+        scope,
         isGlobalRead,
         createdAt: FieldValue.serverTimestamp(),
         createdBy: request.auth.uid,
@@ -496,6 +601,7 @@ export const adminSetUserRole = onCall(async (request) => {
     nombre?: unknown;
     empresaId?: unknown;
     sedeId?: unknown;
+    scope?: unknown;
     isGlobalRead?: unknown;
   };
   const uid = typeof data.uid === "string" ? data.uid.trim() : "";
@@ -510,6 +616,8 @@ export const adminSetUserRole = onCall(async (request) => {
     empresaId: data.empresaId ?? currentData.empresaId,
     sedeId: data.sedeId ?? currentData.sedeId,
   });
+  const scope = normalizeScope(data.scope ?? currentData.scope, org);
+  const primaryOrg = scope[0];
   const isGlobalRead =
     data.rol === "GERENCIA" || data.isGlobalRead === true;
 
@@ -517,9 +625,9 @@ export const adminSetUserRole = onCall(async (request) => {
     {
       rol: data.rol,
       ...(nombre ? {nombre} : {}),
-      empresaId: org.empresaId,
-      sedeId: org.sedeId,
-      scope: [{empresaId: org.empresaId, sedeId: org.sedeId}],
+      empresaId: primaryOrg.empresaId,
+      sedeId: primaryOrg.sedeId,
+      scope,
       isGlobalRead,
       updatedAt: FieldValue.serverTimestamp(),
       updatedBy: request.auth.uid,
@@ -548,12 +656,37 @@ export const listAuxiliares = onCall(async (request) => {
     request.auth.uid,
     "INGENIERO_BIOMEDICO",
   );
+  const callerUid = request.auth.uid;
+  const isAdminCaller = await isCallerAdminEnabled(callerUid);
+  const callerAccess = await getUserAccessContext(callerUid);
+  const payload = request.data as {empresaId?: unknown; sedeId?: unknown};
+  const requestedOrg = buildOrgContext({
+    empresaId: payload?.empresaId ?? callerAccess.empresaId,
+    sedeId: payload?.sedeId ?? callerAccess.sedeId,
+  });
 
-  const snap = await db
+  let usersQuery: Query = db
     .collection("users")
-    .where("rol", "==", "AUXILIAR_ADMINISTRATIVA")
-    .limit(200)
-    .get();
+    .where("rol", "==", "AUXILIAR_ADMINISTRATIVA");
+  if (!isAdminCaller && !callerAccess.isGlobalRead) {
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      requestedOrg,
+      "No puedes listar auxiliares fuera de tu alcance.",
+    );
+    usersQuery = usersQuery
+      .where("empresaId", "==", requestedOrg.empresaId)
+      .where("sedeId", "==", requestedOrg.sedeId);
+  } else if (
+    typeof payload?.empresaId === "string" &&
+    typeof payload?.sedeId === "string"
+  ) {
+    usersQuery = usersQuery
+      .where("empresaId", "==", requestedOrg.empresaId)
+      .where("sedeId", "==", requestedOrg.sedeId);
+  }
+
+  const snap = await usersQuery.limit(200).get();
 
   const users = snap.docs
     .map((d) => {
@@ -696,10 +829,10 @@ export const seedOrgCatalogPhase1 = onCall(async (request) => {
     {merge: true},
   );
   batch.set(
-    db.doc("sedes/ALIADOS_BGA"),
+    db.doc("sedes/ALIADOS_CUC"),
     {
       empresaId: "ALIADOS",
-      nombre: "ALIADOS BUCARAMANGA",
+      nombre: "ALIADOS CUCUTA",
       activo: true,
       usaConsultorios: true,
       updatedAt: now,
@@ -751,7 +884,7 @@ export const createPaciente = onCall(async (request) => {
     );
   }
   await assertCallerHasRole(request.auth.uid, "AUXILIAR_ADMINISTRATIVA");
-  const callerOrg = await getUserOrgContext(request.auth.uid);
+  const callerAccess = await getUserAccessContext(request.auth.uid);
 
   const raw = (request.data as {paciente?: unknown})?.paciente;
   if (!raw || typeof raw !== "object") {
@@ -759,9 +892,14 @@ export const createPaciente = onCall(async (request) => {
   }
   const paciente = raw as Record<string, unknown>;
   const orgContext = buildOrgContext({
-    empresaId: paciente.empresaId ?? callerOrg.empresaId,
-    sedeId: paciente.sedeId ?? callerOrg.sedeId,
+    empresaId: paciente.empresaId ?? callerAccess.empresaId,
+    sedeId: paciente.sedeId ?? callerAccess.sedeId,
   });
+  assertHasOrgAccessOrThrow(
+    callerAccess,
+    orgContext,
+    "No puedes crear pacientes fuera de tu sede.",
+  );
 
   const nombreCompleto = upperTrim(paciente.nombreCompleto);
   const tipoDocumento = upperTrim(paciente.tipoDocumento);
@@ -873,6 +1011,8 @@ export const createPaciente = onCall(async (request) => {
   const created = await db.runTransaction(async (tx) => {
     const dupSnap = await tx.get(
       db.collection("pacientes")
+        .where("empresaId", "==", orgContext.empresaId)
+        .where("sedeId", "==", orgContext.sedeId)
         .where("numeroDocumento", "==", numeroDocumento)
         .limit(1),
     );
@@ -912,7 +1052,7 @@ export const createEquipo = onCall(async (request) => {
     );
   }
   await assertCallerHasRole(request.auth.uid, "INGENIERO_BIOMEDICO");
-  const callerOrg = await getUserOrgContext(request.auth.uid);
+  const callerAccess = await getUserAccessContext(request.auth.uid);
 
   const raw = (request.data as {equipo?: unknown})?.equipo;
   if (!raw || typeof raw !== "object") {
@@ -920,9 +1060,14 @@ export const createEquipo = onCall(async (request) => {
   }
   const equipo = raw as Record<string, unknown>;
   const orgContext = buildOrgContext({
-    empresaId: equipo.empresaId ?? callerOrg.empresaId,
-    sedeId: equipo.sedeId ?? callerOrg.sedeId,
+    empresaId: equipo.empresaId ?? callerAccess.empresaId,
+    sedeId: equipo.sedeId ?? callerAccess.sedeId,
   });
+  assertHasOrgAccessOrThrow(
+    callerAccess,
+    orgContext,
+    "No puedes crear equipos fuera de tu sede.",
+  );
 
   const numeroSerie = upperTrim(equipo.numeroSerie);
   const nombre = upperTrim(equipo.nombre);
@@ -955,6 +1100,8 @@ export const createEquipo = onCall(async (request) => {
   const created = await db.runTransaction(async (tx) => {
     const dupSerieSnap = await tx.get(
       db.collection("equipos")
+        .where("empresaId", "==", orgContext.empresaId)
+        .where("sedeId", "==", orgContext.sedeId)
         .where("numeroSerie", "==", numeroSerie)
         .limit(1),
     );
@@ -1051,7 +1198,7 @@ export const createAsignacionPaciente = onCall(async (request) => {
     );
   }
   await assertCallerHasRole(request.auth.uid, "AUXILIAR_ADMINISTRATIVA");
-  const callerOrg = await getUserOrgContext(request.auth.uid);
+  const callerAccess = await getUserAccessContext(request.auth.uid);
 
   const raw = (request.data as {asignacion?: unknown})?.asignacion;
   if (!raw || typeof raw !== "object") {
@@ -1059,9 +1206,14 @@ export const createAsignacionPaciente = onCall(async (request) => {
   }
   const data = raw as Record<string, unknown>;
   const requestedOrg = buildOrgContext({
-    empresaId: data.empresaId ?? callerOrg.empresaId,
-    sedeId: data.sedeId ?? callerOrg.sedeId,
+    empresaId: data.empresaId ?? callerAccess.empresaId,
+    sedeId: data.sedeId ?? callerAccess.sedeId,
   });
+  assertHasOrgAccessOrThrow(
+    callerAccess,
+    requestedOrg,
+    "No puedes crear asignaciones fuera de tu sede.",
+  );
 
   const idPaciente = assertNonEmptyString(data.idPaciente, "idPaciente");
   const idEquipo = assertNonEmptyString(data.idEquipo, "idEquipo");
@@ -1091,6 +1243,16 @@ export const createAsignacionPaciente = onCall(async (request) => {
     const equipoData = equipoSnap.data() as Record<string, unknown>;
     const pacienteOrg = buildOrgContext(pacienteData);
     const equipoOrg = buildOrgContext(equipoData);
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      pacienteOrg,
+      "No puedes asignar pacientes fuera de tu sede.",
+    );
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      equipoOrg,
+      "No puedes asignar equipos fuera de tu sede.",
+    );
     if (
       pacienteOrg.empresaId !== equipoOrg.empresaId ||
       pacienteOrg.sedeId !== equipoOrg.sedeId
@@ -1109,12 +1271,16 @@ export const createAsignacionPaciente = onCall(async (request) => {
     const [activePacienteSnap, activeProfesionalSnap] = await Promise.all([
       tx.get(
         db.collection("asignaciones")
+          .where("empresaId", "==", asignacionOrg.empresaId)
+          .where("sedeId", "==", asignacionOrg.sedeId)
           .where("idEquipo", "==", idEquipo)
           .where("estado", "==", "ACTIVA")
           .limit(1),
       ),
       tx.get(
         db.collection("asignaciones_profesionales")
+          .where("empresaId", "==", asignacionOrg.empresaId)
+          .where("sedeId", "==", asignacionOrg.sedeId)
           .where("idEquipo", "==", idEquipo)
           .where("estado", "==", "ACTIVA")
           .limit(1),
@@ -1204,14 +1370,22 @@ export const listPacientesSinAsignacion = onCall(async (request) => {
   }
 
   await assertCallerHasRole(request.auth.uid, "VISITADOR");
+  const callerOrg = await getUserOrgContext(request.auth.uid);
 
   const [activeDocs, pacientesDocs] = await Promise.all([
     getAllDocsPaged(
       db.collection("asignaciones")
+        .where("empresaId", "==", callerOrg.empresaId)
+        .where("sedeId", "==", callerOrg.sedeId)
         .where("estado", "==", "ACTIVA")
         .orderBy("__name__"),
     ),
-    getAllDocsPaged(db.collection("pacientes").orderBy("__name__")),
+    getAllDocsPaged(
+      db.collection("pacientes")
+        .where("empresaId", "==", callerOrg.empresaId)
+        .where("sedeId", "==", callerOrg.sedeId)
+        .orderBy("__name__"),
+    ),
   ]);
 
   const activeSet = new Set<string>();
@@ -1255,9 +1429,12 @@ export const listFirmasCapturadasVisitador = onCall(async (request) => {
   }
   const callerUid = request.auth.uid;
   await assertCallerHasRole(callerUid, "VISITADOR");
+  const callerOrg = await getUserOrgContext(callerUid);
 
   const asignacionesSnap = await db
     .collection("asignaciones")
+    .where("empresaId", "==", callerOrg.empresaId)
+    .where("sedeId", "==", callerOrg.sedeId)
     .where("firmaPacienteEntregaCapturadaPorUid", "==", callerUid)
     .get();
 
@@ -1356,15 +1533,32 @@ export const rebuildVisitadorFlags = onCall(async (request) => {
     );
   }
 
-  await assertCallerIsAdminOrHasRole(
-    request.auth.uid,
-    "INGENIERO_BIOMEDICO",
-  );
+  const callerUid = request.auth.uid;
+  await assertCallerIsAdminOrHasRole(callerUid, "INGENIERO_BIOMEDICO");
+  const isAdminCaller = await isCallerAdminEnabled(callerUid);
+  const callerAccess = await getUserAccessContext(callerUid);
+  const payload = request.data as {empresaId?: unknown; sedeId?: unknown};
+  const requestedOrg = buildOrgContext({
+    empresaId: payload?.empresaId ?? callerAccess.empresaId,
+    sedeId: payload?.sedeId ?? callerAccess.sedeId,
+  });
+  if (!isAdminCaller) {
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      requestedOrg,
+      "No puedes recalcular fuera de tu alcance.",
+    );
+  }
 
-  const activeSnap = await db
+  let activeQuery: Query = db
     .collection("asignaciones")
-    .where("estado", "==", "ACTIVA")
-    .get();
+    .where("estado", "==", "ACTIVA");
+  if (!isAdminCaller) {
+    activeQuery = activeQuery
+      .where("empresaId", "==", requestedOrg.empresaId)
+      .where("sedeId", "==", requestedOrg.sedeId);
+  }
+  const activeSnap = await activeQuery.get();
 
   const pacientesSet = new Set<string>();
   const equiposSet = new Set<string>();
@@ -1413,14 +1607,24 @@ export const rebuildVisitadorFlags = onCall(async (request) => {
   ]);
 
   // 2) Marcar false solo para docs que estaban true pero ya no están activos
-  const pacientesTrueSnap = await db
+  let pacientesTrueQuery: Query = db
     .collection("pacientes")
-    .where("tieneAsignacionActiva", "==", true)
-    .get();
-  const equiposTrueSnap = await db
+    .where("tieneAsignacionActiva", "==", true);
+  let equiposTrueQuery: Query = db
     .collection("equipos")
-    .where("asignadoActivo", "==", true)
-    .get();
+    .where("asignadoActivo", "==", true);
+  if (!isAdminCaller) {
+    pacientesTrueQuery = pacientesTrueQuery
+      .where("empresaId", "==", requestedOrg.empresaId)
+      .where("sedeId", "==", requestedOrg.sedeId);
+    equiposTrueQuery = equiposTrueQuery
+      .where("empresaId", "==", requestedOrg.empresaId)
+      .where("sedeId", "==", requestedOrg.sedeId);
+  }
+  const [pacientesTrueSnap, equiposTrueSnap] = await Promise.all([
+    pacientesTrueQuery.get(),
+    equiposTrueQuery.get(),
+  ]);
 
   const pacientesToFalse = pacientesTrueSnap.docs
     .filter((d) => !pacientesSet.has(d.id))
@@ -1468,6 +1672,7 @@ export const guardarFirmaEntregaVisitador = onCall(async (request) => {
 
   const callerUid = request.auth.uid;
   await assertCallerHasRole(callerUid, "VISITADOR");
+  const callerAccess = await getUserAccessContext(callerUid);
 
   const data = request.data as {
     idAsignacion?: unknown;
@@ -1494,6 +1699,12 @@ export const guardarFirmaEntregaVisitador = onCall(async (request) => {
   }
 
   const asignacion = asignacionSnap.data() as Record<string, unknown>;
+  const asignacionOrg = buildOrgContext(asignacion);
+  assertHasOrgAccessOrThrow(
+    callerAccess,
+    asignacionOrg,
+    "No puedes firmar asignaciones de otra sede.",
+  );
   const estado = typeof asignacion.estado === "string" ? asignacion.estado : "";
   if (estado !== "ACTIVA") {
     throw new HttpsError(
@@ -1523,6 +1734,8 @@ export const guardarFirmaEntregaVisitador = onCall(async (request) => {
     const auxSnap = await db
       .collection("users")
       .where("rol", "==", "AUXILIAR_ADMINISTRATIVA")
+      .where("empresaId", "==", asignacionOrg.empresaId)
+      .where("sedeId", "==", asignacionOrg.sedeId)
       .limit(1)
       .get();
     if (!auxSnap.empty) {
@@ -1713,9 +1926,11 @@ export const createInternalActa = onCall(async (request) => {
 
   const callerUid = request.auth.uid;
   await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
-  const orgContext = await getUserOrgContext(callerUid);
+  const callerAccess = await getUserAccessContext(callerUid);
 
   const data = request.data as {
+    empresaId?: unknown;
+    sedeId?: unknown;
     recibeEmail?: unknown;
     recibeUid?: unknown;
     ciudad?: unknown;
@@ -1771,6 +1986,15 @@ export const createInternalActa = onCall(async (request) => {
       "Máximo 200 equipos por acta.",
     );
   }
+  const requestedOrg = buildOrgContext({
+    empresaId: data.empresaId ?? callerAccess.empresaId,
+    sedeId: data.sedeId ?? callerAccess.sedeId,
+  });
+  assertHasOrgAccessOrThrow(
+    callerAccess,
+    requestedOrg,
+    "No puedes crear actas fuera de tu alcance.",
+  );
 
   // Resolver auxiliar receptor (por UID o email)
   let recibeUid = typeof data.recibeUid === "string" ?
@@ -1818,6 +2042,16 @@ export const createInternalActa = onCall(async (request) => {
     recibeSnap.exists && typeof recibeSnap.data()?.nombre === "string" ?
       (recibeSnap.data()?.nombre as string) :
       "AUXILIAR_ADMINISTRATIVA";
+  const recibeOrg = buildOrgContext(
+    recibeSnap.exists ?
+      (recibeSnap.data() as Record<string, unknown>) :
+      undefined,
+  );
+  assertHasOrgAccessOrThrow(
+    callerAccess,
+    recibeOrg,
+    "El auxiliar receptor debe pertenecer a la misma sede.",
+  );
   if (!recibeEmail) {
     const maybeEmail = recibeSnap.exists ? recibeSnap.data()?.email : null;
     if (typeof maybeEmail === "string") recibeEmail = maybeEmail;
@@ -1826,12 +2060,27 @@ export const createInternalActa = onCall(async (request) => {
   // Validar equipos + armar snapshot de items
   const equipoRefs = equipoIds.map((id) => db.doc(`equipos/${id}`));
   const equipoSnaps = await Promise.all(equipoRefs.map((r) => r.get()));
+  let actaOrgContext: OrgContext | null = null;
 
   const items = equipoSnaps.map((snap) => {
     if (!snap.exists) {
       throw new HttpsError("not-found", "Uno de los equipos no existe.");
     }
     const d = snap.data() as Record<string, unknown>;
+    const equipoOrg = buildOrgContext(d);
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      equipoOrg,
+      "No puedes incluir equipos de otra sede en el acta.",
+    );
+    if (!actaOrgContext) {
+      actaOrgContext = equipoOrg;
+    } else if (!isSameOrg(actaOrgContext, equipoOrg)) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Todos los equipos del acta deben ser de la misma sede.",
+      );
+    }
     const pendiente = d.actaInternaPendienteId;
     if (typeof pendiente === "string" && pendiente.trim()) {
       const codigo = String(d.codigoInventario || snap.id);
@@ -1850,6 +2099,22 @@ export const createInternalActa = onCall(async (request) => {
       estado: typeof d.estado === "string" ? d.estado : "",
     };
   });
+  if (!actaOrgContext) {
+    throw new HttpsError("failed-precondition", "No hay equipos válidos.");
+  }
+  if (!isSameOrg(actaOrgContext, requestedOrg)) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Los equipos seleccionados no corresponden al contexto activo.",
+    );
+  }
+  if (!isSameOrg(actaOrgContext, recibeOrg)) {
+    throw new HttpsError(
+      "failed-precondition",
+      "El auxiliar receptor debe pertenecer a la sede del acta.",
+    );
+  }
+  const actaOrg = actaOrgContext as OrgContext;
 
   // Consecutivo (simple: max+1)
   const lastSnap = await db
@@ -1867,7 +2132,7 @@ export const createInternalActa = onCall(async (request) => {
 
   const estado: InternalActaEstado = "ENVIADA";
   batch.set(actaRef, {
-    ...orgContext,
+    ...actaOrg,
     consecutivo,
     fecha: fechaIso,
     ciudad,
@@ -1915,6 +2180,7 @@ export const acceptInternalActa = onCall(async (request) => {
 
   const callerUid = request.auth.uid;
   await assertCallerHasRole(callerUid, "AUXILIAR_ADMINISTRATIVA");
+  const callerAccess = await getUserAccessContext(callerUid);
 
   const data = request.data as {actaId?: unknown; firmaRecibe?: unknown};
   const actaId = assertNonEmptyString(data.actaId, "actaId");
@@ -1931,6 +2197,12 @@ export const acceptInternalActa = onCall(async (request) => {
   }
 
   const acta = actaSnap.data() as Record<string, unknown>;
+  const actaOrg = buildOrgContext(acta);
+  assertHasOrgAccessOrThrow(
+    callerAccess,
+    actaOrg,
+    "No puedes aceptar actas de otra sede.",
+  );
   const estado = acta.estado as InternalActaEstado | undefined;
   if (estado !== "ENVIADA") {
     throw new HttpsError(
@@ -2013,6 +2285,7 @@ export const cancelInternalActa = onCall(async (request) => {
 
   const callerUid = request.auth.uid;
   await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
+  const callerAccess = await getUserAccessContext(callerUid);
 
   const data = request.data as {actaId?: unknown};
   const actaId = assertNonEmptyString(data.actaId, "actaId");
@@ -2024,6 +2297,12 @@ export const cancelInternalActa = onCall(async (request) => {
   }
 
   const acta = actaSnap.data() as Record<string, unknown>;
+  const actaOrg = buildOrgContext(acta);
+  assertHasOrgAccessOrThrow(
+    callerAccess,
+    actaOrg,
+    "No puedes anular actas de otra sede.",
+  );
   const estado = acta.estado as InternalActaEstado | undefined;
   if (estado !== "ENVIADA") {
     throw new HttpsError(
@@ -2076,6 +2355,7 @@ export const approveSolicitudEquipoPaciente = onCall(async (request) => {
 
   const callerUid = request.auth.uid;
   await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
+  const callerAccess = await getUserAccessContext(callerUid);
 
   const data = request.data as {
     solicitudId?: unknown;
@@ -2105,6 +2385,11 @@ export const approveSolicitudEquipoPaciente = onCall(async (request) => {
 
   const solicitud = solicitudSnap.data() as Record<string, unknown>;
   const solicitudOrg = buildOrgContext(solicitud);
+  assertHasOrgAccessOrThrow(
+    callerAccess,
+    solicitudOrg,
+    "No puedes aprobar solicitudes de otra sede.",
+  );
   const estado = typeof solicitud.estado === "string" ? solicitud.estado : "";
   if (estado !== "PENDIENTE") {
     throw new HttpsError(
@@ -2137,6 +2422,12 @@ export const approveSolicitudEquipoPaciente = onCall(async (request) => {
   }
 
   const equipoData = equipoSnap.data() as Record<string, unknown>;
+  const equipoOrg = buildOrgContext(equipoData);
+  assertHasOrgAccessOrThrow(
+    callerAccess,
+    equipoOrg,
+    "No puedes usar equipos de otra sede.",
+  );
   const equipoTipo =
     typeof equipoData.tipoPropiedad === "string" ?
       equipoData.tipoPropiedad :
@@ -2155,6 +2446,8 @@ export const approveSolicitudEquipoPaciente = onCall(async (request) => {
   const auxSnap = await db
     .collection("users")
     .where("rol", "==", "AUXILIAR_ADMINISTRATIVA")
+    .where("empresaId", "==", solicitudOrg.empresaId)
+    .where("sedeId", "==", solicitudOrg.sedeId)
     .limit(1)
     .get();
   const auxDoc = auxSnap.empty ? null : auxSnap.docs[0];
@@ -2180,6 +2473,12 @@ export const approveSolicitudEquipoPaciente = onCall(async (request) => {
       }
 
       const solicitudTx = solicitudTxSnap.data() as Record<string, unknown>;
+      const solicitudTxOrg = buildOrgContext(solicitudTx);
+      assertHasOrgAccessOrThrow(
+        callerAccess,
+        solicitudTxOrg,
+        "No puedes aprobar solicitudes de otra sede.",
+      );
       const estadoTx =
         typeof solicitudTx.estado === "string" ? solicitudTx.estado : "";
       const equipoIdTx =
@@ -2231,6 +2530,12 @@ export const approveSolicitudEquipoPaciente = onCall(async (request) => {
       }
 
       const equipoDataTx = equipoTxSnap.data() as Record<string, unknown>;
+      const equipoTxOrg = buildOrgContext(equipoDataTx);
+      assertHasOrgAccessOrThrow(
+        callerAccess,
+        equipoTxOrg,
+        "No puedes usar equipos de otra sede.",
+      );
       const equipoTipoTx =
         typeof equipoDataTx.tipoPropiedad === "string" ?
           equipoDataTx.tipoPropiedad :
@@ -2245,12 +2550,16 @@ export const approveSolicitudEquipoPaciente = onCall(async (request) => {
       const [activeSnap, pacienteSnap] = await Promise.all([
         tx.get(
           db.collection("asignaciones")
+            .where("empresaId", "==", solicitudTxOrg.empresaId)
+            .where("sedeId", "==", solicitudTxOrg.sedeId)
             .where("idEquipo", "==", equipoId)
             .where("estado", "==", "ACTIVA")
             .limit(1),
         ),
         tx.get(
           db.collection("asignaciones")
+            .where("empresaId", "==", solicitudTxOrg.empresaId)
+            .where("sedeId", "==", solicitudTxOrg.sedeId)
             .where("idPaciente", "==", idPacienteTx)
             .where("estado", "==", "ACTIVA")
             .limit(1),
@@ -2422,6 +2731,7 @@ export const createReporteEquipo = onCall(async (request) => {
   }
   const callerUid = request.auth.uid;
   await assertCallerHasRole(callerUid, "VISITADOR");
+  const callerAccess = await getUserAccessContext(callerUid);
 
   const raw = (request.data as {reporte?: unknown})?.reporte;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -2568,6 +2878,11 @@ export const createReporteEquipo = onCall(async (request) => {
       );
     }
     const asignacionOrg = buildOrgContext(asignacionData);
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      asignacionOrg,
+      "No puedes crear reportes sobre asignaciones de otra sede.",
+    );
 
     let existingOwnId = "";
     for (const docSnap of existingSnap.docs) {
@@ -2676,11 +2991,14 @@ export const onReporteEquipoCreatedNotify = onDocumentCreated(
       typeof d.descripcion === "string" ? d.descripcion : "";
     const fechaVisita =
       typeof d.fechaVisita === "string" ? d.fechaVisita : "";
+    const org = buildOrgContext(d);
 
     // Buscar biomédicos para notificar
     const usersSnap = await db
       .collection("users")
       .where("rol", "==", "INGENIERO_BIOMEDICO")
+      .where("empresaId", "==", org.empresaId)
+      .where("sedeId", "==", org.sedeId)
       .get();
     const recipients = usersSnap.docs
       .map((u) => u.data()?.email)
@@ -2743,10 +3061,13 @@ export const onSolicitudEquipoPacienteCreatedNotify = onDocumentCreated(
       typeof d.empresaAlquiler === "string" ? d.empresaAlquiler : "";
     const observaciones =
       typeof d.observaciones === "string" ? d.observaciones : "";
+    const org = buildOrgContext(d);
 
     const usersSnap = await db
       .collection("users")
       .where("rol", "==", "INGENIERO_BIOMEDICO")
+      .where("empresaId", "==", org.empresaId)
+      .where("sedeId", "==", org.sedeId)
       .get();
     const recipients = usersSnap.docs
       .map((u) => u.data()?.email)

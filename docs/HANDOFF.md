@@ -83,6 +83,20 @@ Contexto organizacional (fase 1):
   - `empresaId = MEDICUC`
   - `sedeId = BUCARAMANGA`
 
+Contexto organizacional (fase 2, marzo 2026):
+- Frontend filtra consultas operativas por `empresaId/sedeId`.
+- `GERENCIA` mantiene lectura global (`isGlobalRead=true`).
+- `firestore.rules` exige mismo contexto organizacional para escritura y
+  lectura por rol operativo.
+- Callables críticos validan que el caller no opere fuera de su sede.
+
+Contexto organizacional (fase 2.1, marzo 2026):
+- `INGENIERO_BIOMEDICO` soporta multisede mediante `users/{uid}.scope`.
+- Se añadió selector de contexto activo en el sidebar para biomédico cuando
+  tiene más de una sede en su `scope`.
+- Functions y reglas validan acceso por pertenencia a `scope` (no solo por
+  `empresaId/sedeId` principal).
+
 Reglas relevantes (`firestore.rules`):
 - Visitador: lectura acotada (pacientes activos, asignaciones activas, etc.).
 - Reportes de visita: creación solo por callable `createReporteEquipo` con anti-duplicado global por asignación.

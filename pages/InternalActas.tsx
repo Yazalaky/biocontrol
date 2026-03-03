@@ -31,7 +31,7 @@ const todayInput = () => {
 };
 
 const InternalActas: React.FC = () => {
-  const { usuario, hasRole } = useAuth();
+  const { usuario, activeOrgContext, hasRole } = useAuth();
   const [firestoreError, setFirestoreError] = useState<string | null>(null);
 
   const [actas, setActas] = useState<ActaInterna[]>([]);
@@ -96,7 +96,10 @@ const InternalActas: React.FC = () => {
     const run = async () => {
       try {
         const fn = httpsCallable(firebaseFunctions, 'listAuxiliares');
-        const res = await fn({});
+        const res = await fn({
+          empresaId: activeOrgContext.empresaId,
+          sedeId: activeOrgContext.sedeId,
+        });
         const data = res.data as { users?: Array<{ uid?: unknown; nombre?: unknown; email?: unknown }> };
         const users = Array.isArray(data.users) ? data.users : [];
         const parsed = users
@@ -121,7 +124,7 @@ const InternalActas: React.FC = () => {
     };
     run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [createOpen]);
+  }, [activeOrgContext.empresaId, activeOrgContext.sedeId, createOpen]);
 
   const selectedAux = useMemo(() => {
     if (!createRecibeUid) return null;
@@ -348,6 +351,8 @@ const InternalActas: React.FC = () => {
     try {
       const fn = httpsCallable(firebaseFunctions, 'createInternalActa');
       const res = await fn({
+        empresaId: activeOrgContext.empresaId,
+        sedeId: activeOrgContext.sedeId,
         recibeUid: createRecibeUid,
         // Email solo para notificación/auditoría (NO se imprime en el acta).
         recibeEmail: createRecibeEmail.trim() || selectedAux?.email || undefined,

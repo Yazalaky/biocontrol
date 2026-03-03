@@ -110,7 +110,14 @@ const Icons = {
 };
 
 const Layout: React.FC<LayoutProps> = ({ children, title }) => {
-  const { usuario, logout, hasRole, isAdmin } = useAuth();
+  const {
+    usuario,
+    activeOrgContext,
+    setActiveOrgContext,
+    logout,
+    hasRole,
+    isAdmin,
+  } = useAuth();
   const [isSidebarOpen, setIsSidebarOpen] = React.useState(false);
   const [pendingActasInternas, setPendingActasInternas] = React.useState(0);
   const [pendingReportesAbiertos, setPendingReportesAbiertos] = React.useState(0);
@@ -226,6 +233,33 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
     );
   };
 
+  const availableScopes = React.useMemo(() => {
+    if (!usuario) return [];
+    const rawScopes = Array.isArray(usuario.scope) && usuario.scope.length > 0 ?
+      usuario.scope :
+      [{
+        empresaId: usuario.empresaId || '',
+        sedeId: usuario.sedeId || '',
+      }];
+    const keys = new Set<string>();
+    const unique = rawScopes
+      .map((item) => ({
+        empresaId: (item.empresaId || '').trim().toUpperCase(),
+        sedeId: (item.sedeId || '').trim().toUpperCase(),
+      }))
+      .filter((item) => item.empresaId && item.sedeId)
+      .filter((item) => {
+        const key = `${item.empresaId}::${item.sedeId}`;
+        if (keys.has(key)) return false;
+        keys.add(key);
+        return true;
+      });
+    return unique;
+  }, [usuario]);
+
+  const canSwitchScope =
+    usuario?.rol === RolUsuario.INGENIERO_BIOMEDICO && availableScopes.length > 1;
+
   return (
     <div className="app-shell flex h-screen overflow-hidden">
       {/* Sidebar Mobile Overlay */}
@@ -256,6 +290,31 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
           <span className="mt-3 inline-flex text-[10px] uppercase px-3 py-1 rounded-full border border-white/10 bg-white/5 text-white/80">
             {usuario?.rol.replace(/_/g, ' ')}
           </span>
+          {canSwitchScope && (
+            <div className="mt-3">
+              <label className="block text-[10px] uppercase tracking-wide sidebar-muted mb-1">
+                Contexto activo
+              </label>
+              <select
+                value={`${activeOrgContext.empresaId}::${activeOrgContext.sedeId}`}
+                onChange={(e) => {
+                  const [empresaId = '', sedeId = ''] = e.target.value.split('::');
+                  setActiveOrgContext({ empresaId, sedeId });
+                  window.location.reload();
+                }}
+                className="w-full rounded-md border border-slate-600 bg-slate-800 text-xs text-white p-2"
+              >
+                {availableScopes.map((scope) => (
+                  <option
+                    key={`${scope.empresaId}::${scope.sedeId}`}
+                    value={`${scope.empresaId}::${scope.sedeId}`}
+                  >
+                    {scope.empresaId} / {scope.sedeId}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
 
         <nav className="flex-1 p-4 overflow-y-auto">

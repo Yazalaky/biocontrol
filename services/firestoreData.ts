@@ -4,6 +4,7 @@ import {
   collection,
   collectionGroup,
   deleteDoc,
+  documentId,
   deleteField,
   doc,
   getDocs,
@@ -15,13 +16,14 @@ import {
   setDoc,
   updateDoc,
   where,
+  type QueryConstraint,
 } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { deleteObject, ref as storageRef } from 'firebase/storage';
 
 import { db, storage } from './firebase';
 import { firebaseFunctions } from './firebaseFunctions';
-import { withOrgContext } from './orgContext';
+import { getStoredAccessProfile, getStoredOrgContext, withOrgContext } from './orgContext';
 import {
   type Empresa,
   type OrgContext,
@@ -84,7 +86,7 @@ export function subscribeCalibraciones(
   onData: (items: CalibracionEquipo[]) => void,
   onError?: (e: Error) => void,
 ) {
-  const q = query(collectionGroup(db, 'calibraciones'), orderBy('fecha', 'desc'));
+  const q = query(collectionGroup(db, 'calibraciones'), ...orgScopeConstraints(), orderBy('fecha', 'desc'));
   return onSnapshot(
     q,
     (snap) => {
@@ -96,7 +98,8 @@ export function subscribeCalibraciones(
 }
 
 export function subscribeEmpresas(onData: (empresas: Empresa[]) => void, onError?: (e: Error) => void) {
-  const q = query(empresasCol, orderBy('nombre', 'asc'));
+  const scoped = empresasScopeConstraints();
+  const q = scoped.length > 0 ? query(empresasCol, ...scoped) : query(empresasCol, orderBy('nombre', 'asc'));
   return onSnapshot(
     q,
     (snap) => {
@@ -108,7 +111,8 @@ export function subscribeEmpresas(onData: (empresas: Empresa[]) => void, onError
 }
 
 export function subscribeSedes(onData: (sedes: Sede[]) => void, onError?: (e: Error) => void) {
-  const q = query(sedesCol, orderBy('nombre', 'asc'));
+  const scoped = sedesScopeConstraints();
+  const q = scoped.length > 0 ? query(sedesCol, ...scoped) : query(sedesCol, orderBy('nombre', 'asc'));
   return onSnapshot(
     q,
     (snap) => {
@@ -142,6 +146,33 @@ function stripUndefinedDeep<T>(value: T): T {
 
 const withContext = <T extends object>(payload: T, context?: Partial<OrgContext>) =>
   stripUndefinedDeep(withOrgContext(payload, context));
+
+const orgScopeConstraints = (): QueryConstraint[] => {
+  const { isGlobalRead } = getStoredAccessProfile();
+  if (isGlobalRead) return [];
+  const context = getStoredOrgContext();
+  return [
+    where('empresaId', '==', context.empresaId),
+    where('sedeId', '==', context.sedeId),
+  ];
+};
+
+const empresasScopeConstraints = (): QueryConstraint[] => {
+  const { isGlobalRead } = getStoredAccessProfile();
+  if (isGlobalRead) return [];
+  const context = getStoredOrgContext();
+  return [where(documentId(), '==', context.empresaId)];
+};
+
+const sedesScopeConstraints = (): QueryConstraint[] => {
+  const { isGlobalRead } = getStoredAccessProfile();
+  if (isGlobalRead) return [];
+  const context = getStoredOrgContext();
+  return [
+    where('empresaId', '==', context.empresaId),
+    where(documentId(), '==', context.sedeId),
+  ];
+};
 
 const upper = (value: string) => value.toUpperCase();
 const upperOptional = (value?: string | null) => (typeof value === 'string' ? value.toUpperCase() : value);
@@ -236,7 +267,7 @@ async function getNextNumber(
             : collectionName === 'mantenimientos'
               ? mantenimientosCol
               : asignacionesCol;
-  const q = query(col, orderBy('consecutivo', 'desc'), limit(1));
+  const q = query(col, ...orgScopeConstraints(), orderBy('consecutivo', 'desc'), limit(1));
   const snap = await getDocs(q);
   const last = snap.docs[0]?.data()?.consecutivo;
   return (typeof last === 'number' && Number.isFinite(last) ? last : 0) + 1;
@@ -249,7 +280,7 @@ const normalizeTipoPropiedad = (tipo?: TipoPropiedad) => {
 };
 
 export function subscribePacientes(onData: (pacientes: Paciente[]) => void, onError?: (e: Error) => void) {
-  const q = query(pacientesCol, orderBy('consecutivo', 'asc'));
+  const q = query(pacientesCol, ...orgScopeConstraints(), orderBy('consecutivo', 'asc'));
   return onSnapshot(
     q,
     (snap) => {
@@ -264,7 +295,12 @@ export function subscribePacientesActivos(
   onData: (pacientes: Paciente[]) => void,
   onError?: (e: Error) => void,
 ) {
-  const q = query(pacientesCol, where('estado', '==', EstadoPaciente.ACTIVO), orderBy('consecutivo', 'asc'));
+  const q = query(
+    pacientesCol,
+    ...orgScopeConstraints(),
+    where('estado', '==', EstadoPaciente.ACTIVO),
+    orderBy('consecutivo', 'asc'),
+  );
   return onSnapshot(
     q,
     (snap) => {
@@ -279,7 +315,7 @@ export function subscribeProfesionales(
   onData: (profesionales: Profesional[]) => void,
   onError?: (e: Error) => void,
 ) {
-  const q = query(profesionalesCol, orderBy('consecutivo', 'asc'));
+  const q = query(profesionalesCol, ...orgScopeConstraints(), orderBy('consecutivo', 'asc'));
   return onSnapshot(
     q,
     (snap) => {
@@ -332,7 +368,7 @@ export async function deleteTipoEquipo(id: string) {
 }
 
 export function subscribeEquipos(onData: (equipos: EquipoBiomedico[]) => void, onError?: (e: Error) => void) {
-  const q = query(equiposCol, orderBy('codigoInventario', 'asc'));
+  const q = query(equiposCol, ...orgScopeConstraints(), orderBy('codigoInventario', 'asc'));
   return onSnapshot(
     q,
     (snap) => {
@@ -344,7 +380,7 @@ export function subscribeEquipos(onData: (equipos: EquipoBiomedico[]) => void, o
 }
 
 export function subscribeAsignaciones(onData: (asignaciones: Asignacion[]) => void, onError?: (e: Error) => void) {
-  const q = query(asignacionesCol, orderBy('fechaAsignacion', 'asc'));
+  const q = query(asignacionesCol, ...orgScopeConstraints(), orderBy('fechaAsignacion', 'asc'));
   return onSnapshot(
     q,
     (snap) => {
@@ -359,7 +395,11 @@ export function subscribeAsignacionesProfesionales(
   onData: (asignaciones: AsignacionProfesional[]) => void,
   onError?: (e: Error) => void,
 ) {
-  const q = query(asignacionesProfesionalesCol, orderBy('fechaEntregaOriginal', 'asc'));
+  const q = query(
+    asignacionesProfesionalesCol,
+    ...orgScopeConstraints(),
+    orderBy('fechaEntregaOriginal', 'asc'),
+  );
   return onSnapshot(
     q,
     (snap) => {
@@ -377,7 +417,7 @@ export function subscribeActasProfesionales(
   onData: (actas: ActaProfesional[]) => void,
   onError?: (e: Error) => void,
 ) {
-  const q = query(actasProfesionalesCol, orderBy('consecutivo', 'desc'));
+  const q = query(actasProfesionalesCol, ...orgScopeConstraints(), orderBy('consecutivo', 'desc'));
   return onSnapshot(
     q,
     (snap) => {
@@ -497,12 +537,14 @@ export async function asignarEquipoProfesional(params: {
   // Bloqueo: no permitir si está activo en pacientes o profesionales.
   const activePacienteQ = query(
     asignacionesCol,
+    ...orgScopeConstraints(),
     where('idEquipo', '==', idEquipo),
     where('estado', '==', EstadoAsignacion.ACTIVA),
     limit(1),
   );
   const activeProfesionalQ = query(
     asignacionesProfesionalesCol,
+    ...orgScopeConstraints(),
     where('idEquipo', '==', idEquipo),
     where('estado', '==', EstadoAsignacion.ACTIVA),
     limit(1),
@@ -625,6 +667,7 @@ export function subscribePacientesConAsignacionActiva(
 ) {
   const q = query(
     pacientesCol,
+    ...orgScopeConstraints(),
     where('tieneAsignacionActiva', '==', true),
     where('estado', '==', EstadoPaciente.ACTIVO),
   );
@@ -642,7 +685,7 @@ export function subscribeEquiposAsignadosActivos(
   onData: (equipos: EquipoBiomedico[]) => void,
   onError?: (e: Error) => void,
 ) {
-  const q = query(equiposCol, where('asignadoActivo', '==', true));
+  const q = query(equiposCol, ...orgScopeConstraints(), where('asignadoActivo', '==', true));
   return onSnapshot(
     q,
     (snap) => {
@@ -657,7 +700,7 @@ export function subscribeAsignacionesActivas(
   onData: (asignaciones: Asignacion[]) => void,
   onError?: (e: Error) => void,
 ) {
-  const q = query(asignacionesCol, where('estado', '==', EstadoAsignacion.ACTIVA));
+  const q = query(asignacionesCol, ...orgScopeConstraints(), where('estado', '==', EstadoAsignacion.ACTIVA));
   return onSnapshot(
     q,
     (snap) => {
@@ -669,7 +712,7 @@ export function subscribeAsignacionesActivas(
 }
 
 export function subscribeActasInternas(onData: (actas: ActaInterna[]) => void, onError?: (e: Error) => void) {
-  const q = query(actasInternasCol, orderBy('fecha', 'desc'));
+  const q = query(actasInternasCol, ...orgScopeConstraints(), orderBy('fecha', 'desc'));
   return onSnapshot(
     q,
     (snap) => {
@@ -684,7 +727,7 @@ export function subscribeReportesEquipos(
   onData: (reportes: ReporteEquipo[]) => void,
   onError?: (e: Error) => void,
 ) {
-  const q = query(reportesEquiposCol);
+  const q = query(reportesEquiposCol, ...orgScopeConstraints());
   return onSnapshot(
     q,
     (snap) => {
@@ -699,7 +742,7 @@ export function subscribeMantenimientos(
   onData: (mantenimientos: Mantenimiento[]) => void,
   onError?: (e: Error) => void,
 ) {
-  const q = query(mantenimientosCol, orderBy('consecutivo', 'desc'));
+  const q = query(mantenimientosCol, ...orgScopeConstraints(), orderBy('consecutivo', 'desc'));
   return onSnapshot(
     q,
     (snap) => {
@@ -715,7 +758,12 @@ export function subscribeMantenimientosByEstado(
   onData: (mantenimientos: Mantenimiento[]) => void,
   onError?: (e: Error) => void,
 ) {
-  const q = query(mantenimientosCol, where('estado', '==', estado), orderBy('consecutivo', 'desc'));
+  const q = query(
+    mantenimientosCol,
+    ...orgScopeConstraints(),
+    where('estado', '==', estado),
+    orderBy('consecutivo', 'desc'),
+  );
   return onSnapshot(
     q,
     (snap) => {
@@ -730,7 +778,11 @@ export function subscribeMantenimientosPendientesCount(
   onCount: (count: number) => void,
   onError?: (e: Error) => void,
 ) {
-  const q = query(mantenimientosCol, where('estado', '==', EstadoMantenimiento.CERRADO_PENDIENTE_ACEPTACION));
+  const q = query(
+    mantenimientosCol,
+    ...orgScopeConstraints(),
+    where('estado', '==', EstadoMantenimiento.CERRADO_PENDIENTE_ACEPTACION),
+  );
   return onSnapshot(
     q,
     (snap) => onCount(snap.size),
@@ -743,7 +795,7 @@ export function subscribeReportesEquiposByUser(
   onData: (reportes: ReporteEquipo[]) => void,
   onError?: (e: Error) => void,
 ) {
-  const q = query(reportesEquiposCol, where('creadoPorUid', '==', uid));
+  const q = query(reportesEquiposCol, ...orgScopeConstraints(), where('creadoPorUid', '==', uid));
   return onSnapshot(
     q,
     (snap) => {
@@ -760,6 +812,7 @@ export function subscribeReportesEquiposAbiertosCount(
 ) {
   const q = query(
     reportesEquiposCol,
+    ...orgScopeConstraints(),
     where('estado', 'in', [EstadoReporteEquipo.ABIERTO, EstadoReporteEquipo.EN_PROCESO]),
   );
   return onSnapshot(
@@ -776,6 +829,7 @@ export function subscribeReportesCerradosSinLeerCount(
 ) {
   const q = query(
     reportesEquiposCol,
+    ...orgScopeConstraints(),
     where('creadoPorUid', '==', uid),
     where('estado', '==', EstadoReporteEquipo.CERRADO),
     where('vistoPorVisitadorAt', '==', null),
@@ -1030,7 +1084,11 @@ export function subscribeSolicitudesEquiposPacienteByUser(
   onData: (solicitudes: SolicitudEquipoPaciente[]) => void,
   onError?: (e: Error) => void,
 ) {
-  const q = query(solicitudesEquiposPacienteCol, where('creadoPorUid', '==', uid));
+  const q = query(
+    solicitudesEquiposPacienteCol,
+    ...orgScopeConstraints(),
+    where('creadoPorUid', '==', uid),
+  );
   return onSnapshot(
     q,
     (snap) => {
@@ -1048,7 +1106,11 @@ export function subscribeSolicitudesEquiposPacientePendientes(
   onData: (solicitudes: SolicitudEquipoPaciente[]) => void,
   onError?: (e: Error) => void,
 ) {
-  const q = query(solicitudesEquiposPacienteCol, where('estado', '==', EstadoSolicitudEquipoPaciente.PENDIENTE));
+  const q = query(
+    solicitudesEquiposPacienteCol,
+    ...orgScopeConstraints(),
+    where('estado', '==', EstadoSolicitudEquipoPaciente.PENDIENTE),
+  );
   return onSnapshot(
     q,
     (snap) => {
@@ -1069,6 +1131,7 @@ export function subscribeActasInternasPendientesCount(
 ) {
   const q = query(
     actasInternasCol,
+    ...orgScopeConstraints(),
     where('recibeUid', '==', recibeUid),
     where('estado', '==', EstadoActaInterna.ENVIADA),
   );
@@ -1089,6 +1152,7 @@ export function subscribeEntregasByMonth(
 ) {
   const q = query(
     asignacionesCol,
+    ...orgScopeConstraints(),
     where('fechaAsignacion', '>=', startIsoInclusive),
     where('fechaAsignacion', '<', endIsoExclusive),
     orderBy('fechaAsignacion', 'asc'),
@@ -1111,6 +1175,7 @@ export function subscribeDevolucionesByMonth(
 ) {
   const q = query(
     asignacionesCol,
+    ...orgScopeConstraints(),
     where('fechaDevolucion', '>=', startIsoInclusive),
     where('fechaDevolucion', '<', endIsoExclusive),
     orderBy('fechaDevolucion', 'asc'),
@@ -1129,7 +1194,11 @@ export async function savePaciente(paciente: Paciente) {
   assertRoleString(paciente.estado, Object.values(EstadoPaciente), 'estado');
 
   const numeroDocumento = upper(paciente.numeroDocumento);
-  const duplicadoQ = query(pacientesCol, where('numeroDocumento', '==', numeroDocumento));
+  const duplicadoQ = query(
+    pacientesCol,
+    ...orgScopeConstraints(),
+    where('numeroDocumento', '==', numeroDocumento),
+  );
   const duplicadoSnap = await getDocs(duplicadoQ);
   const duplicatedDoc = duplicadoSnap.docs.find((d) => d.id !== paciente.id);
   if (duplicatedDoc) {
@@ -1168,7 +1237,11 @@ export async function saveEquipo(equipo: EquipoBiomedico): Promise<string | unde
   assertRoleString(equipo.estado, Object.values(EstadoEquipo), 'estado');
   const numeroSerie = (equipo.numeroSerie || '').trim().toUpperCase();
   if (numeroSerie) {
-    const duplicadoSerieQ = query(equiposCol, where('numeroSerie', '==', numeroSerie));
+    const duplicadoSerieQ = query(
+      equiposCol,
+      ...orgScopeConstraints(),
+      where('numeroSerie', '==', numeroSerie),
+    );
     const duplicadoSerieSnap = await getDocs(duplicadoSerieQ);
     const duplicatedSerieDoc = duplicadoSerieSnap.docs.find((d) => d.id !== equipo.id);
     if (duplicatedSerieDoc) {
@@ -1201,7 +1274,11 @@ export async function saveEquipo(equipo: EquipoBiomedico): Promise<string | unde
   };
 
   if (normalized.id) {
-    const duplicadoQ = query(equiposCol, where('codigoInventario', '==', codigoInventario));
+    const duplicadoQ = query(
+      equiposCol,
+      ...orgScopeConstraints(),
+      where('codigoInventario', '==', codigoInventario),
+    );
     const duplicadoSnap = await getDocs(duplicadoQ);
     const duplicatedDoc = duplicadoSnap.docs.find((d) => d.id !== normalized.id);
     if (duplicatedDoc) {
@@ -1248,7 +1325,7 @@ export function subscribeCalibracionesEquipo(
     return () => {};
   }
   const col = collection(db, 'equipos', equipoId, 'calibraciones');
-  const q = query(col, orderBy('fecha', 'desc'));
+  const q = query(col, ...orgScopeConstraints(), orderBy('fecha', 'desc'));
   return onSnapshot(
     q,
     (snap) => {
@@ -1345,7 +1422,11 @@ export async function updateCalibracionFields(params: {
 export async function isNumeroSerieDisponible(numeroSerie: string, excludeId?: string) {
   const serie = (numeroSerie || '').trim().toUpperCase();
   if (!serie) return true;
-  const duplicadoSerieQ = query(equiposCol, where('numeroSerie', '==', serie));
+  const duplicadoSerieQ = query(
+    equiposCol,
+    ...orgScopeConstraints(),
+    where('numeroSerie', '==', serie),
+  );
   const duplicadoSerieSnap = await getDocs(duplicadoSerieQ);
   const duplicatedSerieDoc = duplicadoSerieSnap.docs.find((d) => d.id !== (excludeId || ''));
   return !duplicatedSerieDoc;
@@ -1412,6 +1493,7 @@ export async function devolverEquipo(params: {
 export async function validarSalidaPaciente(idPaciente: string): Promise<boolean> {
   const activasQ = query(
     asignacionesCol,
+    ...orgScopeConstraints(),
     where('idPaciente', '==', idPaciente),
     where('estado', '==', EstadoAsignacion.ACTIVA),
     limit(1),

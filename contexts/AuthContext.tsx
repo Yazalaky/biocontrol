@@ -3,9 +3,11 @@ import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebas
 import { doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '../services/firebase';
 import {
+  clearStoredAccessProfile,
   getDefaultOrgContext,
   getStoredOrgContext,
   normalizeOrgContext,
+  setStoredAccessProfile,
   setStoredOrgContext,
 } from '../services/orgContext';
 import { RolUsuario, type OrgContext, type OrgScope, type Usuario } from '../types';
@@ -34,6 +36,15 @@ export const AuthProvider = ({ children }: { children?: ReactNode }) => {
 
   const setActiveOrgContext = (context: Partial<OrgContext>) => {
     const normalized = normalizeOrgContext(context);
+    if (usuario && !usuario.isGlobalRead) {
+      const userScopes = Array.isArray(usuario.scope) && usuario.scope.length > 0
+        ? usuario.scope.map((item) => normalizeOrgContext(item))
+        : [normalizeOrgContext({ empresaId: usuario.empresaId, sedeId: usuario.sedeId })];
+      const isAllowed = userScopes.some(
+        (item) => item.empresaId === normalized.empresaId && item.sedeId === normalized.sedeId,
+      );
+      if (!isAllowed) return;
+    }
     setActiveOrgContextState(normalized);
     setStoredOrgContext(normalized);
   };
@@ -45,6 +56,7 @@ export const AuthProvider = ({ children }: { children?: ReactNode }) => {
       if (!firebaseUser) {
         setUsuario(null);
         setActiveOrgContextState(getDefaultOrgContext());
+        clearStoredAccessProfile();
         setIsAdmin(false);
         setLoading(false);
         return;
@@ -83,6 +95,7 @@ export const AuthProvider = ({ children }: { children?: ReactNode }) => {
           return;
         }
 
+        const isGlobalRead = data.isGlobalRead === true || rol === RolUsuario.GERENCIA;
         const scope: OrgScope[] = Array.isArray(data.scope)
           ? data.scope
               .map((item) => normalizeOrgContext(item))
@@ -92,7 +105,14 @@ export const AuthProvider = ({ children }: { children?: ReactNode }) => {
           empresaId: data.empresaId || scope[0]?.empresaId,
           sedeId: data.sedeId || scope[0]?.sedeId,
         });
-        setActiveOrgContext(userOrg);
+        const storedContext = getStoredOrgContext();
+        const allowedScopes = scope.length > 0 ? scope : [userOrg];
+        const storedIsAllowed = allowedScopes.some(
+          (item) => item.empresaId === storedContext.empresaId && item.sedeId === storedContext.sedeId,
+        );
+        const resolvedContext = storedIsAllowed ? storedContext : userOrg;
+        setActiveOrgContextState(resolvedContext);
+        setStoredOrgContext(resolvedContext);
 
         setUsuario({
           id: firebaseUser.uid,
@@ -101,8 +121,9 @@ export const AuthProvider = ({ children }: { children?: ReactNode }) => {
           empresaId: userOrg.empresaId,
           sedeId: userOrg.sedeId,
           scope,
-          isGlobalRead: data.isGlobalRead === true,
+          isGlobalRead,
         });
+        setStoredAccessProfile({ isGlobalRead });
 
         // Admin flag (lectura opcional). Requiere rules para /admins/{uid}.
         try {

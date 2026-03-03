@@ -17,6 +17,30 @@ function parseCallableError(err: any): string {
   return code ? `${code}: ${message}` : message;
 }
 
+function parseScopeInput(text: string): Array<{ empresaId: string; sedeId: string }> {
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const parsed = lines
+    .map((line) => {
+      const normalized = line.replace(',', ':');
+      const [empresaRaw = '', sedeRaw = ''] = normalized.split(':');
+      const empresaId = empresaRaw.trim().toUpperCase();
+      const sedeId = sedeRaw.trim().toUpperCase();
+      if (!empresaId || !sedeId) return null;
+      return { empresaId, sedeId };
+    })
+    .filter((item): item is { empresaId: string; sedeId: string } => !!item);
+  const keys = new Set<string>();
+  return parsed.filter((item) => {
+    const key = `${item.empresaId}::${item.sedeId}`;
+    if (keys.has(key)) return false;
+    keys.add(key);
+    return true;
+  });
+}
+
 const Admin: React.FC = () => {
   const { isAdmin } = useAuth();
 
@@ -36,6 +60,7 @@ const Admin: React.FC = () => {
   const [password, setPassword] = useState('');
   const [nombre, setNombre] = useState('');
   const [rol, setRol] = useState<AllowedRole>(RolUsuario.AUXILIAR_ADMINISTRATIVA);
+  const [createScopeText, setCreateScopeText] = useState('');
   const [creating, setCreating] = useState(false);
   const [createdUid, setCreatedUid] = useState<string | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -44,6 +69,7 @@ const Admin: React.FC = () => {
   const [targetUid, setTargetUid] = useState('');
   const [targetNombre, setTargetNombre] = useState('');
   const [targetRol, setTargetRol] = useState<AllowedRole>(RolUsuario.GERENCIA);
+  const [targetScopeText, setTargetScopeText] = useState('');
   const [assigning, setAssigning] = useState(false);
   const [assignOk, setAssignOk] = useState<string | null>(null);
   const [assignError, setAssignError] = useState<string | null>(null);
@@ -60,11 +86,13 @@ const Admin: React.FC = () => {
     setCreating(true);
     try {
       const fn = httpsCallable(firebaseFunctions, 'adminCreateUser');
+      const scope = parseScopeInput(createScopeText);
       const res = await fn({
         email: email.trim(),
         password,
         nombre: nombre.trim().toUpperCase(),
         rol,
+        ...(scope.length > 0 ? { scope } : {}),
       });
       const uid = (res.data as any)?.uid;
       if (typeof uid === 'string') setCreatedUid(uid);
@@ -72,6 +100,7 @@ const Admin: React.FC = () => {
       setEmail('');
       setPassword('');
       setNombre('');
+      setCreateScopeText('');
     } catch (err: any) {
       setCreateError(parseCallableError(err));
     } finally {
@@ -86,10 +115,12 @@ const Admin: React.FC = () => {
     setAssigning(true);
     try {
       const fn = httpsCallable(firebaseFunctions, 'adminSetUserRole');
+      const scope = parseScopeInput(targetScopeText);
       await fn({
         uid: targetUid.trim(),
         rol: targetRol,
         nombre: targetNombre.trim().toUpperCase(),
+        ...(scope.length > 0 ? { scope } : {}),
       });
       setAssignOk('Rol actualizado correctamente.');
     } catch (err: any) {
@@ -177,6 +208,19 @@ const Admin: React.FC = () => {
                 ))}
               </select>
             </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Scope (opcional)</label>
+              <textarea
+                className="mt-1 w-full border p-2 rounded font-mono text-xs"
+                value={createScopeText}
+                onChange={(e) => setCreateScopeText(e.target.value)}
+                placeholder={'MEDICUC:BUCARAMANGA\nALIADOS:ALIADOS_CUC'}
+                rows={3}
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Una sede por línea, formato EMPRESA:SEDE.
+              </p>
+            </div>
             <button
               type="submit"
               disabled={creating}
@@ -237,6 +281,19 @@ const Admin: React.FC = () => {
                   </option>
                 ))}
               </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Scope (opcional)</label>
+              <textarea
+                className="mt-1 w-full border p-2 rounded font-mono text-xs"
+                value={targetScopeText}
+                onChange={(e) => setTargetScopeText(e.target.value)}
+                placeholder={'MEDICUC:BUCARAMANGA\nALIADOS:ALIADOS_CUC'}
+                rows={3}
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Si lo llenas, reemplaza el scope actual del usuario.
+              </p>
             </div>
             <button
               type="submit"
