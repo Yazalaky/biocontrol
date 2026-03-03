@@ -10,6 +10,7 @@ import {
   HojaVidaFijos,
   HojaVidaDatosEquipo,
   RolUsuario,
+  TipoActivoInventario,
   TipoPropiedad,
   TipoEquipo,
   type Asignacion,
@@ -111,7 +112,7 @@ const formatError = (err: unknown, fallback: string) => {
 };
 
 const Inventory: React.FC = () => {
-  const { hasRole, usuario } = useAuth();
+  const { hasRole, usuario, activeOrgContext } = useAuth();
   const [equipos, setEquipos] = useState<EquipoBiomedico[]>([]);
   const [tiposEquipo, setTiposEquipo] = useState<TipoEquipo[]>([]);
   const [pacientes, setPacientes] = useState<Paciente[]>([]);
@@ -139,6 +140,7 @@ const Inventory: React.FC = () => {
   // Modal Edit/Create State
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [formData, setFormData] = useState<Partial<EquipoBiomedico>>({
+    tipoActivo: TipoActivoInventario.BIOMEDICO,
     tipoPropiedad: TipoPropiedad.MEDICUC,
     fechaIngreso: new Date().toISOString(),
     disponibleParaEntrega: false,
@@ -171,6 +173,7 @@ const Inventory: React.FC = () => {
   const [assignmentCounts, setAssignmentCounts] = useState<{[key: string]: number}>({});
   const canEdit = hasRole([RolUsuario.INGENIERO_BIOMEDICO]);
   const canReadReportes = hasRole([RolUsuario.INGENIERO_BIOMEDICO, RolUsuario.GERENCIA]);
+  const isAliadosContext = activeOrgContext.empresaId === 'ALIADOS';
   const EMPRESA_DEFAULT = 'MEDICUC IPS';
   const SEDE_DEFAULT = 'BUCARAMANGA';
 
@@ -346,6 +349,14 @@ const Inventory: React.FC = () => {
   }, [openSolicitud]);
 
   const propiedadLocked = !!solicitudContext;
+  const selectedTipoActivo = formData.tipoActivo || TipoActivoInventario.BIOMEDICO;
+  const isBiomedicoActivo = selectedTipoActivo === TipoActivoInventario.BIOMEDICO;
+  const isAliadosNuevo = isAliadosContext && !formData.id;
+  const aliadosPrefix = selectedTipoActivo === TipoActivoInventario.MOBILIARIO ? 'ALDM' : 'ALD';
+  const aliadosCodeRegex = useMemo(
+    () => new RegExp(`^${aliadosPrefix}\\d{3}$`),
+    [aliadosPrefix],
+  );
   const pacientesById = useMemo(() => new Map(pacientes.map((p) => [p.id, p])), [pacientes]);
   const profesionalesById = useMemo(() => new Map(profesionales.map((p) => [p.id, p])), [profesionales]);
   const tiposEquipoById = useMemo(() => new Map(tiposEquipo.map((t) => [t.id, t])), [tiposEquipo]);
@@ -435,14 +446,28 @@ const Inventory: React.FC = () => {
     });
   }, [equipos, searchTerm, statusFilter, activeAsignacionByEquipo, lastFinalEstadoByEquipo]);
 
+  const aliadosExpectedCode = useMemo(() => {
+    if (!isAliadosNuevo) return '';
+    let max = 0;
+    for (const eq of equipos) {
+      const code = (eq.codigoInventario || '').trim().toUpperCase();
+      if (!aliadosCodeRegex.test(code)) continue;
+      const seq = Number.parseInt(code.slice(aliadosPrefix.length), 10);
+      if (!Number.isFinite(seq) || seq <= 0) continue;
+      if (seq > max) max = seq;
+    }
+    const next = max + 1;
+    return `${aliadosPrefix}${String(next).padStart(3, '0')}`;
+  }, [aliadosCodeRegex, aliadosPrefix, equipos, isAliadosNuevo]);
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canEdit) return;
-    if (serialChecking) {
+    if (serialChecking && isBiomedicoActivo) {
       toast({ tone: 'warning', message: 'Espera a que termine la validacion del serial.' });
       return;
     }
-    if (serialError) {
+    if (serialError && isBiomedicoActivo) {
       toast({ tone: 'warning', message: serialError });
       return;
     }
@@ -454,12 +479,62 @@ const Inventory: React.FC = () => {
       toast({ tone: 'warning', message: 'Selecciona la fecha de baja.' });
       return;
     }
-    if (formData.tipoPropiedad === TipoPropiedad.ALQUILADO && !formData.empresaAlquiler?.trim()) {
+    if (
+      isBiomedicoActivo &&
+      formData.tipoPropiedad === TipoPropiedad.ALQUILADO &&
+      !formData.empresaAlquiler?.trim()
+    ) {
       toast({ tone: 'warning', message: 'Escribe la empresa de alquiler.' });
       return;
     }
+    if (isAliadosNuevo) {
+      const codigo = (formData.codigoInventario || '').trim().toUpperCase();
+      if (!codigo) {
+        toast({ tone: 'warning', message: 'En Aliados el código de inventario es obligatorio.' });
+        return;
+      }
+      if (!aliadosCodeRegex.test(codigo)) {
+        toast({
+          tone: 'warning',
+          message: `Formato inválido. Debe ser ${aliadosPrefix}001 (3 dígitos).`,
+        });
+        return;
+      }
+      if (codigo !== aliadosExpectedCode) {
+        toast({
+          tone: 'warning',
+          message: `Debes registrar primero ${aliadosExpectedCode} para evitar saltos.`,
+        });
+        return;
+      }
+      const duplicatedCode = equipos.some(
+        (eq) => (eq.codigoInventario || '').trim().toUpperCase() === codigo,
+      );
+      if (duplicatedCode) {
+        toast({ tone: 'warning', message: `El código ${codigo} ya existe.` });
+        return;
+      }
+      setFormData((prev) => ({ ...prev, codigoInventario: codigo }));
+    }
+    if (!isBiomedicoActivo) {
+      const detalle = formData.detalleActivo || {};
+      if (
+        !detalle.tipo?.trim() ||
+        !detalle.servicio?.trim() ||
+        !detalle.ubicacion?.trim() ||
+        !detalle.sede?.trim() ||
+        !detalle.fechaAdquisicion?.trim() ||
+        !detalle.costo?.trim() ||
+        !detalle.proveedor?.trim() ||
+        !detalle.estadoActual?.trim()
+      ) {
+        toast({ tone: 'warning', message: 'Completa todos los campos del formulario corto.' });
+        return;
+      }
+    }
     if (
       solicitudContext &&
+      isBiomedicoActivo &&
       formData.tipoPropiedad === TipoPropiedad.ALQUILADO &&
       !autoActaFirma
     ) {
@@ -475,30 +550,48 @@ const Inventory: React.FC = () => {
 
     const calibracionPeriodicidad =
       (formData.hojaVidaOverrides?.calibracion ?? tipoSeleccionado?.fijos?.calibracion ?? '').trim();
+    const codigoNormalizado = (formData.codigoInventario || '').trim().toUpperCase();
 
     const newEquipo: EquipoBiomedico = {
       id: formData.id || '',
-      codigoInventario: formData.codigoInventario || '', // Si es nuevo, db lo ignora y genera uno.
+      codigoInventario: codigoNormalizado,
       numeroSerie: formData.numeroSerie || '',
       nombre: formData.nombre || '',
       marca: formData.marca || '',
       modelo: formData.modelo || '',
       estado: formData.estado || EstadoEquipo.DISPONIBLE,
-      tipoEquipoId: formData.tipoEquipoId || undefined,
-      hojaVidaDatos: formData.hojaVidaDatos || undefined,
-      hojaVidaOverrides: formData.hojaVidaOverrides || undefined,
-      calibracionPeriodicidad: calibracionPeriodicidad || undefined,
+      tipoActivo: selectedTipoActivo,
+      tipoEquipoId: isBiomedicoActivo ? formData.tipoEquipoId || undefined : undefined,
+      hojaVidaDatos: isBiomedicoActivo ? formData.hojaVidaDatos || undefined : undefined,
+      hojaVidaOverrides: isBiomedicoActivo ? formData.hojaVidaOverrides || undefined : undefined,
+      calibracionPeriodicidad: isBiomedicoActivo ? calibracionPeriodicidad || undefined : undefined,
+      detalleActivo: !isBiomedicoActivo
+        ? {
+            tipo: formData.detalleActivo?.tipo || '',
+            servicio: formData.detalleActivo?.servicio || '',
+            ubicacion: formData.detalleActivo?.ubicacion || '',
+            sede: formData.detalleActivo?.sede || '',
+            fechaAdquisicion: formData.detalleActivo?.fechaAdquisicion || undefined,
+            costo: formData.detalleActivo?.costo || '',
+            proveedor: formData.detalleActivo?.proveedor || '',
+            estadoActual: formData.detalleActivo?.estadoActual || '',
+          }
+        : undefined,
       fechaIngreso: formData.fechaIngreso ? formData.fechaIngreso : new Date().toISOString(),
-      fechaMantenimiento: formData.fechaMantenimiento,
+      fechaMantenimiento: isBiomedicoActivo ? formData.fechaMantenimiento : undefined,
       fechaBaja: formData.fechaBaja,
       // Control (acta interna): equipos nuevos quedan NO disponibles para entrega hasta aceptación.
       disponibleParaEntrega,
       custodioUid: formData.custodioUid || (formData.id ? undefined : usuario?.id),
       observaciones: formData.observaciones || '',
-      ubicacionActual: formData.ubicacionActual || 'Bodega',
+      ubicacionActual: !isBiomedicoActivo
+        ? formData.detalleActivo?.ubicacion || formData.ubicacionActual || 'Bodega'
+        : formData.ubicacionActual || 'Bodega',
       tipoPropiedad: formData.tipoPropiedad || TipoPropiedad.MEDICUC,
       empresaAlquiler:
-        formData.tipoPropiedad === TipoPropiedad.ALQUILADO ? formData.empresaAlquiler || '' : undefined,
+        isBiomedicoActivo && formData.tipoPropiedad === TipoPropiedad.ALQUILADO
+          ? formData.empresaAlquiler || ''
+          : undefined,
     };
     try {
       const createdId = await saveEquipo(newEquipo);
@@ -584,9 +677,13 @@ const Inventory: React.FC = () => {
       }
       setIsModalOpen(false);
       setFormData({
+        tipoActivo: TipoActivoInventario.BIOMEDICO,
         tipoPropiedad: TipoPropiedad.MEDICUC,
         fechaIngreso: new Date().toISOString(),
         disponibleParaEntrega: false,
+        detalleActivo: {
+          sede: activeOrgContext.sedeId,
+        },
         hojaVidaDatos: {
           empresa: EMPRESA_DEFAULT,
           sede: SEDE_DEFAULT,
@@ -603,6 +700,10 @@ const Inventory: React.FC = () => {
   };
 
   const handleSerieBlur = async () => {
+    if (!isBiomedicoActivo) {
+      setSerialError(null);
+      return;
+    }
     const rawSerie = formData.numeroSerie || '';
     const serie = rawSerie.trim();
     if (serie !== rawSerie) {
@@ -692,6 +793,16 @@ const Inventory: React.FC = () => {
     }));
   };
 
+  const updateDetalleActivo = (patch: Partial<NonNullable<EquipoBiomedico['detalleActivo']>>) => {
+    setFormData((prev) => ({
+      ...prev,
+      detalleActivo: {
+        ...(prev.detalleActivo || {}),
+        ...patch,
+      },
+    }));
+  };
+
   const updateHojaVidaOverrides = (patch: Partial<HojaVidaFijos>) => {
     setFormData((prev) => ({
       ...prev,
@@ -717,6 +828,7 @@ const Inventory: React.FC = () => {
     setSolicitudContext(null);
     setFormData({
       ...equipo,
+      tipoActivo: equipo.tipoActivo || TipoActivoInventario.BIOMEDICO,
       tipoPropiedad: normalizeTipoPropiedad(equipo.tipoPropiedad),
       fechaIngreso: equipo.fechaIngreso || new Date().toISOString(),
     });
@@ -731,6 +843,7 @@ const Inventory: React.FC = () => {
     if (!canEdit) return;
     setSolicitudContext(solicitud);
     setFormData({
+      tipoActivo: TipoActivoInventario.BIOMEDICO,
       nombre: solicitud.equipoNombre || '',
       numeroSerie: '',
       tipoPropiedad: solicitud.tipoPropiedad,
@@ -738,6 +851,9 @@ const Inventory: React.FC = () => {
       disponibleParaEntrega:
         solicitud.tipoPropiedad === TipoPropiedad.PACIENTE || solicitud.tipoPropiedad === TipoPropiedad.MEDICUC,
       empresaAlquiler: solicitud.tipoPropiedad === TipoPropiedad.ALQUILADO ? '' : undefined,
+      detalleActivo: {
+        sede: activeOrgContext.sedeId,
+      },
       hojaVidaDatos: {
         empresa: EMPRESA_DEFAULT,
         sede: SEDE_DEFAULT,
@@ -1126,6 +1242,13 @@ const Inventory: React.FC = () => {
   };
 
   const handleDownloadTemplate = () => {
+    if (isAliadosContext) {
+      toast({
+        tone: 'info',
+        message: 'En Aliados el alta es manual para controlar consecutivos. Usa creación individual.',
+      });
+      return;
+    }
     // Se eliminó "CodigoInventario" porque ahora es automático
     const headers = [
       "NumeroSerie",
@@ -1166,6 +1289,14 @@ const Inventory: React.FC = () => {
 
   const handleImportCSV = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!canEdit) return;
+    if (isAliadosContext) {
+      toast({
+        tone: 'warning',
+        message: 'La importación CSV está deshabilitada en Aliados por control de consecutivo manual.',
+      });
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -1204,6 +1335,7 @@ const Inventory: React.FC = () => {
         const importedEquipo: EquipoBiomedico = {
           id: '', 
           codigoInventario: '', // Se generará automáticamente
+          tipoActivo: TipoActivoInventario.BIOMEDICO,
           numeroSerie: columns[0]?.trim() || '',
           nombre: columns[1]?.trim() || 'Sin Nombre',
           marca: columns[2]?.trim() || '',
@@ -1365,9 +1497,13 @@ const Inventory: React.FC = () => {
               onClick={() => {
                 setSolicitudContext(null);
                 setFormData({
+                  tipoActivo: TipoActivoInventario.BIOMEDICO,
                   tipoPropiedad: TipoPropiedad.MEDICUC,
                   fechaIngreso: new Date().toISOString(),
                   disponibleParaEntrega: false,
+                  detalleActivo: {
+                    sede: activeOrgContext.sedeId,
+                  },
                   hojaVidaDatos: {
                     empresa: EMPRESA_DEFAULT,
                     sede: SEDE_DEFAULT,
@@ -1708,20 +1844,73 @@ const Inventory: React.FC = () => {
               </div>
             )}
             <form onSubmit={handleSave} className="space-y-4">
-              
-              <div className="grid grid-cols-2 gap-4">
+              {isAliadosNuevo && (
+                <div className="border rounded-lg p-3 bg-slate-50">
+                  <label className="block text-sm font-medium mb-2">Tipo de activo</label>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                    <label className="flex items-center gap-2 border rounded p-2 bg-white">
+                      <input
+                        type="radio"
+                        name="tipoActivo"
+                        value={TipoActivoInventario.BIOMEDICO}
+                        checked={selectedTipoActivo === TipoActivoInventario.BIOMEDICO}
+                        onChange={() => setFormData({ ...formData, tipoActivo: TipoActivoInventario.BIOMEDICO })}
+                      />
+                      <span className="text-sm">Equipo biomédico</span>
+                    </label>
+                    <label className="flex items-center gap-2 border rounded p-2 bg-white">
+                      <input
+                        type="radio"
+                        name="tipoActivo"
+                        value={TipoActivoInventario.NO_BIOMEDICO}
+                        checked={selectedTipoActivo === TipoActivoInventario.NO_BIOMEDICO}
+                        onChange={() => setFormData({ ...formData, tipoActivo: TipoActivoInventario.NO_BIOMEDICO })}
+                      />
+                      <span className="text-sm">No biomédico</span>
+                    </label>
+                    <label className="flex items-center gap-2 border rounded p-2 bg-white">
+                      <input
+                        type="radio"
+                        name="tipoActivo"
+                        value={TipoActivoInventario.MOBILIARIO}
+                        checked={selectedTipoActivo === TipoActivoInventario.MOBILIARIO}
+                        onChange={() => setFormData({ ...formData, tipoActivo: TipoActivoInventario.MOBILIARIO })}
+                      />
+                      <span className="text-sm">Mobiliario</span>
+                    </label>
+                  </div>
+                </div>
+              )}
+
+              <div className={`grid ${isBiomedicoActivo ? 'grid-cols-2' : 'grid-cols-1'} gap-4`}>
                 <div>
                     <label className="block text-sm font-medium">Código Inventario</label>
-                    <input 
-                      className="w-full border p-2 rounded bg-gray-100 text-gray-600 cursor-not-allowed" 
-                      value={formData.id ? formData.codigoInventario : 'Autogenerado (MBG/MBP/MBA/MBE)'} 
-                      disabled 
+                    <input
+                      className={`w-full border p-2 rounded ${
+                        formData.id || (!isAliadosContext && !formData.id)
+                          ? 'bg-gray-100 text-gray-600 cursor-not-allowed'
+                          : ''
+                      }`}
+                      value={
+                        formData.id
+                          ? formData.codigoInventario || ''
+                          : isAliadosContext
+                            ? formData.codigoInventario || ''
+                            : 'Autogenerado (MBG/MBP/MBA/MBE)'
+                      }
+                      onChange={(e) => setFormData({ ...formData, codigoInventario: e.target.value })}
+                      disabled={formData.id || (!isAliadosContext && !formData.id)}
                     />
                     <p className="text-xs text-gray-400 mt-1">
-                      {formData.id ? 'No editable' : 'Se asignará automáticamente al guardar'}
+                      {formData.id
+                        ? 'No editable'
+                        : isAliadosContext
+                          ? `Manual y consecutivo. Siguiente esperado: ${aliadosExpectedCode || `${aliadosPrefix}001`}`
+                          : 'Se asignará automáticamente al guardar'}
                     </p>
                 </div>
-                <div>
+                {isBiomedicoActivo && (
+                  <div>
                     <label className="block text-sm font-medium">Número de Serie</label>
                     <input
                       className="w-full border p-2 rounded"
@@ -1731,7 +1920,7 @@ const Inventory: React.FC = () => {
                         if (serialError) setSerialError(null);
                       }}
                       onBlur={handleSerieBlur}
-                      required
+                      required={isBiomedicoActivo}
                     />
                     {serialChecking && (
                       <p className="text-xs text-gray-500 mt-1">Validando serial...</p>
@@ -1739,83 +1928,173 @@ const Inventory: React.FC = () => {
                     {serialError && !serialChecking && (
                       <p className="text-xs text-red-600 mt-1">{serialError}</p>
                     )}
-                </div>
+                  </div>
+                )}
               </div>
 
               <div>
                   <label className="block text-sm font-medium">Nombre del Equipo</label>
                   <input className="w-full border p-2 rounded" value={formData.nombre || ''} onChange={e => setFormData({...formData, nombre: e.target.value})} required />
               </div>
-              
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                    <label className="block text-sm font-medium">Marca</label>
-                    <input className="w-full border p-2 rounded" value={formData.marca || ''} onChange={e => setFormData({...formData, marca: e.target.value})} required />
-                </div>
-                <div>
-                    <label className="block text-sm font-medium">Modelo</label>
-                    <input className="w-full border p-2 rounded" value={formData.modelo || ''} onChange={e => setFormData({...formData, modelo: e.target.value})} required />
-                </div>
-              </div>
+              {isBiomedicoActivo ? (
+                <>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                        <label className="block text-sm font-medium">Marca</label>
+                        <input className="w-full border p-2 rounded" value={formData.marca || ''} onChange={e => setFormData({...formData, marca: e.target.value})} required />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium">Modelo</label>
+                        <input className="w-full border p-2 rounded" value={formData.modelo || ''} onChange={e => setFormData({...formData, modelo: e.target.value})} required />
+                    </div>
+                  </div>
 
-              <div>
-                <label className="block text-sm font-medium">Tipo de equipo (plantilla)</label>
-                <div className="flex flex-wrap gap-2">
-                  <select
-                    className="flex-1 border p-2 rounded min-w-[220px]"
-                    value={formData.tipoEquipoId || ''}
-                    onChange={(e) => setFormData({ ...formData, tipoEquipoId: e.target.value || undefined })}
-                  >
-                    <option value="">-- Seleccionar tipo --</option>
-                    {tiposEquipo.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.nombre}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    className="md-btn md-btn-outlined"
-                    onClick={() => openTiposEquipo()}
-                  >
-                    Gestionar tipos
-                  </button>
-                </div>
-                <p className="text-xs text-gray-500 mt-1">
-                  Selecciona una plantilla para autocompletar los datos fijos de hoja de vida.
-                </p>
-              </div>
+                  <div>
+                    <label className="block text-sm font-medium">Tipo de equipo (plantilla)</label>
+                    <div className="flex flex-wrap gap-2">
+                      <select
+                        className="flex-1 border p-2 rounded min-w-[220px]"
+                        value={formData.tipoEquipoId || ''}
+                        onChange={(e) => setFormData({ ...formData, tipoEquipoId: e.target.value || undefined })}
+                      >
+                        <option value="">-- Seleccionar tipo --</option>
+                        {tiposEquipo.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.nombre}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        className="md-btn md-btn-outlined"
+                        onClick={() => openTiposEquipo()}
+                      >
+                        Gestionar tipos
+                      </button>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Selecciona una plantilla para autocompletar los datos fijos de hoja de vida.
+                    </p>
+                  </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium">Fecha de Ingreso</label>
-                  <input
-                    type="date"
-                    className="w-full border p-2 rounded"
-                    value={isoToDateInput(formData.fechaIngreso)}
-                    onChange={(e) => {
-                      const dateStr = e.target.value;
-                      const d = new Date(`${dateStr}T12:00:00`);
-                      setFormData({
-                        ...formData,
-                        fechaIngreso: Number.isNaN(d.getTime()) ? undefined : d.toISOString(),
-                      });
-                    }}
-                    required
-                  />
-                  <p className="text-xs text-gray-500 mt-1">Registra el año/fecha real de ingreso al inventario.</p>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium">Fecha de Ingreso</label>
+                      <input
+                        type="date"
+                        className="w-full border p-2 rounded"
+                        value={isoToDateInput(formData.fechaIngreso)}
+                        onChange={(e) => {
+                          const dateStr = e.target.value;
+                          const d = new Date(`${dateStr}T12:00:00`);
+                          setFormData({
+                            ...formData,
+                            fechaIngreso: Number.isNaN(d.getTime()) ? undefined : d.toISOString(),
+                          });
+                        }}
+                        required
+                      />
+                      <p className="text-xs text-gray-500 mt-1">Registra el año/fecha real de ingreso al inventario.</p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium">Ubicación Inicial</label>
+                      <input
+                        className="w-full border p-2 rounded"
+                        value={formData.ubicacionActual || ''}
+                        onChange={(e) => setFormData({ ...formData, ubicacionActual: e.target.value })}
+                        placeholder="Ej: Bodega"
+                      />
+                      <p className="text-xs text-gray-400 mt-1">Si está vacío, se guardará como “Bodega”.</p>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 border rounded-lg p-3 bg-gray-50">
+                  <div>
+                    <label className="block text-sm font-medium">Tipo</label>
+                    <input
+                      className="w-full border p-2 rounded"
+                      value={formData.detalleActivo?.tipo || ''}
+                      onChange={(e) => updateDetalleActivo({ tipo: e.target.value })}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium">Servicio</label>
+                    <input
+                      className="w-full border p-2 rounded"
+                      value={formData.detalleActivo?.servicio || ''}
+                      onChange={(e) => updateDetalleActivo({ servicio: e.target.value })}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium">Ubicación</label>
+                    <input
+                      className="w-full border p-2 rounded"
+                      value={formData.detalleActivo?.ubicacion || ''}
+                      onChange={(e) => {
+                        updateDetalleActivo({ ubicacion: e.target.value });
+                        setFormData((prev) => ({ ...prev, ubicacionActual: e.target.value }));
+                      }}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium">Fecha de adquisición</label>
+                    <input
+                      type="date"
+                      className="w-full border p-2 rounded"
+                      value={formData.detalleActivo?.fechaAdquisicion || ''}
+                      onChange={(e) => {
+                        updateDetalleActivo({ fechaAdquisicion: e.target.value });
+                        const d = new Date(`${e.target.value}T12:00:00`);
+                        setFormData((prev) => ({
+                          ...prev,
+                          fechaIngreso: Number.isNaN(d.getTime()) ? undefined : d.toISOString(),
+                        }));
+                      }}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium">Costo</label>
+                    <input
+                      className="w-full border p-2 rounded"
+                      value={formData.detalleActivo?.costo || ''}
+                      onChange={(e) => updateDetalleActivo({ costo: e.target.value })}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium">Proveedor</label>
+                    <input
+                      className="w-full border p-2 rounded"
+                      value={formData.detalleActivo?.proveedor || ''}
+                      onChange={(e) => updateDetalleActivo({ proveedor: e.target.value })}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium">Sede</label>
+                    <input
+                      className="w-full border p-2 rounded"
+                      value={formData.detalleActivo?.sede || activeOrgContext.sedeId}
+                      onChange={(e) => updateDetalleActivo({ sede: e.target.value })}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium">Estado actual</label>
+                    <input
+                      className="w-full border p-2 rounded"
+                      value={formData.detalleActivo?.estadoActual || ''}
+                      onChange={(e) => updateDetalleActivo({ estadoActual: e.target.value })}
+                      required
+                    />
+                  </div>
                 </div>
-                <div>
-                  <label className="block text-sm font-medium">Ubicación Inicial</label>
-                  <input
-                    className="w-full border p-2 rounded"
-                    value={formData.ubicacionActual || ''}
-                    onChange={(e) => setFormData({ ...formData, ubicacionActual: e.target.value })}
-                    placeholder="Ej: Bodega"
-                  />
-                  <p className="text-xs text-gray-400 mt-1">Si está vacío, se guardará como “Bodega”.</p>
-                </div>
-              </div>
+              )}
 
               <div className="border rounded-lg p-3 bg-gray-50">
                 <label className="block text-sm font-medium">Imagen del equipo</label>
@@ -1875,6 +2154,8 @@ const Inventory: React.FC = () => {
                 </div>
               </div>
 
+              {isBiomedicoActivo && (
+              <>
               <details className="border rounded-lg p-3 bg-gray-50">
                 <summary className="text-sm font-semibold text-gray-800 cursor-pointer">
                   Hoja de vida (datos variables)
@@ -2517,6 +2798,8 @@ const Inventory: React.FC = () => {
                     required
                   />
                 </div>
+              )}
+              </>
               )}
 
               <div>

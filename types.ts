@@ -74,6 +74,7 @@ export interface DetalleActivoNoBiomedico {
   tipo?: string;
   servicio?: string;
   ubicacion?: string;
+  sede?: string;
   fechaAdquisicion?: string;
   costo?: string;
   proveedor?: string;

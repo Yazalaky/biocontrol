@@ -100,8 +100,9 @@ Contexto organizacional (fase 2.1, marzo 2026):
 Contexto inventario multisede (fase 3.1, marzo 2026):
 - `equipos` soporta `tipoActivo` (`BIOMEDICO`, `NO_BIOMEDICO`, `MOBILIARIO`)
   con compatibilidad legacy (sin campo => biomédico).
-- En `createEquipo`, Aliados usa consecutivos `ALD000` y `ALDM000` por sede;
-  Medicuc conserva prefijos legacy `MBG/MBP/MBA/MBE`.
+- En `createEquipo`, Aliados usa código manual obligatorio con formato
+  `ALD###` y `ALDM###` por sede, sin saltos de consecutivo.
+- Medicuc conserva autogeneración legacy `MBG/MBP/MBA/MBE`.
 - `firestore.rules` bloquea creación/edición de mantenimientos y calibraciones
   para activos no biomédicos.
 

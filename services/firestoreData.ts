@@ -246,6 +246,20 @@ const upperHojaVidaDatos = (value?: HojaVidaDatosEquipo) => {
   } as HojaVidaDatosEquipo;
 };
 
+const upperDetalleActivo = (value?: EquipoBiomedico['detalleActivo']) => {
+  if (!value) return undefined;
+  return {
+    tipo: upperOptional(value.tipo),
+    servicio: upperOptional(value.servicio),
+    ubicacion: upperOptional(value.ubicacion),
+    sede: upperOptional(value.sede),
+    fechaAdquisicion: value.fechaAdquisicion,
+    costo: upperOptional(value.costo),
+    proveedor: upperOptional(value.proveedor),
+    estadoActual: upperOptional(value.estadoActual),
+  };
+};
+
 async function getNextNumber(
   collectionName:
     | 'pacientes'
@@ -1262,6 +1276,7 @@ export async function saveEquipo(equipo: EquipoBiomedico): Promise<string | unde
     tipoEquipoId: equipo.tipoEquipoId,
     hojaVidaDatos: upperHojaVidaDatos(equipo.hojaVidaDatos),
     hojaVidaOverrides: upperHojaVidaFijos(equipo.hojaVidaOverrides),
+    detalleActivo: upperDetalleActivo(equipo.detalleActivo),
     calibracionPeriodicidad: upperOptional(equipo.calibracionPeriodicidad),
     empresaAlquiler: upperOptional(equipo.empresaAlquiler),
     datosPropietario: equipo.datosPropietario
@@ -1298,7 +1313,7 @@ export async function saveEquipo(equipo: EquipoBiomedico): Promise<string | unde
     return;
   }
 
-  const { id: _id, codigoInventario: _codigoInventario, ...rest } = normalized;
+  const { id: _id, ...rest } = normalized;
   const fn = httpsCallable(firebaseFunctions, 'createEquipo');
   const res = await fn({ equipo: withContext(rest) });
   const data = res.data as { id?: unknown };

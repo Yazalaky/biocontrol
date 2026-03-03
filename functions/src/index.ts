@@ -376,33 +376,20 @@ async function nextConsecutivoInTx(
  * Si no existe contador, se calcula con el max actual para evitar colisiones.
  * @param {Transaction} tx Transacción activa.
  * @param {"MEDICUC"|"PACIENTE"|"ALQUILADO"|"EMPLEADO"} tipoPropiedad Tipo.
- * @param {OrgContext} orgContext Contexto org del equipo.
- * @param {"BIOMEDICO"|"NO_BIOMEDICO"|"MOBILIARIO"} tipoActivo Tipo activo.
  * @return {Promise<string>} Código generado, p. ej. MBG-001.
  */
 async function nextCodigoInventarioInTx(
   tx: Transaction,
   tipoPropiedad: TipoPropiedad,
-  orgContext: OrgContext,
-  tipoActivo: TipoActivoInventario,
 ): Promise<string> {
-  const isAliados = orgContext.empresaId === "ALIADOS";
-  const prefix = isAliados ?
-    tipoActivo === "MOBILIARIO" ?
-      "ALDM" :
-      "ALD" :
-    tipoPropiedad === "PACIENTE" ?
-      "MBP-" :
-      tipoPropiedad === "ALQUILADO" ?
-        "MBA-" :
-        tipoPropiedad === "EMPLEADO" ?
-          "MBE-" :
-          "MBG-";
-  const counterSuffix = prefix.replace("-", "");
-  const counterKey = isAliados ?
-    `equipos_codigo_${counterSuffix}` +
-      `_${orgContext.empresaId}_${orgContext.sedeId}` :
-    `equipos_codigo_${counterSuffix}`;
+  const prefix = tipoPropiedad === "PACIENTE" ?
+    "MBP-" :
+    tipoPropiedad === "ALQUILADO" ?
+      "MBA-" :
+      tipoPropiedad === "EMPLEADO" ?
+        "MBE-" :
+        "MBG-";
+  const counterKey = `equipos_codigo_${prefix.replace("-", "")}`;
   const counterRef = db.doc(`${COUNTERS_COLLECTION}/${counterKey}`);
   const counterSnap = await tx.get(counterRef);
   const counterValue = counterSnap.data()?.value;
@@ -414,10 +401,7 @@ async function nextCodigoInventarioInTx(
     const allSnap = await tx.get(db.collection("equipos"));
     let max = 0;
     for (const d of allSnap.docs) {
-      const data = d.data() as Record<string, unknown>;
-      const code = data.codigoInventario;
-      const docOrg = buildOrgContext(data);
-      if (isAliados && !isSameOrg(docOrg, orgContext)) continue;
+      const code = d.data()?.codigoInventario;
       if (typeof code !== "string" || !code.startsWith(prefix)) continue;
       const rawN = code.slice(prefix.length);
       const n = Number.parseInt(rawN, 10);
@@ -431,13 +415,12 @@ async function nextCodigoInventarioInTx(
   let codigo = `${prefix}${String(next).padStart(3, "0")}`;
   let hasCollision = true;
   while (hasCollision) {
-    const allSnap = await tx.get(db.collection("equipos"));
-    hasCollision = allSnap.docs.some((d) => {
-      const data = d.data() as Record<string, unknown>;
-      if (data.codigoInventario !== codigo) return false;
-      if (!isAliados) return true;
-      return isSameOrg(buildOrgContext(data), orgContext);
-    });
+    const collision = await tx.get(
+      db.collection("equipos")
+        .where("codigoInventario", "==", codigo)
+        .limit(1),
+    );
+    hasCollision = !collision.empty;
     if (!hasCollision) break;
     next += 1;
     codigo = `${prefix}${String(next).padStart(3, "0")}`;
@@ -452,6 +435,15 @@ async function nextCodigoInventarioInTx(
     {merge: true},
   );
   return codigo;
+}
+
+/**
+ * Retorna prefijo de código manual para Aliados.
+ * @param {"BIOMEDICO"|"NO_BIOMEDICO"|"MOBILIARIO"} tipoActivo Tipo de activo.
+ * @return {"ALD"|"ALDM"} Prefijo esperado.
+ */
+function aliadosPrefixByTipoActivo(tipoActivo: TipoActivoInventario) {
+  return tipoActivo === "MOBILIARIO" ? "ALDM" : "ALD";
 }
 
 /**
@@ -1118,7 +1110,9 @@ export const createEquipo = onCall(async (request) => {
   );
 
   const tipoActivo = normalizeTipoActivo(equipo.tipoActivo);
+  const isAliadosOrg = orgContext.empresaId === "ALIADOS";
   const numeroSerie = upperTrim(equipo.numeroSerie);
+  const codigoInventarioManual = upperTrim(equipo.codigoInventario);
   const nombre = upperTrim(equipo.nombre);
   const marca = upperTrim(equipo.marca);
   const modelo = upperTrim(equipo.modelo);
@@ -1133,6 +1127,7 @@ export const createEquipo = onCall(async (request) => {
     tipo: upperTrim(detalleActivoRaw.tipo) || undefined,
     servicio: upperTrim(detalleActivoRaw.servicio) || undefined,
     ubicacion: upperTrim(detalleActivoRaw.ubicacion) || undefined,
+    sede: upperTrim(detalleActivoRaw.sede) || undefined,
     fechaAdquisicion:
       typeof detalleActivoRaw.fechaAdquisicion === "string" &&
         detalleActivoRaw.fechaAdquisicion.trim() ?
@@ -1171,6 +1166,12 @@ export const createEquipo = onCall(async (request) => {
         "MANTENIMIENTO, DADO_DE_BAJA.",
     );
   }
+  if (isAliadosOrg && !codigoInventarioManual) {
+    throw new HttpsError(
+      "invalid-argument",
+      "En Aliados el código de inventario es obligatorio y manual.",
+    );
+  }
 
   const created = await db.runTransaction(async (tx) => {
     if (numeroSerie) {
@@ -1189,12 +1190,61 @@ export const createEquipo = onCall(async (request) => {
       }
     }
 
-    const codigoInventario = await nextCodigoInventarioInTx(
-      tx,
-      tipoPropiedad,
-      orgContext,
-      tipoActivo,
-    );
+    let codigoInventario = "";
+    if (isAliadosOrg) {
+      const prefix = aliadosPrefixByTipoActivo(tipoActivo);
+      const regex = new RegExp(`^${prefix}\\d{3}$`);
+      if (!regex.test(codigoInventarioManual)) {
+        throw new HttpsError(
+          "invalid-argument",
+          `Código inválido. Para ${prefix} usa formato ${prefix}001.`,
+        );
+      }
+
+      const dupCodigoSnap = await tx.get(
+        db.collection("equipos")
+          .where("empresaId", "==", orgContext.empresaId)
+          .where("sedeId", "==", orgContext.sedeId)
+          .where("codigoInventario", "==", codigoInventarioManual)
+          .limit(1),
+      );
+      if (!dupCodigoSnap.empty) {
+        throw new HttpsError(
+          "already-exists",
+          `El código ${codigoInventarioManual} ya existe en inventario.`,
+        );
+      }
+
+      const equiposOrgSnap = await tx.get(
+        db.collection("equipos")
+          .where("empresaId", "==", orgContext.empresaId)
+          .where("sedeId", "==", orgContext.sedeId),
+      );
+      let maxSeq = 0;
+      for (const docSnap of equiposOrgSnap.docs) {
+        const codeRaw = docSnap.data()?.codigoInventario;
+        if (typeof codeRaw !== "string" || !regex.test(codeRaw)) continue;
+        const seq = Number.parseInt(codeRaw.slice(prefix.length), 10);
+        if (!Number.isFinite(seq) || seq <= 0) continue;
+        if (seq > maxSeq) maxSeq = seq;
+      }
+      const expectedSeq = maxSeq + 1;
+      const providedSeq = Number.parseInt(
+        codigoInventarioManual.slice(prefix.length),
+        10,
+      );
+      if (providedSeq !== expectedSeq) {
+        const expectedCode = `${prefix}${String(expectedSeq).padStart(3, "0")}`;
+        throw new HttpsError(
+          "failed-precondition",
+          `Consecutivo inválido. Debes registrar primero ${expectedCode}.`,
+        );
+      }
+      codigoInventario = codigoInventarioManual;
+    } else {
+      codigoInventario = await nextCodigoInventarioInTx(tx, tipoPropiedad);
+    }
+
     const equipoRef = db.collection("equipos").doc();
     const payload: Record<string, unknown> = {
       ...orgContext,
