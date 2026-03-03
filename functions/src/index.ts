@@ -122,6 +122,11 @@ const TIPO_PROPIEDAD_VALUES = [
   "ALQUILADO",
   "EMPLEADO",
 ] as const;
+const TIPO_ACTIVO_VALUES = [
+  "BIOMEDICO",
+  "NO_BIOMEDICO",
+  "MOBILIARIO",
+] as const;
 const DEFAULT_EMPRESA_ID = "MEDICUC";
 const DEFAULT_SEDE_ID = "BUCARAMANGA";
 
@@ -134,6 +139,14 @@ type UserAccessContext = OrgContext & {
   isGlobalRead: boolean;
   scope: OrgContext[];
 };
+
+type TipoPropiedad =
+  | "MEDICUC"
+  | "PACIENTE"
+  | "ALQUILADO"
+  | "EMPLEADO";
+
+type TipoActivoInventario = "BIOMEDICO" | "NO_BIOMEDICO" | "MOBILIARIO";
 
 /**
  * Convierte un valor a string trim + UPPERCASE.
@@ -154,12 +167,30 @@ function normalizeTipoPropiedad(value: unknown) {
   if (raw === "PROPIO") return "MEDICUC";
   if (raw === "EXTERNO") return "ALQUILADO";
   if ((TIPO_PROPIEDAD_VALUES as readonly string[]).includes(raw)) {
-    return raw as "MEDICUC" | "PACIENTE" | "ALQUILADO" | "EMPLEADO";
+    return raw as TipoPropiedad;
   }
   throw new HttpsError(
     "invalid-argument",
     "tipoPropiedad inválido. Valores permitidos: " +
       "MEDICUC, PACIENTE, ALQUILADO, EMPLEADO.",
+  );
+}
+
+/**
+ * Normaliza tipo de activo inventario.
+ * Legacy: si no existe se asume BIOMEDICO.
+ * @param {unknown} value Tipo recibido.
+ * @return {"BIOMEDICO"|"NO_BIOMEDICO"|"MOBILIARIO"} Tipo normalizado.
+ */
+function normalizeTipoActivo(value: unknown): TipoActivoInventario {
+  const raw = upperTrim(value || "BIOMEDICO");
+  if ((TIPO_ACTIVO_VALUES as readonly string[]).includes(raw)) {
+    return raw as TipoActivoInventario;
+  }
+  throw new HttpsError(
+    "invalid-argument",
+    "tipoActivo inválido. Valores permitidos: " +
+      "BIOMEDICO, NO_BIOMEDICO, MOBILIARIO.",
   );
 }
 
@@ -344,21 +375,34 @@ async function nextConsecutivoInTx(
  * Obtiene código de inventario en transacción por prefijo.
  * Si no existe contador, se calcula con el max actual para evitar colisiones.
  * @param {Transaction} tx Transacción activa.
- * @param {"MEDICUC"|"PACIENTE"|"ALQUILADO"|"EMPLEADO"} tipo Tipo de propiedad.
+ * @param {"MEDICUC"|"PACIENTE"|"ALQUILADO"|"EMPLEADO"} tipoPropiedad Tipo.
+ * @param {OrgContext} orgContext Contexto org del equipo.
+ * @param {"BIOMEDICO"|"NO_BIOMEDICO"|"MOBILIARIO"} tipoActivo Tipo activo.
  * @return {Promise<string>} Código generado, p. ej. MBG-001.
  */
 async function nextCodigoInventarioInTx(
   tx: Transaction,
-  tipo: "MEDICUC" | "PACIENTE" | "ALQUILADO" | "EMPLEADO",
+  tipoPropiedad: TipoPropiedad,
+  orgContext: OrgContext,
+  tipoActivo: TipoActivoInventario,
 ): Promise<string> {
-  const prefix = tipo === "PACIENTE" ?
-    "MBP-" :
-    tipo === "ALQUILADO" ?
-      "MBA-" :
-      tipo === "EMPLEADO" ?
-        "MBE-" :
-        "MBG-";
-  const counterKey = `equipos_codigo_${prefix.replace("-", "")}`;
+  const isAliados = orgContext.empresaId === "ALIADOS";
+  const prefix = isAliados ?
+    tipoActivo === "MOBILIARIO" ?
+      "ALDM" :
+      "ALD" :
+    tipoPropiedad === "PACIENTE" ?
+      "MBP-" :
+      tipoPropiedad === "ALQUILADO" ?
+        "MBA-" :
+        tipoPropiedad === "EMPLEADO" ?
+          "MBE-" :
+          "MBG-";
+  const counterSuffix = prefix.replace("-", "");
+  const counterKey = isAliados ?
+    `equipos_codigo_${counterSuffix}` +
+      `_${orgContext.empresaId}_${orgContext.sedeId}` :
+    `equipos_codigo_${counterSuffix}`;
   const counterRef = db.doc(`${COUNTERS_COLLECTION}/${counterKey}`);
   const counterSnap = await tx.get(counterRef);
   const counterValue = counterSnap.data()?.value;
@@ -370,7 +414,10 @@ async function nextCodigoInventarioInTx(
     const allSnap = await tx.get(db.collection("equipos"));
     let max = 0;
     for (const d of allSnap.docs) {
-      const code = d.data()?.codigoInventario;
+      const data = d.data() as Record<string, unknown>;
+      const code = data.codigoInventario;
+      const docOrg = buildOrgContext(data);
+      if (isAliados && !isSameOrg(docOrg, orgContext)) continue;
       if (typeof code !== "string" || !code.startsWith(prefix)) continue;
       const rawN = code.slice(prefix.length);
       const n = Number.parseInt(rawN, 10);
@@ -384,12 +431,13 @@ async function nextCodigoInventarioInTx(
   let codigo = `${prefix}${String(next).padStart(3, "0")}`;
   let hasCollision = true;
   while (hasCollision) {
-    const collision = await tx.get(
-      db.collection("equipos")
-        .where("codigoInventario", "==", codigo)
-        .limit(1),
-    );
-    hasCollision = !collision.empty;
+    const allSnap = await tx.get(db.collection("equipos"));
+    hasCollision = allSnap.docs.some((d) => {
+      const data = d.data() as Record<string, unknown>;
+      if (data.codigoInventario !== codigo) return false;
+      if (!isAliados) return true;
+      return isSameOrg(buildOrgContext(data), orgContext);
+    });
     if (!hasCollision) break;
     next += 1;
     codigo = `${prefix}${String(next).padStart(3, "0")}`;
@@ -1042,7 +1090,7 @@ export const createPaciente = onCall(async (request) => {
 
 /**
  * 3.3) Crear equipo (transaccional).
- * Genera código inventario único por prefijo (MBG/MBP/MBA/MBE).
+ * Genera código inventario único según empresa/tipo.
  */
 export const createEquipo = onCall(async (request) => {
   if (!request.auth?.uid) {
@@ -1069,6 +1117,7 @@ export const createEquipo = onCall(async (request) => {
     "No puedes crear equipos fuera de tu sede.",
   );
 
+  const tipoActivo = normalizeTipoActivo(equipo.tipoActivo);
   const numeroSerie = upperTrim(equipo.numeroSerie);
   const nombre = upperTrim(equipo.nombre);
   const marca = upperTrim(equipo.marca);
@@ -1076,15 +1125,41 @@ export const createEquipo = onCall(async (request) => {
   const estado = upperTrim(equipo.estado || "DISPONIBLE");
   const tipoPropiedad = normalizeTipoPropiedad(equipo.tipoPropiedad);
   const observaciones = upperTrim(equipo.observaciones);
+  const detalleActivoRaw =
+    typeof equipo.detalleActivo === "object" && equipo.detalleActivo ?
+      (equipo.detalleActivo as Record<string, unknown>) :
+      null;
+  const detalleActivo = detalleActivoRaw ? {
+    tipo: upperTrim(detalleActivoRaw.tipo) || undefined,
+    servicio: upperTrim(detalleActivoRaw.servicio) || undefined,
+    ubicacion: upperTrim(detalleActivoRaw.ubicacion) || undefined,
+    fechaAdquisicion:
+      typeof detalleActivoRaw.fechaAdquisicion === "string" &&
+        detalleActivoRaw.fechaAdquisicion.trim() ?
+        detalleActivoRaw.fechaAdquisicion.trim() :
+        undefined,
+    costo: upperTrim(detalleActivoRaw.costo) || undefined,
+    proveedor: upperTrim(detalleActivoRaw.proveedor) || undefined,
+    estadoActual: upperTrim(detalleActivoRaw.estadoActual) || undefined,
+  } : undefined;
   const fechaIngreso =
     typeof equipo.fechaIngreso === "string" && equipo.fechaIngreso.trim() ?
       equipo.fechaIngreso.trim() :
       new Date().toISOString();
 
-  if (!numeroSerie || !nombre || !marca || !modelo) {
+  if (!nombre) {
     throw new HttpsError(
       "invalid-argument",
-      "Faltan campos requeridos del equipo.",
+      "equipo.nombre es requerido.",
+    );
+  }
+  if (
+    tipoActivo === "BIOMEDICO" &&
+    (!numeroSerie || !marca || !modelo)
+  ) {
+    throw new HttpsError(
+      "invalid-argument",
+      "Faltan campos biomédicos requeridos del equipo.",
     );
   }
   if (
@@ -1098,21 +1173,28 @@ export const createEquipo = onCall(async (request) => {
   }
 
   const created = await db.runTransaction(async (tx) => {
-    const dupSerieSnap = await tx.get(
-      db.collection("equipos")
-        .where("empresaId", "==", orgContext.empresaId)
-        .where("sedeId", "==", orgContext.sedeId)
-        .where("numeroSerie", "==", numeroSerie)
-        .limit(1),
-    );
-    if (!dupSerieSnap.empty) {
-      throw new HttpsError(
-        "already-exists",
-        `El serial ${numeroSerie} ya existe en inventario.`,
+    if (numeroSerie) {
+      const dupSerieSnap = await tx.get(
+        db.collection("equipos")
+          .where("empresaId", "==", orgContext.empresaId)
+          .where("sedeId", "==", orgContext.sedeId)
+          .where("numeroSerie", "==", numeroSerie)
+          .limit(1),
       );
+      if (!dupSerieSnap.empty) {
+        throw new HttpsError(
+          "already-exists",
+          `El serial ${numeroSerie} ya existe en inventario.`,
+        );
+      }
     }
 
-    const codigoInventario = await nextCodigoInventarioInTx(tx, tipoPropiedad);
+    const codigoInventario = await nextCodigoInventarioInTx(
+      tx,
+      tipoPropiedad,
+      orgContext,
+      tipoActivo,
+    );
     const equipoRef = db.collection("equipos").doc();
     const payload: Record<string, unknown> = {
       ...orgContext,
@@ -1123,6 +1205,11 @@ export const createEquipo = onCall(async (request) => {
       modelo,
       estado,
       tipoPropiedad,
+      tipoActivo,
+      detalleActivo:
+        tipoActivo !== "BIOMEDICO" && detalleActivo ?
+          detalleActivo :
+          undefined,
       observaciones,
       fechaIngreso,
       disponibleParaEntrega:
@@ -1135,25 +1222,32 @@ export const createEquipo = onCall(async (request) => {
           upperTrim(equipo.ubicacionActual) :
           "BODEGA",
       tipoEquipoId:
-        typeof equipo.tipoEquipoId === "string" && equipo.tipoEquipoId.trim() ?
+        tipoActivo === "BIOMEDICO" &&
+          typeof equipo.tipoEquipoId === "string" &&
+          equipo.tipoEquipoId.trim() ?
           equipo.tipoEquipoId.trim() :
           undefined,
       hojaVidaDatos:
-        typeof equipo.hojaVidaDatos === "object" && equipo.hojaVidaDatos ?
+        tipoActivo === "BIOMEDICO" &&
+          typeof equipo.hojaVidaDatos === "object" &&
+          equipo.hojaVidaDatos ?
           equipo.hojaVidaDatos :
           undefined,
       hojaVidaOverrides:
-        typeof equipo.hojaVidaOverrides === "object" &&
+        tipoActivo === "BIOMEDICO" &&
+          typeof equipo.hojaVidaOverrides === "object" &&
           equipo.hojaVidaOverrides ?
           equipo.hojaVidaOverrides :
           undefined,
       calibracionPeriodicidad:
-        typeof equipo.calibracionPeriodicidad === "string" &&
+        tipoActivo === "BIOMEDICO" &&
+          typeof equipo.calibracionPeriodicidad === "string" &&
           equipo.calibracionPeriodicidad.trim() ?
           upperTrim(equipo.calibracionPeriodicidad) :
           undefined,
       fechaMantenimiento:
-        typeof equipo.fechaMantenimiento === "string" &&
+        tipoActivo === "BIOMEDICO" &&
+          typeof equipo.fechaMantenimiento === "string" &&
           equipo.fechaMantenimiento.trim() ?
           equipo.fechaMantenimiento.trim() :
           undefined,

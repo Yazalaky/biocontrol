@@ -122,6 +122,23 @@ service cloud.firestore {
       return isSameUserOrg(resource.data);
     }
 
+    function equipoPathById(equipoId) {
+      return /databases/$(database)/documents/equipos/$(equipoId);
+    }
+
+    function equipoExists(equipoId) {
+      return equipoId is string && exists(equipoPathById(equipoId));
+    }
+
+    function tipoActivoEsBiomedico(data) {
+      return !(data.tipoActivo is string) || data.tipoActivo == "BIOMEDICO";
+    }
+
+    function linkedEquipoEsBiomedico(equipoId) {
+      return equipoExists(equipoId)
+        && tipoActivoEsBiomedico(get(equipoPathById(equipoId)).data);
+    }
+
     // --- USERS ---
     match /users/{uid} {
       allow read: if isSignedIn() && request.auth.uid == uid;
@@ -202,18 +219,26 @@ service cloud.firestore {
           return get(/databases/$(database)/documents/equipos/$(id)).data;
         }
 
+        function parentEquipoEsBiomedico() {
+          return tipoActivoEsBiomedico(parentEquipoData());
+        }
+
         function canReadCalibracionDoc() {
           return canReadOrgDoc(resource.data) || canReadOrgDoc(parentEquipoData());
         }
 
         allow read: if canReadCalibracionDoc()
           && (isBiomedico() || isAuxiliar() || isGerencia() || isAdmin());
-        allow create: if isBiomedico() && canCreateInOwnOrg();
+        allow create: if isBiomedico()
+          && canCreateInOwnOrg()
+          && isSameUserOrg(parentEquipoData())
+          && parentEquipoEsBiomedico();
         allow update: if isBiomedico()
           && (
             canUpdateInOwnOrg()
             || isSameUserOrg(parentEquipoData())
           )
+          && parentEquipoEsBiomedico()
           && request.resource.data.diff(resource.data).changedKeys().hasOnly([
             "certificado",
             "costo",
@@ -412,8 +437,13 @@ service cloud.firestore {
     match /mantenimientos/{id} {
       allow read: if canReadOrgDoc(resource.data)
         && (isBiomedico() || isAuxiliar() || isGerencia());
-      allow create: if (isBiomedico() || isAuxiliar()) && canCreateInOwnOrg();
-      allow update: if (isBiomedico() || isAuxiliar()) && canUpdateInOwnOrg();
+      allow create: if (isBiomedico() || isAuxiliar())
+        && canCreateInOwnOrg()
+        && linkedEquipoEsBiomedico(request.resource.data.equipoId);
+      allow update: if (isBiomedico() || isAuxiliar())
+        && canUpdateInOwnOrg()
+        && request.resource.data.equipoId == resource.data.equipoId
+        && linkedEquipoEsBiomedico(resource.data.equipoId);
       allow delete: if false;
     }
 

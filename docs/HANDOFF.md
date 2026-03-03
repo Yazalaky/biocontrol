@@ -97,6 +97,14 @@ Contexto organizacional (fase 2.1, marzo 2026):
 - Functions y reglas validan acceso por pertenencia a `scope` (no solo por
   `empresaId/sedeId` principal).
 
+Contexto inventario multisede (fase 3.1, marzo 2026):
+- `equipos` soporta `tipoActivo` (`BIOMEDICO`, `NO_BIOMEDICO`, `MOBILIARIO`)
+  con compatibilidad legacy (sin campo => biomédico).
+- En `createEquipo`, Aliados usa consecutivos `ALD000` y `ALDM000` por sede;
+  Medicuc conserva prefijos legacy `MBG/MBP/MBA/MBE`.
+- `firestore.rules` bloquea creación/edición de mantenimientos y calibraciones
+  para activos no biomédicos.
+
 Reglas relevantes (`firestore.rules`):
 - Visitador: lectura acotada (pacientes activos, asignaciones activas, etc.).
 - Reportes de visita: creación solo por callable `createReporteEquipo` con anti-duplicado global por asignación.

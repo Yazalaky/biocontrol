@@ -64,6 +64,22 @@ export enum TipoPropiedad {
   EXTERNO = 'EXTERNO',
 }
 
+export enum TipoActivoInventario {
+  BIOMEDICO = 'BIOMEDICO',
+  NO_BIOMEDICO = 'NO_BIOMEDICO',
+  MOBILIARIO = 'MOBILIARIO',
+}
+
+export interface DetalleActivoNoBiomedico {
+  tipo?: string;
+  servicio?: string;
+  ubicacion?: string;
+  fechaAdquisicion?: string;
+  costo?: string;
+  proveedor?: string;
+  estadoActual?: string;
+}
+
 export interface HojaVidaCaracteristicasFisicas {
   altoCm?: string;
   anchoCm?: string;
@@ -259,6 +275,10 @@ export interface EquipoBiomedico {
   ubicacionActual?: string; 
   observaciones: string;
   tipoPropiedad: TipoPropiedad;
+  // Clasificación del inventario multisede (legacy: si no existe, BIOMEDICO).
+  tipoActivo?: TipoActivoInventario;
+  // Solo aplica para NO_BIOMEDICO/MOBILIARIO.
+  detalleActivo?: DetalleActivoNoBiomedico;
   // Empresa de alquiler (solo cuando tipoPropiedad = ALQUILADO).
   empresaAlquiler?: string;
   datosPropietario?: {
