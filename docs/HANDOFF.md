@@ -63,6 +63,7 @@ Colecciones clave:
 - `admins` (flag admin UI)
 - `empresas` (catálogo organizacional)
 - `sedes` (catálogo por empresa; incluye `usaConsultorios`)
+- `consultorios` (por empresa/sede para consulta externa)
 - `pacientes`
 - `profesionales`
 - `equipos`
@@ -105,6 +106,13 @@ Contexto inventario multisede (fase 3.1, marzo 2026):
 - Medicuc conserva autogeneración legacy `MBG/MBP/MBA/MBE`.
 - `firestore.rules` bloquea creación/edición de mantenimientos y calibraciones
   para activos no biomédicos.
+
+Contexto consulta externa (fase 3.3, marzo 2026):
+- Se habilita colección `consultorios` con contexto `empresaId/sedeId`.
+- Inventario en Aliados permite crear/editar/inactivar consultorios.
+- Altas de equipo permiten vincular `consultorioId` y `consultorioNombre`.
+- `createEquipo` valida en backend que el consultorio exista, esté activo y
+  pertenezca a la sede activa.
 
 Reglas relevantes (`firestore.rules`):
 - Visitador: lectura acotada (pacientes activos, asignaciones activas, etc.).

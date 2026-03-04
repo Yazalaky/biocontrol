@@ -15,6 +15,7 @@ import {
   TipoEquipo,
   type Asignacion,
   type AsignacionProfesional,
+  type Consultorio,
   type Paciente,
   type Profesional,
   type ReporteEquipo,
@@ -43,6 +44,9 @@ import {
   subscribeProfesionales,
   subscribeReportesEquipos,
   subscribeSolicitudesEquiposPacientePendientes,
+  subscribeConsultorios,
+  saveConsultorio,
+  deleteConsultorio,
 } from '../services/firestoreData';
 
 type HistoryRow = {
@@ -119,6 +123,7 @@ const Inventory: React.FC = () => {
   const [asignaciones, setAsignaciones] = useState<Asignacion[]>([]);
   const [profesionales, setProfesionales] = useState<Profesional[]>([]);
   const [asignacionesProfesionales, setAsignacionesProfesionales] = useState<AsignacionProfesional[]>([]);
+  const [consultorios, setConsultorios] = useState<Consultorio[]>([]);
   const [firestoreError, setFirestoreError] = useState<string | null>(null);
   const [solicitudesPendientes, setSolicitudesPendientes] = useState<SolicitudEquipoPaciente[]>([]);
   const [reportesEquipos, setReportesEquipos] = useState<ReporteEquipo[]>([]);
@@ -160,6 +165,15 @@ const Inventory: React.FC = () => {
     trabajoRealizadoDefault: '',
   });
   const [tipoSaving, setTipoSaving] = useState(false);
+  const [isConsultorioModalOpen, setIsConsultorioModalOpen] = useState(false);
+  const [consultorioForm, setConsultorioForm] = useState<Consultorio>({
+    id: '',
+    nombre: '',
+    servicio: '',
+    ubicacion: '',
+    activo: true,
+  });
+  const [consultorioSaving, setConsultorioSaving] = useState(false);
 
   // Modal History State
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
@@ -282,6 +296,15 @@ const Inventory: React.FC = () => {
         `No tienes permisos para leer "asignaciones_profesionales" en Firestore. Detalle: ${e.message}`,
       );
     });
+    let unsubConsultorios = () => {};
+    if (isAliadosContext) {
+      unsubConsultorios = subscribeConsultorios(setConsultorios, (e) => {
+        console.error('Firestore subscribeConsultorios error:', e);
+        setFirestoreError(`No tienes permisos para leer "consultorios" en Firestore. Detalle: ${e.message}`);
+      });
+    } else {
+      setConsultorios([]);
+    }
     return () => {
       unsubEquipos();
       unsubTipos();
@@ -289,8 +312,9 @@ const Inventory: React.FC = () => {
       unsubAsignaciones();
       unsubProfesionales();
       unsubAsignacionesProfesionales();
+      unsubConsultorios();
     };
-  }, []);
+  }, [isAliadosContext]);
 
   useEffect(() => {
     if (!canReadReportes) return;
@@ -356,6 +380,14 @@ const Inventory: React.FC = () => {
   const aliadosCodeRegex = useMemo(
     () => new RegExp(`^${aliadosPrefix}\\d{3}$`),
     [aliadosPrefix],
+  );
+  const consultoriosById = useMemo(
+    () => new Map(consultorios.map((c) => [c.id, c])),
+    [consultorios],
+  );
+  const consultoriosActivos = useMemo(
+    () => consultorios.filter((c) => c.activo !== false),
+    [consultorios],
   );
   const pacientesById = useMemo(() => new Map(pacientes.map((p) => [p.id, p])), [pacientes]);
   const profesionalesById = useMemo(() => new Map(profesionales.map((p) => [p.id, p])), [profesionales]);
@@ -441,7 +473,8 @@ const Inventory: React.FC = () => {
         e.codigoInventario.toLowerCase().includes(term) ||
         e.numeroSerie.toLowerCase().includes(term) ||
         e.nombre.toLowerCase().includes(term) ||
-        e.marca.toLowerCase().includes(term)
+        e.marca.toLowerCase().includes(term) ||
+        (e.consultorioNombre || '').toLowerCase().includes(term)
       );
     });
   }, [equipos, searchTerm, statusFilter, activeAsignacionByEquipo, lastFinalEstadoByEquipo]);
@@ -551,6 +584,10 @@ const Inventory: React.FC = () => {
     const calibracionPeriodicidad =
       (formData.hojaVidaOverrides?.calibracion ?? tipoSeleccionado?.fijos?.calibracion ?? '').trim();
     const codigoNormalizado = (formData.codigoInventario || '').trim().toUpperCase();
+    const consultorioId = (formData.consultorioId || '').trim();
+    const consultorioNombre = consultorioId
+      ? consultoriosById.get(consultorioId)?.nombre || formData.consultorioNombre || ''
+      : '';
 
     const newEquipo: EquipoBiomedico = {
       id: formData.id || '',
@@ -587,6 +624,8 @@ const Inventory: React.FC = () => {
       ubicacionActual: !isBiomedicoActivo
         ? formData.detalleActivo?.ubicacion || formData.ubicacionActual || 'Bodega'
         : formData.ubicacionActual || 'Bodega',
+      consultorioId: consultorioId || undefined,
+      consultorioNombre: consultorioNombre || undefined,
       tipoPropiedad: formData.tipoPropiedad || TipoPropiedad.MEDICUC,
       empresaAlquiler:
         isBiomedicoActivo && formData.tipoPropiedad === TipoPropiedad.ALQUILADO
@@ -821,6 +860,87 @@ const Inventory: React.FC = () => {
         ...patch,
       },
     }));
+  };
+
+  const openNewConsultorio = () => {
+    if (!canEdit || !isAliadosContext) return;
+    setConsultorioForm({
+      id: '',
+      nombre: '',
+      servicio: '',
+      ubicacion: '',
+      activo: true,
+    });
+    setIsConsultorioModalOpen(true);
+  };
+
+  const openEditConsultorio = (consultorio: Consultorio) => {
+    if (!canEdit || !isAliadosContext) return;
+    setConsultorioForm({
+      id: consultorio.id,
+      nombre: consultorio.nombre || '',
+      servicio: consultorio.servicio || '',
+      ubicacion: consultorio.ubicacion || '',
+      activo: consultorio.activo !== false,
+    });
+    setIsConsultorioModalOpen(true);
+  };
+
+  const handleSaveConsultorio = async () => {
+    if (!canEdit || !isAliadosContext) return;
+    if (!consultorioForm.nombre.trim()) {
+      toast({ tone: 'warning', message: 'Escribe el nombre del consultorio.' });
+      return;
+    }
+    if (!consultorioForm.servicio.trim()) {
+      toast({ tone: 'warning', message: 'Escribe el servicio del consultorio.' });
+      return;
+    }
+    if (!consultorioForm.ubicacion.trim()) {
+      toast({ tone: 'warning', message: 'Escribe la ubicación del consultorio.' });
+      return;
+    }
+
+    setConsultorioSaving(true);
+    try {
+      await saveConsultorio(consultorioForm);
+      setIsConsultorioModalOpen(false);
+      toast({ tone: 'success', message: 'Consultorio guardado correctamente.' });
+    } catch (err: unknown) {
+      console.error('Error guardando consultorio:', err);
+      toast({ tone: 'error', message: parseError(err, 'No se pudo guardar el consultorio.').message });
+    } finally {
+      setConsultorioSaving(false);
+    }
+  };
+
+  const handleDeleteConsultorio = async (consultorio: Consultorio) => {
+    if (!canEdit || !isAliadosContext) return;
+    const equiposVinculados = equipos.filter((e) => e.consultorioId === consultorio.id).length;
+    if (equiposVinculados > 0) {
+      toast({
+        tone: 'warning',
+        message: `No puedes eliminarlo. Tiene ${equiposVinculados} equipo(s) vinculados.`,
+      });
+      return;
+    }
+
+    const ok = await confirmDialog({
+      title: 'Eliminar consultorio',
+      message: `Se eliminará ${consultorio.nombre}.`,
+      confirmText: 'Eliminar',
+      cancelText: 'Cancelar',
+      tone: 'danger',
+    });
+    if (!ok) return;
+
+    try {
+      await deleteConsultorio(consultorio.id);
+      toast({ tone: 'success', message: 'Consultorio eliminado.' });
+    } catch (err: unknown) {
+      console.error('Error eliminando consultorio:', err);
+      toast({ tone: 'error', message: parseError(err, 'No se pudo eliminar el consultorio.').message });
+    }
   };
 
   const openEdit = (equipo: EquipoBiomedico) => {
@@ -1520,6 +1640,72 @@ const Inventory: React.FC = () => {
         )}
       </div>
 
+      {isAliadosContext && canEdit && (
+        <div className="md-card p-4 mb-6">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-bold text-gray-900">Consultorios (Aliados)</div>
+              <div className="text-xs text-gray-500 mt-0.5">
+                Crea consultorios para ubicar equipos de consulta externa.
+              </div>
+            </div>
+            <button type="button" className="md-btn md-btn-outlined" onClick={openNewConsultorio}>
+              Nuevo consultorio
+            </button>
+          </div>
+
+          <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
+            {consultorios.length === 0 ? (
+              <div className="text-sm text-gray-500">No hay consultorios registrados.</div>
+            ) : (
+              consultorios.map((c) => {
+                const vinculados = equipos.filter((e) => e.consultorioId === c.id).length;
+                return (
+                  <div key={c.id} className="border rounded-lg p-3 bg-white">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-gray-900">{c.nombre}</div>
+                        <div className="text-xs text-gray-600 mt-0.5">
+                          Servicio: {c.servicio} · Ubicación: {c.ubicacion}
+                        </div>
+                        <div className="text-xs text-gray-500 mt-1">
+                          Equipos vinculados: {vinculados}
+                        </div>
+                      </div>
+                      <span
+                        className={`text-[10px] px-2 py-1 rounded-full border ${
+                          c.activo !== false
+                            ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                            : 'border-gray-200 bg-gray-100 text-gray-600'
+                        }`}
+                      >
+                        {c.activo !== false ? 'ACTIVO' : 'INACTIVO'}
+                      </span>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="md-btn md-btn-outlined"
+                        onClick={() => openEditConsultorio(c)}
+                      >
+                        Editar
+                      </button>
+                      <button
+                        type="button"
+                        className="md-btn md-btn-outlined border-red-200 text-red-700 hover:bg-red-50"
+                        onClick={() => handleDeleteConsultorio(c)}
+                      >
+                        Eliminar
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+
       {canEdit && (
         <div id="solicitudes-paciente" className="md-card p-4 mb-6">
           <div className="flex items-start justify-between gap-3">
@@ -1598,6 +1784,12 @@ const Inventory: React.FC = () => {
 
                 <div className="mt-4 pt-4 border-t border-gray-100 text-sm space-y-1">
                   <p><span className="font-semibold text-gray-500">Ubicación:</span> {ubicacion}</p>
+                  {equipo.consultorioNombre && (
+                    <p>
+                      <span className="font-semibold text-gray-500">Consultorio:</span>{' '}
+                      {equipo.consultorioNombre}
+                    </p>
+                  )}
                   <p className="truncate"><span className="font-semibold text-gray-500">Obs:</span> {equipo.observaciones}</p>
                   {equipo.fechaIngreso && (
                     <p className="text-xs text-gray-500 mt-2">
@@ -1659,6 +1851,7 @@ const Inventory: React.FC = () => {
                   <th className="px-4 py-3 text-left">Equipo</th>
                   <th className="px-4 py-3 text-left">Serie</th>
                   <th className="px-4 py-3 text-left">Ubicación</th>
+                  <th className="px-4 py-3 text-left">Consultorio</th>
                   <th className="px-4 py-3 text-left">Estado</th>
                   <th className="px-4 py-3 text-left">Propiedad</th>
                   <th className="px-4 py-3 text-left">Ingreso</th>
@@ -1691,6 +1884,9 @@ const Inventory: React.FC = () => {
                         {equipo.numeroSerie}
                       </td>
                       <td className="px-4 py-3 text-sm text-gray-700">{ubicacion}</td>
+                      <td className="px-4 py-3 text-sm text-gray-700">
+                        {equipo.consultorioNombre || '—'}
+                      </td>
                       <td className="px-4 py-3">
                         <StatusBadge status={status} />
                       </td>
@@ -1825,6 +2021,70 @@ const Inventory: React.FC = () => {
                   Crear equipo
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isConsultorioModalOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg w-full max-w-lg p-6">
+            <h3 className="text-xl font-bold mb-4">
+              {consultorioForm.id ? 'Editar Consultorio' : 'Nuevo Consultorio'}
+            </h3>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm font-medium">Nombre</label>
+                <input
+                  className="w-full border p-2 rounded"
+                  value={consultorioForm.nombre}
+                  onChange={(e) => setConsultorioForm((prev) => ({ ...prev, nombre: e.target.value }))}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium">Servicio</label>
+                <input
+                  className="w-full border p-2 rounded"
+                  value={consultorioForm.servicio}
+                  onChange={(e) => setConsultorioForm((prev) => ({ ...prev, servicio: e.target.value }))}
+                  placeholder="Ej: CONSULTA EXTERNA"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium">Ubicación</label>
+                <input
+                  className="w-full border p-2 rounded"
+                  value={consultorioForm.ubicacion}
+                  onChange={(e) => setConsultorioForm((prev) => ({ ...prev, ubicacion: e.target.value }))}
+                  placeholder="Ej: PISO 2 - BLOQUE B"
+                />
+              </div>
+              <label className="flex items-center gap-2 border rounded p-2">
+                <input
+                  type="checkbox"
+                  checked={consultorioForm.activo !== false}
+                  onChange={(e) => setConsultorioForm((prev) => ({ ...prev, activo: e.target.checked }))}
+                />
+                <span className="text-sm">Consultorio activo</span>
+              </label>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                className="px-4 py-2 border rounded hover:bg-gray-100"
+                onClick={() => setIsConsultorioModalOpen(false)}
+                disabled={consultorioSaving}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-60"
+                onClick={handleSaveConsultorio}
+                disabled={consultorioSaving}
+              >
+                {consultorioSaving ? 'Guardando...' : 'Guardar'}
+              </button>
             </div>
           </div>
         </div>
@@ -2093,6 +2353,45 @@ const Inventory: React.FC = () => {
                       required
                     />
                   </div>
+                </div>
+              )}
+
+              {isAliadosContext && (
+                <div className="border rounded-lg p-3 bg-slate-50">
+                  <label className="block text-sm font-medium">Consultorio</label>
+                  <select
+                    className="w-full border p-2 rounded mt-1"
+                    value={formData.consultorioId || ''}
+                    onChange={(e) => {
+                      const consultorioId = e.target.value;
+                      const selected = consultoriosById.get(consultorioId);
+                      setFormData((prev) => ({
+                        ...prev,
+                        consultorioId: consultorioId || undefined,
+                        consultorioNombre: selected?.nombre || undefined,
+                        ubicacionActual:
+                          consultorioId && selected && !prev.ubicacionActual
+                            ? selected.ubicacion
+                            : prev.ubicacionActual,
+                      }));
+                    }}
+                  >
+                    <option value="">Sin consultorio</option>
+                    {consultorios.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.nombre}
+                        {c.activo === false ? ' (INACTIVO)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">
+                    En Aliados puedes vincular el equipo a un consultorio de consulta externa.
+                  </p>
+                  {consultoriosActivos.length === 0 && (
+                    <p className="text-xs text-amber-700 mt-1">
+                      No hay consultorios activos. Crea uno para poder asignarlo.
+                    </p>
+                  )}
                 </div>
               )}
 

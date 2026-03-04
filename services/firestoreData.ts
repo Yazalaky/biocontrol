@@ -26,6 +26,7 @@ import { firebaseFunctions } from './firebaseFunctions';
 import { getStoredAccessProfile, getStoredOrgContext, withOrgContext } from './orgContext';
 import {
   type Empresa,
+  type Consultorio,
   type OrgContext,
   type Sede,
   EstadoActaInterna,
@@ -69,6 +70,7 @@ const solicitudesEquiposPacienteCol = collection(db, 'solicitudes_equipos_pacien
 const tiposEquipoCol = collection(db, 'tipos_equipo');
 const empresasCol = collection(db, 'empresas');
 const sedesCol = collection(db, 'sedes');
+const consultoriosCol = collection(db, 'consultorios');
 
 export type FirmaCapturadaVisitador = {
   idAsignacion: string;
@@ -121,6 +123,63 @@ export function subscribeSedes(onData: (sedes: Sede[]) => void, onError?: (e: Er
     },
     (err) => onError?.(err as unknown as Error),
   );
+}
+
+export function subscribeConsultorios(
+  onData: (consultorios: Consultorio[]) => void,
+  onError?: (e: Error) => void,
+) {
+  const q = query(consultoriosCol, ...orgScopeConstraints());
+  return onSnapshot(
+    q,
+    (snap) => {
+      const consultorios = snap.docs
+        .map((d) => ({ id: d.id, ...(d.data() as Omit<Consultorio, 'id'>) }))
+        .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
+      onData(consultorios);
+    },
+    (err) => onError?.(err as unknown as Error),
+  );
+}
+
+export async function saveConsultorio(consultorio: Consultorio) {
+  if (!consultorio.nombre?.trim()) {
+    throw new Error('El consultorio debe tener nombre.');
+  }
+  if (!consultorio.servicio?.trim()) {
+    throw new Error('El consultorio debe tener servicio.');
+  }
+  if (!consultorio.ubicacion?.trim()) {
+    throw new Error('El consultorio debe tener ubicación.');
+  }
+
+  const payload: Omit<Consultorio, 'id'> = {
+    nombre: upper(consultorio.nombre),
+    servicio: upper(consultorio.servicio),
+    ubicacion: upper(consultorio.ubicacion),
+    activo: consultorio.activo !== false,
+    updatedAt: new Date().toISOString(),
+  };
+
+  if (consultorio.id) {
+    const ref = doc(consultoriosCol, consultorio.id);
+    await updateDoc(ref, withContext(payload) as any);
+    return consultorio.id;
+  }
+
+  const docRef = await addDoc(
+    consultoriosCol,
+    withContext({
+      ...payload,
+      createdAt: new Date().toISOString(),
+    }) as any,
+  );
+  return docRef.id;
+}
+
+export async function deleteConsultorio(id: string) {
+  const ref = doc(consultoriosCol, id);
+  await deleteDoc(ref);
 }
 
 function assertRoleString(value: string, allowed: readonly string[], fieldName: string) {
@@ -1278,6 +1337,8 @@ export async function saveEquipo(equipo: EquipoBiomedico): Promise<string | unde
     hojaVidaOverrides: upperHojaVidaFijos(equipo.hojaVidaOverrides),
     detalleActivo: upperDetalleActivo(equipo.detalleActivo),
     calibracionPeriodicidad: upperOptional(equipo.calibracionPeriodicidad),
+    consultorioId: equipo.consultorioId?.trim() || undefined,
+    consultorioNombre: upperOptional(equipo.consultorioNombre),
     empresaAlquiler: upperOptional(equipo.empresaAlquiler),
     datosPropietario: equipo.datosPropietario
       ? {
@@ -1308,6 +1369,12 @@ export async function saveEquipo(equipo: EquipoBiomedico): Promise<string | unde
     }
     if (!payload.calibracionPeriodicidad) {
       payload.calibracionPeriodicidad = deleteField();
+    }
+    if (payload.consultorioId) {
+      payload.consultorioNombre = upperOptional(payload.consultorioNombre);
+    } else {
+      payload.consultorioId = deleteField();
+      payload.consultorioNombre = deleteField();
     }
     await updateDoc(ref, payload);
     return;

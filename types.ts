@@ -37,6 +37,18 @@ export interface Sede {
   updatedAt?: string;
 }
 
+export interface Consultorio {
+  id: string;
+  empresaId?: EmpresaId;
+  sedeId?: SedeId;
+  nombre: string;
+  servicio: string;
+  ubicacion: string;
+  activo: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 // Estados del Paciente
 export enum EstadoPaciente {
   ACTIVO = 'ACTIVO',
@@ -271,6 +283,9 @@ export interface EquipoBiomedico {
   custodioUid?: string;
   // Si existe, indica que el equipo está en una acta interna pendiente de aceptación.
   actaInternaPendienteId?: string;
+  // Relación opcional para sedes con consulta externa (Aliados).
+  consultorioId?: string;
+  consultorioNombre?: string;
   // Campo para control de acceso del rol VISITADOR (solo equipos con asignación activa).
   asignadoActivo?: boolean;
   ubicacionActual?: string; 

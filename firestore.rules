@@ -162,6 +162,15 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
+    // --- CONSULTORIOS (Aliados / consulta externa) ---
+    match /consultorios/{id} {
+      allow read: if canReadOrgDoc(resource.data)
+        && (isBiomedico() || isAuxiliar() || isGerencia() || isAdmin());
+      allow create: if isBiomedico() && canCreateInOwnOrg();
+      allow update: if isBiomedico() && canUpdateInOwnOrg();
+      allow delete: if isBiomedico() && canDeleteInOwnOrg();
+    }
+
     // --- PACIENTES ---
     match /pacientes/{id} {
       // VISITADOR: puede ver pacientes activos (para rutero)

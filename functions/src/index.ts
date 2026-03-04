@@ -1123,6 +1123,10 @@ export const createEquipo = onCall(async (request) => {
     typeof equipo.detalleActivo === "object" && equipo.detalleActivo ?
       (equipo.detalleActivo as Record<string, unknown>) :
       null;
+  const consultorioIdRaw =
+    typeof equipo.consultorioId === "string" ?
+      equipo.consultorioId.trim() :
+      "";
   const detalleActivo = detalleActivoRaw ? {
     tipo: upperTrim(detalleActivoRaw.tipo) || undefined,
     servicio: upperTrim(detalleActivoRaw.servicio) || undefined,
@@ -1174,6 +1178,46 @@ export const createEquipo = onCall(async (request) => {
   }
 
   const created = await db.runTransaction(async (tx) => {
+    let consultorioId: string | undefined;
+    let consultorioNombre: string | undefined;
+
+    if (consultorioIdRaw) {
+      const consultorioRef = db.doc(`consultorios/${consultorioIdRaw}`);
+      const consultorioSnap = await tx.get(consultorioRef);
+      if (!consultorioSnap.exists) {
+        throw new HttpsError(
+          "not-found",
+          "El consultorio seleccionado no existe.",
+        );
+      }
+      const consultorioData = consultorioSnap.data() as Record<
+        string,
+        unknown
+      >;
+      const consultorioOrg = buildOrgContext(consultorioData);
+      if (!isSameOrg(consultorioOrg, orgContext)) {
+        throw new HttpsError(
+          "permission-denied",
+          "El consultorio no pertenece a la sede activa.",
+        );
+      }
+      if (consultorioData.activo === false) {
+        throw new HttpsError(
+          "failed-precondition",
+          "El consultorio está inactivo.",
+        );
+      }
+      const nombreConsultorio = upperTrim(consultorioData.nombre);
+      if (!nombreConsultorio) {
+        throw new HttpsError(
+          "failed-precondition",
+          "El consultorio no tiene nombre válido.",
+        );
+      }
+      consultorioId = consultorioSnap.id;
+      consultorioNombre = nombreConsultorio;
+    }
+
     if (numeroSerie) {
       const dupSerieSnap = await tx.get(
         db.collection("equipos")
@@ -1320,6 +1364,8 @@ export const createEquipo = onCall(async (request) => {
           equipo.datosPropietario ?
           equipo.datosPropietario :
           undefined,
+      consultorioId,
+      consultorioNombre,
       createdAt: FieldValue.serverTimestamp(),
     };
 
