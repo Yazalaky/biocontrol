@@ -116,6 +116,14 @@ const Icons = {
       <path d="M8 9h2" />
     </svg>
   ),
+  consultorios: (
+    <svg className="app-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M3 21V9l9-6 9 6v12" />
+      <path d="M9 21v-6h6v6" />
+      <path d="M9 9h.01" />
+      <path d="M15 9h.01" />
+    </svg>
+  ),
 };
 
 const Layout: React.FC<LayoutProps> = ({ children, title }) => {
@@ -175,13 +183,14 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
     setPendingSolicitudesEquipos(0);
     if (!usuario?.id) return;
     if (usuario.rol !== RolUsuario.INGENIERO_BIOMEDICO) return;
+    if (activeOrgContext.empresaId === 'ALIADOS') return;
 
     const unsub = subscribeSolicitudesEquiposPacientePendientes(
       (items) => setPendingSolicitudesEquipos(items.length),
       () => setPendingSolicitudesEquipos(0),
     );
     return () => unsub();
-  }, [usuario?.id, usuario?.rol]);
+  }, [usuario?.id, usuario?.rol, activeOrgContext.empresaId]);
 
   React.useEffect(() => {
     setPendingCerradosSinLeer(0);
@@ -230,6 +239,7 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
         {path === '#/visitas' ? Icons.visits : null}
         {path === '#/mantenimientos' ? Icons.maintenance : null}
         {path === '#/calibraciones' ? Icons.calibrations : null}
+        {path === '#/consultorios' ? Icons.consultorios : null}
         {path === '#/actas-internas' ? Icons.actas : null}
         {path === '#/admin' ? Icons.admin : null}
         <span className="text-sm font-medium flex-1 text-left">{label}</span>
@@ -367,8 +377,19 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
             label="Inventario Equipos" 
             path="#/equipos" 
             roles={[RolUsuario.INGENIERO_BIOMEDICO, RolUsuario.AUXILIAR_ADMINISTRATIVA, RolUsuario.GERENCIA]} 
-            badge={usuario?.rol === RolUsuario.INGENIERO_BIOMEDICO ? pendingSolicitudesEquipos : 0}
+            badge={
+              usuario?.rol === RolUsuario.INGENIERO_BIOMEDICO && !isAliadosContext
+                ? pendingSolicitudesEquipos
+                : 0
+            }
           />
+          {isAliadosContext && (
+            <NavItem
+              label="Consultorios"
+              path="#/consultorios"
+              roles={[RolUsuario.INGENIERO_BIOMEDICO, RolUsuario.AUXILIAR_ADMINISTRATIVA, RolUsuario.GERENCIA]}
+            />
+          )}
           <NavItem
             label="Mantenimientos"
             path="#/mantenimientos"

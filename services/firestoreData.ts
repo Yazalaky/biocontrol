@@ -182,6 +182,30 @@ export async function deleteConsultorio(id: string) {
   await deleteDoc(ref);
 }
 
+export async function updateEquipoConsultorio(
+  equipoId: string,
+  consultorio?: Pick<Consultorio, 'id' | 'nombre' | 'ubicacion'> | null,
+) {
+  const ref = doc(equiposCol, equipoId);
+  if (consultorio?.id) {
+    await updateDoc(
+      ref,
+      stripUndefinedDeep({
+        consultorioId: consultorio.id,
+        consultorioNombre: upperOptional(consultorio.nombre),
+        ubicacionActual: upperOptional(consultorio.ubicacion),
+      }) as any,
+    );
+    return;
+  }
+
+  await updateDoc(ref, {
+    consultorioId: deleteField(),
+    consultorioNombre: deleteField(),
+    ubicacionActual: 'BODEGA',
+  } as any);
+}
+
 function assertRoleString(value: string, allowed: readonly string[], fieldName: string) {
   if (!allowed.includes(value)) {
     throw new Error(`${fieldName} inválido: "${value}". Valores permitidos: ${allowed.join(', ')}`);

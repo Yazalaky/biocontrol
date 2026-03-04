@@ -13,6 +13,7 @@ import Visits from './pages/Visits';
 import Rutero from './pages/Rutero';
 import Mantenimientos from './pages/Mantenimientos';
 import Calibraciones from './pages/Calibraciones';
+import Consultorios from './pages/Consultorios';
 import FeedbackHost from './components/FeedbackHost';
 import { RolUsuario } from './types';
 
@@ -93,6 +94,8 @@ const Router = () => {
       return <Mantenimientos />;
     case '#/calibraciones':
       return <Calibraciones />;
+    case '#/consultorios':
+      return isAliadosContext ? <Consultorios /> : <Dashboard />;
     case '#/admin':
       return <Admin />;
     case '#/':

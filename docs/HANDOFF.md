@@ -109,10 +109,26 @@ Contexto inventario multisede (fase 3.1, marzo 2026):
 
 Contexto consulta externa (fase 3.3, marzo 2026):
 - Se habilita colección `consultorios` con contexto `empresaId/sedeId`.
-- Inventario en Aliados permite crear/editar/inactivar consultorios.
+- Se habilita módulo dedicado para crear/editar/inactivar consultorios.
 - Altas de equipo permiten vincular `consultorioId` y `consultorioNombre`.
 - `createEquipo` valida en backend que el consultorio exista, esté activo y
   pertenezca a la sede activa.
+
+Operación por consultorio (fase 3.4, marzo 2026):
+- Módulo `Consultorios` con gestión independiente de sedes de consulta externa.
+- Tarjetas de consultorio muestran conteos por estado operativo.
+- Gestión rápida para asignar o quitar equipos del consultorio
+  sin abrir edición completa del equipo.
+- Regla de negocio: equipos `DADO_DE_BAJA` no pueden asignarse a consultorio.
+- Regla de negocio: un equipo ya vinculado debe quitarse primero antes de
+  asignarlo a otro consultorio.
+
+Ajuste UX (marzo 2026):
+- Gestión de consultorios se movió a módulo independiente (`#/consultorios`)
+  en el menú lateral para contexto Aliados.
+- Inventario Aliados ya no muestra panel de consultorios.
+- Solicitudes de equipos del paciente no aplican para Aliados y se ocultan
+  en inventario y badge lateral de inventario.
 
 Reglas relevantes (`firestore.rules`):
 - Visitador: lectura acotada (pacientes activos, asignaciones activas, etc.).
