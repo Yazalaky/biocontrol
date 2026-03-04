@@ -18,7 +18,7 @@ import { RolUsuario } from './types';
 
 // Simple Router Component
 const Router = () => {
-  const { isAuthenticated, loading, usuario } = useAuth();
+  const { isAuthenticated, loading, usuario, activeOrgContext } = useAuth();
   const [currentHash, setCurrentHash] = useState(window.location.hash || '#/');
 
   useEffect(() => {
@@ -28,6 +28,21 @@ const Router = () => {
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
+
+  const isAliadosContext = activeOrgContext.empresaId === 'ALIADOS';
+  const isAliadosRestrictedRole =
+    usuario?.rol === RolUsuario.AUXILIAR_ADMINISTRATIVA ||
+    usuario?.rol === RolUsuario.INGENIERO_BIOMEDICO ||
+    usuario?.rol === RolUsuario.GERENCIA;
+  const isHiddenRouteInAliados =
+    currentHash === '#/pacientes' ||
+    currentHash === '#/profesionales' ||
+    currentHash === '#/visitas';
+  useEffect(() => {
+    if (isAliadosContext && isAliadosRestrictedRole && isHiddenRouteInAliados) {
+      window.location.hash = '#/';
+    }
+  }, [isAliadosContext, isAliadosRestrictedRole, isHiddenRouteInAliados]);
 
   if (loading) {
     return (
@@ -54,6 +69,10 @@ const Router = () => {
       default:
         return <Visits />;
     }
+  }
+
+  if (isAliadosContext && isAliadosRestrictedRole && isHiddenRouteInAliados) {
+    return <Dashboard />;
   }
 
   // Rutas

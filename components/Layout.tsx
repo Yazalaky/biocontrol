@@ -24,6 +24,15 @@ function getInitials(name?: string | null) {
   return (first + last).toUpperCase();
 }
 
+function formatScopeLabel(scope: { empresaId: string; sedeId: string }) {
+  const empresaId = (scope.empresaId || '').trim().toUpperCase();
+  const sedeId = (scope.sedeId || '').trim().toUpperCase();
+  if (empresaId === 'ALIADOS' && sedeId === 'ALIADOS_CUC') {
+    return 'ALIADOS SEDE B / ALIADOS_CUC';
+  }
+  return `${empresaId} / ${sedeId}`;
+}
+
 const Icons = {
   dashboard: (
     <svg className="app-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -259,6 +268,14 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
 
   const canSwitchScope =
     usuario?.rol === RolUsuario.INGENIERO_BIOMEDICO && availableScopes.length > 1;
+  const isAliadosContext = activeOrgContext.empresaId === 'ALIADOS';
+  const hideAliadosConsultasModules =
+    isAliadosContext &&
+    hasRole([
+      RolUsuario.AUXILIAR_ADMINISTRATIVA,
+      RolUsuario.INGENIERO_BIOMEDICO,
+      RolUsuario.GERENCIA,
+    ]);
 
   return (
     <div className="app-shell flex h-screen overflow-hidden">
@@ -309,7 +326,7 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
                     key={`${scope.empresaId}::${scope.sedeId}`}
                     value={`${scope.empresaId}::${scope.sedeId}`}
                   >
-                    {scope.empresaId} / {scope.sedeId}
+                    {formatScopeLabel(scope)}
                   </option>
                 ))}
               </select>
@@ -327,17 +344,20 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
           <div className="mt-5 mb-2 px-4 text-xs font-semibold sidebar-muted uppercase tracking-wider">
             Gestión
           </div>
-          {/* SE AGREGÓ EL ROL DE INGENIERO BIOMEDICO A PACIENTES */}
-          <NavItem 
-            label="Pacientes" 
-            path="#/pacientes" 
-            roles={[RolUsuario.AUXILIAR_ADMINISTRATIVA, RolUsuario.GERENCIA, RolUsuario.INGENIERO_BIOMEDICO]} 
-          />
-          <NavItem
-            label="Profesionales"
-            path="#/profesionales"
-            roles={[RolUsuario.AUXILIAR_ADMINISTRATIVA, RolUsuario.GERENCIA, RolUsuario.INGENIERO_BIOMEDICO]}
-          />
+          {!hideAliadosConsultasModules && (
+            <NavItem
+              label="Pacientes"
+              path="#/pacientes"
+              roles={[RolUsuario.AUXILIAR_ADMINISTRATIVA, RolUsuario.GERENCIA, RolUsuario.INGENIERO_BIOMEDICO]}
+            />
+          )}
+          {!hideAliadosConsultasModules && (
+            <NavItem
+              label="Profesionales"
+              path="#/profesionales"
+              roles={[RolUsuario.AUXILIAR_ADMINISTRATIVA, RolUsuario.GERENCIA, RolUsuario.INGENIERO_BIOMEDICO]}
+            />
+          )}
           <NavItem
             label="Rutero"
             path="#/rutero"
@@ -360,18 +380,20 @@ const Layout: React.FC<LayoutProps> = ({ children, title }) => {
             path="#/calibraciones"
             roles={[RolUsuario.INGENIERO_BIOMEDICO, RolUsuario.AUXILIAR_ADMINISTRATIVA, RolUsuario.GERENCIA]}
           />
-          <NavItem
-            label={usuario?.rol === RolUsuario.INGENIERO_BIOMEDICO ? 'Reportes de Visitas' : 'Visitas'}
-            path="#/visitas"
-            roles={[RolUsuario.VISITADOR, RolUsuario.INGENIERO_BIOMEDICO]}
-            badge={
-              usuario?.rol === RolUsuario.INGENIERO_BIOMEDICO
-                ? pendingReportesAbiertos
-                : usuario?.rol === RolUsuario.VISITADOR
-                  ? pendingCerradosSinLeer
-                  : 0
-            }
-          />
+          {!hideAliadosConsultasModules && (
+            <NavItem
+              label={usuario?.rol === RolUsuario.INGENIERO_BIOMEDICO ? 'Reportes de Visitas' : 'Visitas'}
+              path="#/visitas"
+              roles={[RolUsuario.VISITADOR, RolUsuario.INGENIERO_BIOMEDICO]}
+              badge={
+                usuario?.rol === RolUsuario.INGENIERO_BIOMEDICO
+                  ? pendingReportesAbiertos
+                  : usuario?.rol === RolUsuario.VISITADOR
+                    ? pendingCerradosSinLeer
+                    : 0
+              }
+            />
+          )}
           <NavItem
             label="Actas Internas"
             path="#/actas-internas"

@@ -62,8 +62,19 @@ const StatIcon = ({ type }: { type: 'patients' | 'equipos' | 'assigned' | 'maint
 };
 
 const Dashboard: React.FC = () => {
-  const { hasRole } = useAuth();
+  const { hasRole, activeOrgContext } = useAuth();
   const isBiomedico = hasRole([RolUsuario.INGENIERO_BIOMEDICO]);
+  const hideAliadosAssignmentCards =
+    activeOrgContext.empresaId === 'ALIADOS' &&
+    hasRole([
+      RolUsuario.AUXILIAR_ADMINISTRATIVA,
+      RolUsuario.INGENIERO_BIOMEDICO,
+      RolUsuario.GERENCIA,
+    ]);
+  const costoEquiposTitle =
+    activeOrgContext.empresaId === 'ALIADOS' ?
+      'Costo equipos (ALIADOS)' :
+      'Costo equipos (MEDICUC)';
 
   const [stats, setStats] = useState({
     pacientesActivos: 0,
@@ -457,13 +468,15 @@ const Dashboard: React.FC = () => {
         </div>
       )}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6 gap-6 mb-8">
-        <StatCard
-          title="Pacientes Activos"
-          value={stats.pacientesActivos}
-          accent="#22c55e"
-          icon="patients"
-          subtitle="Usuarios en programa"
-        />
+        {!hideAliadosAssignmentCards && (
+          <StatCard
+            title="Pacientes Activos"
+            value={stats.pacientesActivos}
+            accent="#22c55e"
+            icon="patients"
+            subtitle="Usuarios en programa"
+          />
+        )}
         <StatCard
           title="Total Equipos"
           value={stats.totalEquipos}
@@ -475,7 +488,7 @@ const Dashboard: React.FC = () => {
           <div className="absolute left-0 top-0 bottom-0 w-1.5" style={{ background: '#0ea5e9' }} />
           <div className="flex items-start justify-between">
             <div className="w-full">
-              <p className="text-xs font-semibold tracking-wide text-gray-500 uppercase">Costo equipos (MEDICUC)</p>
+              <p className="text-xs font-semibold tracking-wide text-gray-500 uppercase">{costoEquiposTitle}</p>
               <div className="mt-2 flex items-center justify-between gap-3">
                 <p className="text-xl sm:text-2xl font-extrabold text-gray-900">
                   {selectedYear ? formatCurrency(costoTotalYear) : '—'}
@@ -600,27 +613,33 @@ const Dashboard: React.FC = () => {
             </div>
           </div>
         </div>
-        <StatCard
-          title="Pacientes con Acta Activa"
-          value={stats.pacientesConActaActiva}
-          accent="#14b8a6"
-          icon="patients"
-          subtitle="Con al menos una asignación activa"
-        />
-        <StatCard
-          title="Equipos Asignados (Pacientes)"
-          value={stats.equiposAsignadosPacientes}
-          accent="#2563eb"
-          icon="assigned"
-          subtitle="Activos en pacientes"
-        />
-        <StatCard
-          title="Equipos Asignados (Profesionales)"
-          value={stats.equiposAsignadosProfesionales}
-          accent="#7c3aed"
-          icon="assigned"
-          subtitle="Activos en profesionales"
-        />
+        {!hideAliadosAssignmentCards && (
+          <StatCard
+            title="Pacientes con Acta Activa"
+            value={stats.pacientesConActaActiva}
+            accent="#14b8a6"
+            icon="patients"
+            subtitle="Con al menos una asignación activa"
+          />
+        )}
+        {!hideAliadosAssignmentCards && (
+          <StatCard
+            title="Equipos Asignados (Pacientes)"
+            value={stats.equiposAsignadosPacientes}
+            accent="#2563eb"
+            icon="assigned"
+            subtitle="Activos en pacientes"
+          />
+        )}
+        {!hideAliadosAssignmentCards && (
+          <StatCard
+            title="Equipos Asignados (Profesionales)"
+            value={stats.equiposAsignadosProfesionales}
+            accent="#7c3aed"
+            icon="assigned"
+            subtitle="Activos en profesionales"
+          />
+        )}
         <StatCard
           title="En Mantenimiento"
           value={stats.equiposMantenimiento}
