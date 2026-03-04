@@ -7,6 +7,7 @@ import {
   documentId,
   deleteField,
   doc,
+  getDoc,
   getDocs,
   limit,
   onSnapshot,
@@ -55,6 +56,7 @@ import {
   type Paciente,
   type Profesional,
   type TipoEquipo,
+  type ConsultorioMovimientoEquipo,
 } from '../types';
 
 const pacientesCol = collection(db, 'pacientes');
@@ -142,28 +144,29 @@ export function subscribeConsultorios(
   );
 }
 
-export async function saveConsultorio(consultorio: Consultorio) {
+export async function saveConsultorio(consultorio: Consultorio, context?: Partial<OrgContext>) {
   if (!consultorio.nombre?.trim()) {
     throw new Error('El consultorio debe tener nombre.');
   }
   if (!consultorio.servicio?.trim()) {
     throw new Error('El consultorio debe tener servicio.');
   }
-  if (!consultorio.ubicacion?.trim()) {
-    throw new Error('El consultorio debe tener ubicación.');
-  }
 
   const payload: Omit<Consultorio, 'id'> = {
     nombre: upper(consultorio.nombre),
     servicio: upper(consultorio.servicio),
-    ubicacion: upper(consultorio.ubicacion),
+    ubicacion: upperOptional(consultorio.ubicacion),
     activo: consultorio.activo !== false,
     updatedAt: new Date().toISOString(),
   };
 
   if (consultorio.id) {
     const ref = doc(consultoriosCol, consultorio.id);
-    await updateDoc(ref, withContext(payload) as any);
+    const updatePayload = withContext(payload, context) as any;
+    if (!consultorio.ubicacion?.trim()) {
+      updatePayload.ubicacion = deleteField();
+    }
+    await updateDoc(ref, updatePayload);
     return consultorio.id;
   }
 
@@ -172,7 +175,7 @@ export async function saveConsultorio(consultorio: Consultorio) {
     withContext({
       ...payload,
       createdAt: new Date().toISOString(),
-    }) as any,
+    }, context) as any,
   );
   return docRef.id;
 }
@@ -184,26 +187,62 @@ export async function deleteConsultorio(id: string) {
 
 export async function updateEquipoConsultorio(
   equipoId: string,
-  consultorio?: Pick<Consultorio, 'id' | 'nombre' | 'ubicacion'> | null,
+  consultorio?: Pick<Consultorio, 'id' | 'nombre'> | null,
+  actor?: { uid?: string; nombre?: string },
 ) {
   const ref = doc(equiposCol, equipoId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) {
+    throw new Error('El equipo no existe.');
+  }
+  const current = snap.data() as Partial<EquipoBiomedico>;
+  const currentConsultorioId = typeof current.consultorioId === 'string' ? current.consultorioId : '';
+  const currentConsultorioNombre = typeof current.consultorioNombre === 'string' ? current.consultorioNombre : '';
+  const nowIso = new Date().toISOString();
+
+  const buildEntry = (
+    accion: ConsultorioMovimientoEquipo['accion'],
+    toConsultorioId?: string,
+    toConsultorioNombre?: string,
+  ): ConsultorioMovimientoEquipo => ({
+    fecha: nowIso,
+    accion,
+    fromConsultorioId: currentConsultorioId || undefined,
+    fromConsultorioNombre: upperOptional(currentConsultorioNombre),
+    toConsultorioId: toConsultorioId || undefined,
+    toConsultorioNombre: upperOptional(toConsultorioNombre),
+    actorUid: actor?.uid || undefined,
+    actorNombre: upperOptional(actor?.nombre),
+  });
+
   if (consultorio?.id) {
+    const toNombre = consultorio.nombre || '';
+    const sameConsultorio = currentConsultorioId === consultorio.id;
+    const payload: Record<string, unknown> = stripUndefinedDeep({
+      consultorioId: consultorio.id,
+      consultorioNombre: upperOptional(toNombre),
+      ubicacionActual: upperOptional(toNombre),
+    });
+    if (!sameConsultorio) {
+      payload.consultorioHistorial = arrayUnion(
+        buildEntry('ASIGNAR', consultorio.id, toNombre),
+      );
+    }
     await updateDoc(
       ref,
-      stripUndefinedDeep({
-        consultorioId: consultorio.id,
-        consultorioNombre: upperOptional(consultorio.nombre),
-        ubicacionActual: upperOptional(consultorio.ubicacion),
-      }) as any,
+      payload as any,
     );
     return;
   }
-
-  await updateDoc(ref, {
+  const payload: Record<string, unknown> = {
     consultorioId: deleteField(),
     consultorioNombre: deleteField(),
     ubicacionActual: 'BODEGA',
-  } as any);
+  };
+  if (currentConsultorioId) {
+    payload.consultorioHistorial = arrayUnion(buildEntry('QUITAR'));
+  }
+  await updateDoc(ref, payload as any);
 }
 
 function assertRoleString(value: string, allowed: readonly string[], fieldName: string) {

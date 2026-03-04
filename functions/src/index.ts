@@ -261,6 +261,30 @@ function normalizeScope(value: unknown, fallback: OrgContext): OrgContext[] {
 }
 
 /**
+ * Remueve valores undefined de forma recursiva para evitar errores al
+ * persistir documentos con Admin SDK.
+ * @param {unknown} value Valor a limpiar.
+ * @return {unknown} Valor sin propiedades undefined.
+ */
+function stripUndefined(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => stripUndefined(item))
+      .filter((item) => item !== undefined);
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      const cleaned = stripUndefined(item);
+      if (cleaned === undefined) continue;
+      out[key] = cleaned;
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
  * Evalúa si un usuario puede operar en un contexto objetivo.
  * @param {UserAccessContext} access Acceso del caller.
  * @param {OrgContext} targetOrg Contexto objetivo.
@@ -1022,7 +1046,7 @@ export const createPaciente = onCall(async (request) => {
     );
   }
 
-  const pacienteData: Record<string, unknown> = {
+  const pacienteData = stripUndefined({
     ...orgContext,
     nombreCompleto,
     tipoDocumento,
@@ -1046,7 +1070,7 @@ export const createPaciente = onCall(async (request) => {
       typeof paciente.fechaSalida === "string" ?
         paciente.fechaSalida.trim() :
         undefined,
-  };
+  }) as Record<string, unknown>;
 
   const created = await db.runTransaction(async (tx) => {
     const dupSnap = await tx.get(

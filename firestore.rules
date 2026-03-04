@@ -110,16 +110,27 @@ service cloud.firestore {
     }
 
     function canCreateInOwnOrg() {
-      return isSignedIn() && isSameUserOrg(request.resource.data);
+      return isSignedIn()
+        && (
+          (isBiomedico() && hasOrgContext(request.resource.data))
+          || isSameUserOrg(request.resource.data)
+        );
     }
 
     function canUpdateInOwnOrg() {
-      return isSameUserOrg(resource.data)
-        && isSameUserOrg(request.resource.data);
+      return (
+        isBiomedico()
+        && hasOrgContext(resource.data)
+        && hasOrgContext(request.resource.data)
+      ) || (
+        isSameUserOrg(resource.data)
+        && isSameUserOrg(request.resource.data)
+      );
     }
 
     function canDeleteInOwnOrg() {
-      return isSameUserOrg(resource.data);
+      return (isBiomedico() && hasOrgContext(resource.data))
+        || isSameUserOrg(resource.data);
     }
 
     function equipoPathById(equipoId) {
