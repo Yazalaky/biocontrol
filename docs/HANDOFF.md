@@ -116,9 +116,12 @@ Contexto consulta externa (fase 3.3, marzo 2026):
 
 Operación por consultorio (fase 3.4, marzo 2026):
 - Módulo `Consultorios` con gestión independiente de sedes de consulta externa.
-- Tarjetas de consultorio muestran conteos por estado operativo.
-- Gestión rápida para asignar o quitar equipos del consultorio
-  sin abrir edición completa del equipo.
+- Vista tipo cajón (accordion) por consultorio con equipos vinculados.
+- Cada consultorio muestra conteos por tipo de activo
+  (`BIOMEDICO`, `NO_BIOMEDICO`, `MOBILIARIO`).
+- Incluye búsqueda de consultorios por nombre/servicio.
+- Incluye asignación masiva de equipos sin consultorio.
+- Incluye historial de movimientos por consultorio (fecha/acción/equipo/actor).
 - Regla de negocio: equipos `DADO_DE_BAJA` no pueden asignarse a consultorio.
 - Regla de negocio: un equipo ya vinculado debe quitarse primero antes de
   asignarlo a otro consultorio.
@@ -129,6 +132,9 @@ Ajuste UX (marzo 2026):
 - Inventario Aliados ya no muestra panel de consultorios.
 - Solicitudes de equipos del paciente no aplican para Aliados y se ocultan
   en inventario y badge lateral de inventario.
+- Formulario de consultorio simplificado: solo nombre, servicio y estado
+  activo (ubicación opcional/legacy).
+- Asignación de equipos usa `consultorioNombre` como `ubicacionActual`.
 
 Reglas relevantes (`firestore.rules`):
 - Visitador: lectura acotada (pacientes activos, asignaciones activas, etc.).

@@ -43,7 +43,7 @@ export interface Consultorio {
   sedeId?: SedeId;
   nombre: string;
   servicio: string;
-  ubicacion: string;
+  ubicacion?: string;
   activo: boolean;
   createdAt?: string;
   updatedAt?: string;
@@ -286,6 +286,7 @@ export interface EquipoBiomedico {
   // Relación opcional para sedes con consulta externa (Aliados).
   consultorioId?: string;
   consultorioNombre?: string;
+  consultorioHistorial?: ConsultorioMovimientoEquipo[];
   // Campo para control de acceso del rol VISITADOR (solo equipos con asignación activa).
   asignadoActivo?: boolean;
   ubicacionActual?: string; 
@@ -302,6 +303,17 @@ export interface EquipoBiomedico {
     nit: string;
     telefono: string;
   };
+}
+
+export interface ConsultorioMovimientoEquipo {
+  fecha: string;
+  accion: 'ASIGNAR' | 'QUITAR';
+  fromConsultorioId?: string;
+  fromConsultorioNombre?: string;
+  toConsultorioId?: string;
+  toConsultorioNombre?: string;
+  actorUid?: string;
+  actorNombre?: string;
 }
 
 // Modelo de Asignación
