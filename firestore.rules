@@ -139,6 +139,29 @@ service cloud.firestore {
         && tipoActivoEsBiomedico(get(equipoPathById(equipoId)).data);
     }
 
+    function hasConsultorioId(data) {
+      return data.consultorioId is string && data.consultorioId != "";
+    }
+
+    function consultorioTransitionAllowed() {
+      // No cambia consultorio: permitido.
+      return request.resource.data.consultorioId == resource.data.consultorioId
+        // Quitar consultorio siempre permitido.
+        || !hasConsultorioId(request.resource.data)
+        // Asignar por primera vez (no mover directo entre consultorios).
+        || (
+          !hasConsultorioId(resource.data)
+          && hasConsultorioId(request.resource.data)
+          && resource.data.estado != "DADO_DE_BAJA"
+          && request.resource.data.estado != "DADO_DE_BAJA"
+        );
+    }
+
+    function consultorioCreateAllowed() {
+      return !hasConsultorioId(request.resource.data)
+        || request.resource.data.estado != "DADO_DE_BAJA";
+    }
+
     // --- USERS ---
     match /users/{uid} {
       allow read: if isSignedIn() && request.auth.uid == uid;
@@ -218,8 +241,12 @@ service cloud.firestore {
       // VISITADOR: solo puede ver equipos con asignación activa
       allow read: if canReadOrgDoc(resource.data)
         && (!isVisitador() || resource.data.asignadoActivo == true);
-      allow create: if isBiomedico() && canCreateInOwnOrg();
-      allow update: if isBiomedico() && canUpdateInOwnOrg();
+      allow create: if isBiomedico()
+        && canCreateInOwnOrg()
+        && consultorioCreateAllowed();
+      allow update: if isBiomedico()
+        && canUpdateInOwnOrg()
+        && consultorioTransitionAllowed();
       allow delete: if isBiomedico() && canDeleteInOwnOrg();
 
       // --- CALIBRACIONES (subcolección) ---
