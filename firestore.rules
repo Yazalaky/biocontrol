@@ -120,7 +120,6 @@ service cloud.firestore {
     function canUpdateInOwnOrg() {
       return (
         isBiomedico()
-        && hasOrgContext(resource.data)
         && hasOrgContext(request.resource.data)
       ) || (
         isSameUserOrg(resource.data)
@@ -252,13 +251,9 @@ service cloud.firestore {
       // VISITADOR: solo puede ver equipos con asignación activa
       allow read: if canReadOrgDoc(resource.data)
         && (!isVisitador() || resource.data.asignadoActivo == true);
-      allow create: if isBiomedico()
-        && canCreateInOwnOrg()
-        && consultorioCreateAllowed();
-      allow update: if isBiomedico()
-        && canUpdateInOwnOrg()
-        && consultorioTransitionAllowed();
-      allow delete: if isBiomedico() && canDeleteInOwnOrg();
+      allow create: if isBiomedico() && consultorioCreateAllowed();
+      allow update: if isBiomedico() && consultorioTransitionAllowed();
+      allow delete: if isBiomedico();
 
       // --- CALIBRACIONES (subcolección) ---
       match /calibraciones/{calId} {

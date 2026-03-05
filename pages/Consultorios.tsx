@@ -342,6 +342,11 @@ const Consultorios: React.FC = () => {
           : `${equipo.codigoInventario} quitado del consultorio.`,
       });
     } catch (err) {
+      console.error('updateEquipoConsultorio failed', {
+        err,
+        equipoId: equipo.id,
+        consultorioId: consultorio?.id || null,
+      });
       toast({ tone: 'error', message: parseMessage(err, 'No se pudo actualizar el consultorio del equipo.') });
     } finally {
       setActionLoadingId(null);
@@ -405,7 +410,12 @@ const Consultorios: React.FC = () => {
           },
         );
         okCount += 1;
-      } catch {
+      } catch (err) {
+        console.error('bulk updateEquipoConsultorio failed', {
+          err,
+          equipoId: equipo.id,
+          consultorioId: consultorio.id,
+        });
         failCount += 1;
       }
     }

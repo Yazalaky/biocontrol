@@ -56,7 +56,6 @@ import {
   type Paciente,
   type Profesional,
   type TipoEquipo,
-  type ConsultorioMovimientoEquipo,
 } from '../types';
 
 const pacientesCol = collection(db, 'pacientes');
@@ -190,59 +189,12 @@ export async function updateEquipoConsultorio(
   consultorio?: Pick<Consultorio, 'id' | 'nombre'> | null,
   actor?: { uid?: string; nombre?: string },
 ) {
-  const ref = doc(equiposCol, equipoId);
-  const snap = await getDoc(ref);
-  if (!snap.exists()) {
-    throw new Error('El equipo no existe.');
-  }
-  const current = snap.data() as Partial<EquipoBiomedico>;
-  const currentConsultorioId = typeof current.consultorioId === 'string' ? current.consultorioId : '';
-  const currentConsultorioNombre = typeof current.consultorioNombre === 'string' ? current.consultorioNombre : '';
-  const nowIso = new Date().toISOString();
-
-  const buildEntry = (
-    accion: ConsultorioMovimientoEquipo['accion'],
-    toConsultorioId?: string,
-    toConsultorioNombre?: string,
-  ): ConsultorioMovimientoEquipo => ({
-    fecha: nowIso,
-    accion,
-    fromConsultorioId: currentConsultorioId || undefined,
-    fromConsultorioNombre: upperOptional(currentConsultorioNombre),
-    toConsultorioId: toConsultorioId || undefined,
-    toConsultorioNombre: upperOptional(toConsultorioNombre),
-    actorUid: actor?.uid || undefined,
-    actorNombre: upperOptional(actor?.nombre),
+  const fn = httpsCallable(firebaseFunctions, 'setEquipoConsultorio');
+  await fn({
+    equipoId,
+    consultorioId: consultorio?.id || null,
+    actorNombre: upperOptional(actor?.nombre) || null,
   });
-
-  if (consultorio?.id) {
-    const toNombre = consultorio.nombre || '';
-    const sameConsultorio = currentConsultorioId === consultorio.id;
-    const payload: Record<string, unknown> = stripUndefinedDeep({
-      consultorioId: consultorio.id,
-      consultorioNombre: upperOptional(toNombre),
-      ubicacionActual: upperOptional(toNombre),
-    });
-    if (!sameConsultorio) {
-      payload.consultorioHistorial = arrayUnion(
-        buildEntry('ASIGNAR', consultorio.id, toNombre),
-      );
-    }
-    await updateDoc(
-      ref,
-      payload as any,
-    );
-    return;
-  }
-  const payload: Record<string, unknown> = {
-    consultorioId: deleteField(),
-    consultorioNombre: deleteField(),
-    ubicacionActual: 'BODEGA',
-  };
-  if (currentConsultorioId) {
-    payload.consultorioHistorial = arrayUnion(buildEntry('QUITAR'));
-  }
-  await updateDoc(ref, payload as any);
 }
 
 function assertRoleString(value: string, allowed: readonly string[], fieldName: string) {

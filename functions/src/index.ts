@@ -1314,7 +1314,7 @@ export const createEquipo = onCall(async (request) => {
     }
 
     const equipoRef = db.collection("equipos").doc();
-    const payload: Record<string, unknown> = {
+    const payload = stripUndefined({
       ...orgContext,
       codigoInventario,
       numeroSerie,
@@ -1391,13 +1391,185 @@ export const createEquipo = onCall(async (request) => {
       consultorioId,
       consultorioNombre,
       createdAt: FieldValue.serverTimestamp(),
-    };
+    }) as Record<string, unknown>;
 
     tx.set(equipoRef, payload);
     return {id: equipoRef.id, codigoInventario};
   });
 
   return created;
+});
+
+/**
+ * 3.3.1) Asignar o quitar consultorio de un equipo (server-side).
+ * Evita depender de reglas de cliente para el flujo masivo de consultorios.
+ */
+export const setEquipoConsultorio = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
+  }
+  const callerUid = request.auth.uid;
+  await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
+  const callerAccess = await getUserAccessContext(callerUid);
+
+  const data = request.data as {
+    equipoId?: unknown;
+    consultorioId?: unknown;
+    actorNombre?: unknown;
+  };
+  const equipoId = assertNonEmptyString(data.equipoId, "equipoId");
+  const consultorioId =
+    typeof data.consultorioId === "string" && data.consultorioId.trim() ?
+      data.consultorioId.trim() :
+      "";
+  const actorNombreFromPayload =
+    typeof data.actorNombre === "string" ?
+      upperTrim(data.actorNombre) :
+      "";
+
+  const callerSnap = await db.doc(`users/${callerUid}`).get();
+  const callerData = callerSnap.data() as Record<string, unknown> | undefined;
+  const tokenName =
+    typeof request.auth.token.name === "string" ?
+      request.auth.token.name :
+      "";
+  const tokenEmail =
+    typeof request.auth.token.email === "string" ?
+      request.auth.token.email :
+      "";
+  const actorNombre =
+    actorNombreFromPayload ||
+    upperTrim(callerData?.nombre || tokenName || tokenEmail) ||
+    "INGENIERO BIOMEDICO";
+
+  return db.runTransaction(async (tx) => {
+    const equipoRef = db.doc(`equipos/${equipoId}`);
+    const equipoSnap = await tx.get(equipoRef);
+    if (!equipoSnap.exists) {
+      throw new HttpsError("not-found", "El equipo no existe.");
+    }
+
+    const equipoData = equipoSnap.data() as Record<string, unknown>;
+    const equipoOrg = buildOrgContext(equipoData);
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      equipoOrg,
+      "No puedes operar equipos fuera de tu sede.",
+    );
+
+    const estadoEquipo = upperTrim(equipoData.estado);
+    const currentConsultorioId =
+      typeof equipoData.consultorioId === "string" ?
+        equipoData.consultorioId.trim() :
+        "";
+    const currentConsultorioNombre =
+      typeof equipoData.consultorioNombre === "string" ?
+        upperTrim(equipoData.consultorioNombre) :
+        "";
+    const nowIso = new Date().toISOString();
+    const baseHistory = {
+      fecha: nowIso,
+      fromConsultorioId: currentConsultorioId || undefined,
+      fromConsultorioNombre: currentConsultorioNombre || undefined,
+      actorUid: callerUid,
+      actorNombre,
+    };
+
+    if (!consultorioId) {
+      const payload: Record<string, unknown> = {
+        empresaId: equipoOrg.empresaId,
+        sedeId: equipoOrg.sedeId,
+        consultorioId: FieldValue.delete(),
+        consultorioNombre: FieldValue.delete(),
+        ubicacionActual: "BODEGA",
+        updatedAt: nowIso,
+      };
+      if (currentConsultorioId) {
+        payload.consultorioHistorial = FieldValue.arrayUnion(
+          stripUndefined({
+            ...baseHistory,
+            accion: "QUITAR",
+          }) as Record<string, unknown>,
+        );
+      }
+      tx.update(equipoRef, payload);
+      return {ok: true, action: "QUITAR"};
+    }
+
+    if (estadoEquipo === "DADO_DE_BAJA") {
+      throw new HttpsError(
+        "failed-precondition",
+        "No puedes asignar a consultorio un equipo dado de baja.",
+      );
+    }
+    if (currentConsultorioId && currentConsultorioId !== consultorioId) {
+      throw new HttpsError(
+        "failed-precondition",
+        "El equipo ya está en otro consultorio. Debes quitarlo primero.",
+      );
+    }
+
+    const consultorioRef = db.doc(`consultorios/${consultorioId}`);
+    const consultorioSnap = await tx.get(consultorioRef);
+    if (!consultorioSnap.exists) {
+      throw new HttpsError("not-found", "El consultorio no existe.");
+    }
+    const consultorioData = consultorioSnap.data() as Record<string, unknown>;
+    const consultorioOrg = buildOrgContext(consultorioData);
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      consultorioOrg,
+      "No puedes operar consultorios fuera de tu sede.",
+    );
+    if (!isSameOrg(consultorioOrg, equipoOrg)) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Equipo y consultorio pertenecen a contextos distintos.",
+      );
+    }
+    if (consultorioData.activo === false) {
+      throw new HttpsError(
+        "failed-precondition",
+        "El consultorio está inactivo.",
+      );
+    }
+    const consultorioNombre = upperTrim(consultorioData.nombre);
+    if (!consultorioNombre) {
+      throw new HttpsError(
+        "failed-precondition",
+        "El consultorio no tiene nombre válido.",
+      );
+    }
+
+    const payload: Record<string, unknown> = {
+      empresaId: equipoOrg.empresaId,
+      sedeId: equipoOrg.sedeId,
+      consultorioId,
+      consultorioNombre,
+      ubicacionActual: consultorioNombre,
+      updatedAt: nowIso,
+    };
+    if (currentConsultorioId !== consultorioId) {
+      payload.consultorioHistorial = FieldValue.arrayUnion(
+        stripUndefined({
+          ...baseHistory,
+          accion: "ASIGNAR",
+          toConsultorioId: consultorioId,
+          toConsultorioNombre: consultorioNombre,
+        }) as Record<string, unknown>,
+      );
+    }
+    tx.update(equipoRef, payload);
+    return {
+      ok: true,
+      action: "ASIGNAR",
+      consultorioId,
+      consultorioNombre,
+    };
+  });
 });
 
 /**
