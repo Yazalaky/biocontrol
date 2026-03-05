@@ -15,6 +15,7 @@ Aplicación web para gestión biomédica con control por roles, inventario de eq
 - Node.js 20 (recomendado para alinear con Functions)
 - npm
 - Firebase CLI (`npx firebase-tools`)
+- Java (requerido para ejecutar Firebase Emulator Suite en pruebas de reglas)
 
 ## Configuración local
 1. Clonar repositorio:
@@ -38,6 +39,7 @@ Frontend (`package.json`):
 - `npm run dev`
 - `npm run build`
 - `npm run preview`
+- `npm run test:rules` (ejecuta pruebas de `firestore.rules` con emulador)
 
 Functions (`functions/package.json`):
 - `npm --prefix functions run lint`

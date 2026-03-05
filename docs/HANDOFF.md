@@ -240,6 +240,14 @@ Si quieres todo junto:
 - Agregar tests mínimos de reglas (Firestore/Storage emulator).
 - Revisar code-splitting (bundle principal alto en build).
 
+### Estado marzo 2026
+- Se añadió arnés inicial de pruebas de reglas Firestore:
+  - `tests/firestore.rules.test.mjs`
+  - comando: `npm run test:rules`
+- Cubre casos base por rol (auxiliar, biomédico, gerencia, visitador) y
+  transiciones de consultorio en equipos.
+- Requisito local: Java disponible en PATH para Emulator Suite.
+
 ## 14) Prompt recomendado para retomar con Codex
 Usar este prompt al abrir el proyecto en el nuevo equipo:
 
