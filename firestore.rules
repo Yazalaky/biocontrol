@@ -172,6 +172,10 @@ service cloud.firestore {
         || request.resource.data.estado != "DADO_DE_BAJA";
     }
 
+    function canDeleteEquipoDoc() {
+      return !hasConsultorioId(resource.data);
+    }
+
     // --- USERS ---
     match /users/{uid} {
       allow read: if isSignedIn() && request.auth.uid == uid;
@@ -253,7 +257,7 @@ service cloud.firestore {
         && (!isVisitador() || resource.data.asignadoActivo == true);
       allow create: if isBiomedico() && consultorioCreateAllowed();
       allow update: if isBiomedico() && consultorioTransitionAllowed();
-      allow delete: if isBiomedico();
+      allow delete: if isBiomedico() && canDeleteEquipoDoc();
 
       // --- CALIBRACIONES (subcolección) ---
       match /calibraciones/{calId} {

@@ -22,6 +22,9 @@ import { storage } from '../services/firebase';
 
 type EstadoFiltro = 'ALL' | 'POR_VENCER' | 'VENCIDAS' | 'SIN_REGISTRO';
 
+const isTipoActivoCalibrable = (equipo: EquipoBiomedico) =>
+  !equipo.tipoActivo || equipo.tipoActivo === 'BIOMEDICO';
+
 const toISODate = (value: Date) => value.toISOString().slice(0, 10);
 
 const formatDate = (value?: string) => {
@@ -119,7 +122,7 @@ const Calibraciones: React.FC = () => {
   const equiposCalibrables = useMemo(() => {
     const term = search.trim().toLowerCase();
     const baseList = equipos
-      .filter((eq) => eq.tipoPropiedad === TipoPropiedad.MEDICUC)
+      .filter((eq) => eq.tipoPropiedad === TipoPropiedad.MEDICUC && isTipoActivoCalibrable(eq))
       .map((eq) => {
         const periodicidad = resolvePeriodicidad(eq);
         if (!periodicidad) return null;

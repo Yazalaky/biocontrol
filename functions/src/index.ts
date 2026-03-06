@@ -1573,6 +1573,87 @@ export const setEquipoConsultorio = onCall(async (request) => {
 });
 
 /**
+ * 3.3.2) Eliminar equipo desde backend con validaciones de negocio.
+ */
+export const deleteEquipoDoc = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
+  }
+  const callerUid = request.auth.uid;
+  await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
+  const callerAccess = await getUserAccessContext(callerUid);
+
+  const data = request.data as {equipoId?: unknown};
+  const equipoId = assertNonEmptyString(data.equipoId, "equipoId");
+
+  return db.runTransaction(async (tx) => {
+    const equipoRef = db.doc(`equipos/${equipoId}`);
+    const equipoSnap = await tx.get(equipoRef);
+    if (!equipoSnap.exists) {
+      throw new HttpsError("not-found", "El equipo no existe.");
+    }
+
+    const equipoData = equipoSnap.data() as Record<string, unknown>;
+    const equipoOrg = buildOrgContext(equipoData);
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      equipoOrg,
+      "No puedes eliminar equipos fuera de tu sede.",
+    );
+
+    const consultorioId =
+      typeof equipoData.consultorioId === "string" ?
+        equipoData.consultorioId.trim() :
+        "";
+    if (consultorioId) {
+      throw new HttpsError(
+        "failed-precondition",
+        "No puedes eliminar un equipo asignado a consultorio.",
+      );
+    }
+
+    if (typeof equipoData.actaInternaPendienteId === "string" &&
+      equipoData.actaInternaPendienteId.trim()) {
+      throw new HttpsError(
+        "failed-precondition",
+        "No puedes eliminar un equipo con acta interna pendiente.",
+      );
+    }
+
+    const [asignacionesPacienteSnap, asignacionesProfesionalSnap] =
+      await Promise.all([
+        tx.get(
+          db.collection("asignaciones")
+            .where("empresaId", "==", equipoOrg.empresaId)
+            .where("sedeId", "==", equipoOrg.sedeId)
+            .where("idEquipo", "==", equipoId)
+            .limit(1),
+        ),
+        tx.get(
+          db.collection("asignaciones_profesionales")
+            .where("empresaId", "==", equipoOrg.empresaId)
+            .where("sedeId", "==", equipoOrg.sedeId)
+            .where("idEquipo", "==", equipoId)
+            .limit(1),
+        ),
+      ]);
+
+    if (!asignacionesPacienteSnap.empty || !asignacionesProfesionalSnap.empty) {
+      throw new HttpsError(
+        "failed-precondition",
+        "No puedes eliminar un equipo con historial de asignaciones.",
+      );
+    }
+
+    tx.delete(equipoRef);
+    return {ok: true};
+  });
+});
+
+/**
  * 3.4) Crear asignación de paciente (transaccional).
  * Asigna consecutivo único y evita doble asignación activa del mismo equipo.
  */

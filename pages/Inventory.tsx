@@ -241,20 +241,53 @@ const Inventory: React.FC = () => {
     return tipo || TipoPropiedad.MEDICUC;
   };
 
+  const normalizeTipoPropiedadForContext = (tipo?: TipoPropiedad) => {
+    const normalized = normalizeTipoPropiedad(tipo);
+    if (isAliadosContext && normalized === TipoPropiedad.PACIENTE) {
+      return TipoPropiedad.EMPLEADO;
+    }
+    return normalized;
+  };
+
   const propiedadMeta = (tipo?: TipoPropiedad) => {
     const normalized = normalizeTipoPropiedad(tipo);
     switch (normalized) {
       case TipoPropiedad.PACIENTE:
-        return { label: 'PACIENTE', className: 'bg-emerald-50 text-emerald-800 border-emerald-200' };
+        return {
+          label: isAliadosContext ? 'MEDICO O ESPECIALISTA' : 'PACIENTE',
+          className: 'bg-emerald-50 text-emerald-800 border-emerald-200',
+        };
       case TipoPropiedad.ALQUILADO:
-        return { label: 'ALQUILADO', className: 'bg-amber-50 text-amber-800 border-amber-200' };
+        return {
+          label: isAliadosContext ? 'COMODATO' : 'ALQUILADO',
+          className: 'bg-amber-50 text-amber-800 border-amber-200',
+        };
       case TipoPropiedad.EMPLEADO:
-        return { label: 'EMPLEADO', className: 'bg-indigo-50 text-indigo-800 border-indigo-200' };
+        return {
+          label: isAliadosContext ? 'MEDICO O ESPECIALISTA' : 'EMPLEADO',
+          className: 'bg-indigo-50 text-indigo-800 border-indigo-200',
+        };
       case TipoPropiedad.MEDICUC:
       default:
-        return { label: 'MEDICUC', className: 'bg-blue-50 text-blue-800 border-blue-200' };
+        return {
+          label: isAliadosContext ? 'ALIADOS' : 'MEDICUC',
+          className: 'bg-blue-50 text-blue-800 border-blue-200',
+        };
     }
   };
+
+  const propiedadOptions = isAliadosContext
+    ? [
+        { value: TipoPropiedad.MEDICUC, label: 'Aliados' },
+        { value: TipoPropiedad.EMPLEADO, label: 'Medico o Especialista' },
+        { value: TipoPropiedad.ALQUILADO, label: 'Comodato' },
+      ]
+    : [
+        { value: TipoPropiedad.MEDICUC, label: 'Medicuc' },
+        { value: TipoPropiedad.PACIENTE, label: 'Paciente' },
+        { value: TipoPropiedad.ALQUILADO, label: 'Alquilado' },
+        { value: TipoPropiedad.EMPLEADO, label: 'Empleado' },
+      ];
 
   useEffect(() => {
     setFirestoreError(null);
@@ -485,7 +518,10 @@ const Inventory: React.FC = () => {
       formData.tipoPropiedad === TipoPropiedad.ALQUILADO &&
       !formData.empresaAlquiler?.trim()
     ) {
-      toast({ tone: 'warning', message: 'Escribe la empresa de alquiler.' });
+      toast({
+        tone: 'warning',
+        message: isAliadosContext ? 'Escribe la entidad del comodato.' : 'Escribe la empresa de alquiler.',
+      });
       return;
     }
     if (isAliadosNuevo) {
@@ -830,7 +866,7 @@ const Inventory: React.FC = () => {
     setFormData({
       ...equipo,
       tipoActivo: equipo.tipoActivo || TipoActivoInventario.BIOMEDICO,
-      tipoPropiedad: normalizeTipoPropiedad(equipo.tipoPropiedad),
+      tipoPropiedad: normalizeTipoPropiedadForContext(equipo.tipoPropiedad),
       fechaIngreso: equipo.fechaIngreso || new Date().toISOString(),
     });
     setEquipoFotoFile(null);
@@ -1211,6 +1247,15 @@ const Inventory: React.FC = () => {
 
   const handleDeleteEquipo = async (equipo: EquipoBiomedico) => {
     if (!canEdit) return;
+    if (equipo.consultorioId?.trim()) {
+      toast({
+        tone: 'warning',
+        message: `No puedes eliminar este equipo porque sigue asignado a ${
+          equipo.consultorioNombre || 'un consultorio'
+        }. Quitalo del consultorio primero.`,
+      });
+      return;
+    }
     if (activeAsignacionByEquipo.has(equipo.id)) {
       toast({ tone: 'warning', message: 'No puedes eliminar un equipo con asignacion activa.' });
       return;
@@ -1606,9 +1651,9 @@ const Inventory: React.FC = () => {
                     </p>
                   )}
                   {tipoNormalizado === TipoPropiedad.ALQUILADO && equipo.empresaAlquiler && (
-                     <p className="text-xs text-amber-700 mt-2 bg-amber-50 p-1 rounded">
-                       <strong>Empresa alquiler:</strong> {equipo.empresaAlquiler}
-                     </p>
+                    <p className="text-xs text-amber-700 mt-2 bg-amber-50 p-1 rounded">
+                      <strong>{isAliadosContext ? 'Entidad comodato:' : 'Empresa alquiler:'}</strong> {equipo.empresaAlquiler}
+                    </p>
                   )}
                 </div>
 
@@ -2657,74 +2702,36 @@ const Inventory: React.FC = () => {
               <div>
                 <label className="block text-sm font-medium mb-1">Propiedad del Equipo</label>
                 <div className="grid grid-cols-2 gap-3">
-                  <label
-                    className={`flex items-center space-x-2 border p-2 rounded w-full ${
-                      propiedadLocked ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer hover:bg-gray-50'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="tipoPropiedad"
-                      value={TipoPropiedad.MEDICUC}
-                      checked={formData.tipoPropiedad === TipoPropiedad.MEDICUC}
-                      onChange={() => setFormData({ ...formData, tipoPropiedad: TipoPropiedad.MEDICUC })}
-                      disabled={propiedadLocked}
-                    />
-                    <span>Medicuc</span>
-                  </label>
-                  <label
-                    className={`flex items-center space-x-2 border p-2 rounded w-full ${
-                      propiedadLocked ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer hover:bg-gray-50'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="tipoPropiedad"
-                      value={TipoPropiedad.PACIENTE}
-                      checked={formData.tipoPropiedad === TipoPropiedad.PACIENTE}
-                      onChange={() => setFormData({ ...formData, tipoPropiedad: TipoPropiedad.PACIENTE })}
-                      disabled={propiedadLocked}
-                    />
-                    <span>Paciente</span>
-                  </label>
-                  <label
-                    className={`flex items-center space-x-2 border p-2 rounded w-full ${
-                      propiedadLocked ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer hover:bg-gray-50'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="tipoPropiedad"
-                      value={TipoPropiedad.ALQUILADO}
-                      checked={formData.tipoPropiedad === TipoPropiedad.ALQUILADO}
-                      onChange={() => setFormData({ ...formData, tipoPropiedad: TipoPropiedad.ALQUILADO })}
-                      disabled={propiedadLocked}
-                    />
-                    <span>Alquilado</span>
-                  </label>
-                  <label
-                    className={`flex items-center space-x-2 border p-2 rounded w-full ${
-                      propiedadLocked ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer hover:bg-gray-50'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="tipoPropiedad"
-                      value={TipoPropiedad.EMPLEADO}
-                      checked={formData.tipoPropiedad === TipoPropiedad.EMPLEADO}
-                      onChange={() => setFormData({ ...formData, tipoPropiedad: TipoPropiedad.EMPLEADO })}
-                      disabled={propiedadLocked}
-                    />
-                    <span>Empleado</span>
-                  </label>
+                  {propiedadOptions.map((option) => (
+                    <label
+                      key={option.value}
+                      className={`flex items-center space-x-2 border p-2 rounded w-full ${
+                        propiedadLocked ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer hover:bg-gray-50'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="tipoPropiedad"
+                        value={option.value}
+                        checked={formData.tipoPropiedad === option.value}
+                        onChange={() => setFormData({ ...formData, tipoPropiedad: option.value })}
+                        disabled={propiedadLocked}
+                      />
+                      <span>{option.label}</span>
+                    </label>
+                  ))}
                 </div>
               </div>
 
               {formData.tipoPropiedad === TipoPropiedad.ALQUILADO && (
                 <div className="bg-amber-50 p-4 rounded border border-amber-200 space-y-3">
-                  <h4 className="text-sm font-bold text-amber-800">Empresa de alquiler</h4>
+                  <h4 className="text-sm font-bold text-amber-800">
+                    {isAliadosContext ? 'Datos del comodato' : 'Empresa de alquiler'}
+                  </h4>
                   <div>
-                    <label className="block text-xs font-medium text-gray-700">Nombre de la empresa</label>
+                    <label className="block text-xs font-medium text-gray-700">
+                      {isAliadosContext ? 'Entidad / proveedor' : 'Nombre de la empresa'}
+                    </label>
                     <input
                       required
                       className="w-full border p-2 rounded text-sm focus:ring-amber-500"

@@ -1529,21 +1529,29 @@ export async function isNumeroSerieDisponible(numeroSerie: string, excludeId?: s
   return !duplicatedSerieDoc;
 }
 
-export async function deleteEquipo(equipo: Pick<EquipoBiomedico, 'id' | 'fotoEquipo'>) {
-  const fotoPath = equipo.fotoEquipo?.path;
-  if (fotoPath) {
-    try {
-      await deleteObject(storageRef(storage, fotoPath));
-    } catch (err: any) {
-      const code = typeof err?.code === 'string' ? err.code : '';
-      if (!code.includes('object-not-found')) {
-        throw err;
-      }
-    }
+export async function deleteEquipo(
+  equipo: Pick<EquipoBiomedico, 'id' | 'fotoEquipo' | 'consultorioId' | 'consultorioNombre'>,
+) {
+  if (equipo.consultorioId?.trim()) {
+    const consultorioNombre = equipo.consultorioNombre?.trim() || 'CONSULTORIO';
+    throw new Error(
+      `No puedes eliminar este equipo porque sigue asignado a ${consultorioNombre}. Quitalo del consultorio primero.`,
+    );
   }
 
-  const ref = doc(equiposCol, equipo.id);
-  await deleteDoc(ref);
+  const fn = httpsCallable(firebaseFunctions, 'deleteEquipoDoc');
+  await fn({ equipoId: equipo.id });
+
+  const fotoPath = equipo.fotoEquipo?.path;
+  if (!fotoPath) return;
+  try {
+    await deleteObject(storageRef(storage, fotoPath));
+  } catch (err: any) {
+    const code = typeof err?.code === 'string' ? err.code : '';
+    if (!code.includes('object-not-found')) {
+      throw err;
+    }
+  }
 }
 
 export async function asignarEquipo(params: {
