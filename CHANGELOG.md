@@ -4,6 +4,7 @@ Este archivo registra cambios relevantes de documentación y, cuando aplique, ca
 
 ## 2026-04-13
 
+- Se definió la versión base del proyecto como `1.0.0` para iniciar versionado semántico controlado.
 - Estructura documental inicial creada.
 - Se reorganizó `README.md` con enfoque técnico-operativo.
 - Se añadieron `CONTEXT.md`, `KNOWN_ISSUES.md`, `TEST_CASES.md` y documentación base en `docs/`.
