@@ -1,62 +1,22 @@
-# BioControl - Gestión Biomédica
+# BioControl
 
-Aplicación web para gestión biomédica con control por roles, inventario de equipos, actas, firmas, mantenimientos, calibraciones, visitas y rutero.
+Aplicación web para gestión biomédica y operativa con control por roles. Centraliza inventario de equipos, pacientes, profesionales, asignaciones, actas, visitas, mantenimientos y calibraciones sobre Firebase.
 
-## Documentación clave
-- Continuidad técnica y traspaso: `docs/HANDOFF.md`
+## Objetivo
+
+Digitalizar y controlar los procesos biomédicos y administrativos del proyecto, asegurando trazabilidad, consistencia de datos, seguridad por rol y compatibilidad con la operación actual en producción.
 
 ## Stack
-- Frontend: React + Vite + TypeScript
-- Backend: Firebase (Auth, Firestore, Storage, Functions, Hosting)
-- Gráficas: Recharts
+
+- Frontend: React 19 + Vite 6 + TypeScript
+- Backend: Firebase Auth, Firestore, Storage, Cloud Functions, Hosting
+- Visualización: Recharts
+- Runtime Functions: Node.js 20
 - Región de Functions: `us-central1`
-
-## Requisitos
-- Node.js 20 (recomendado para alinear con Functions)
-- npm
-- Firebase CLI (`npx firebase-tools`)
-- Java (requerido para ejecutar Firebase Emulator Suite en pruebas de reglas)
-
-## Configuración local
-1. Clonar repositorio:
-   - `git clone <URL_DEL_REPO>`
-   - `cd biocontrol`
-2. Instalar dependencias frontend:
-   - `npm install`
-3. Instalar dependencias de Cloud Functions:
-   - `cd functions && npm install && cd ..`
-4. Configurar variables de entorno:
-   - `cp .env.example .env.local`
-   - Editar `.env.local` con valores reales `VITE_FIREBASE_*`
-5. Autenticar Firebase CLI:
-   - `npx firebase-tools login`
-   - `npx firebase-tools use biocontrol-43676`
-6. Ejecutar en desarrollo:
-   - `npm run dev`
-
-## Scripts
-Frontend (`package.json`):
-- `npm run dev`
-- `npm run build`
-- `npm run preview`
-- `npm run test:rules` (ejecuta pruebas de `firestore.rules` con emulador)
-
-Functions (`functions/package.json`):
-- `npm --prefix functions run lint`
-- `npm --prefix functions run build`
-- `npm --prefix functions run deploy`
-
-## Deploy
-Opción recomendada por etapas:
-1. `npm run build`
-2. `npx firebase-tools deploy --only firestore:rules,firestore:indexes,storage`
-3. `npx firebase-tools deploy --only functions`
-4. `npx firebase-tools deploy --only hosting`
-
-Deploy completo:
-- `npx firebase-tools deploy`
+- Proyecto Firebase por defecto: `biocontrol-43676`
 
 ## Módulos principales
+
 - Dashboard
 - Pacientes
 - Profesionales
@@ -64,43 +24,180 @@ Deploy completo:
 - Mantenimientos
 - Calibraciones
 - Reportes de visitas
-- Rutero (visitador)
+- Rutero del visitador
 - Actas internas
 - Informes
-- Admin (habilitado por `admins/{uid}`)
+- Admin
+- Consultorios
 
-## Roles
-- GERENCIA
-- INGENIERO_BIOMEDICO
-- AUXILIAR_ADMINISTRATIVA
-- VISITADOR
+## Estructura general
 
-La lógica de acceso está en:
-- `firestore.rules`
-- `storage.rules`
-- `components/Layout.tsx`
-- `contexts/AuthContext.tsx`
+```txt
+.
+├── App.tsx
+├── components/
+├── contexts/
+├── docs/
+├── functions/
+│   └── src/index.ts
+├── pages/
+├── public/
+├── services/
+├── tests/
+├── firestore.rules
+├── firestore.indexes.json
+├── storage.rules
+└── firebase.json
+```
 
-## Estructura relevante
-- `App.tsx`: router por hash
-- `pages/`: pantallas por módulo
-- `components/`: layout, formatos de actas y UI compartida
-- `services/firestoreData.ts`: suscripciones y CRUD
-- `services/firebaseFunctions.ts`: cliente de Functions
-- `functions/src/index.ts`: lógica backend server-side
-- `firestore.rules`, `storage.rules`, `firestore.indexes.json`, `firebase.json`
+## Requisitos previos
+
+- Node.js 20
+- npm
+- Firebase CLI
+- Java en `PATH` para ejecutar pruebas de reglas con Emulator Suite
+
+## Instalación
+
+1. Clonar el repositorio.
+2. Instalar dependencias del frontend:
+
+```bash
+npm install
+```
+
+3. Instalar dependencias de Cloud Functions:
+
+```bash
+npm --prefix functions install
+```
+
+4. Crear archivo local de variables de entorno:
+
+```bash
+cp .env.example .env.local
+```
+
+5. Completar `.env.local` con valores reales de Firebase.
+6. Iniciar sesión en Firebase CLI y seleccionar el proyecto:
+
+```bash
+npx firebase-tools login
+npx firebase-tools use biocontrol-43676
+```
+
+## Ejecución local
+
+Frontend:
+
+```bash
+npm run dev
+```
+
+Vista previa de producción:
+
+```bash
+npm run build
+npm run preview
+```
+
+Pruebas de reglas Firestore:
+
+```bash
+npm run test:rules
+```
+
+Cloud Functions en local:
+
+```bash
+npm --prefix functions run serve
+```
+
+## Scripts disponibles
+
+Raíz del proyecto:
+
+- `npm run dev`
+- `npm run build`
+- `npm run preview`
+- `npm run test:rules`
+
+Carpeta `functions/`:
+
+- `npm --prefix functions run lint`
+- `npm --prefix functions run build`
+- `npm --prefix functions run serve`
+- `npm --prefix functions run deploy`
+- `npm --prefix functions run logs`
+
+## Variables de entorno esperadas
+
+El frontend utiliza variables `VITE_` para inicializar Firebase.
+
+Obligatorias:
+
+- `VITE_FIREBASE_API_KEY`
+- `VITE_FIREBASE_AUTH_DOMAIN`
+- `VITE_FIREBASE_PROJECT_ID`
+- `VITE_FIREBASE_STORAGE_BUCKET`
+- `VITE_FIREBASE_MESSAGING_SENDER_ID`
+- `VITE_FIREBASE_APP_ID`
+
+Opcionales:
+
+- `VITE_FIREBASE_MEASUREMENT_ID`
+
+Pendiente por confirmar:
+
+- `GEMINI_API_KEY` aparece referenciada en `vite.config.ts`, pero no se identificó un uso funcional directo en los módulos revisados.
+
+## Seguridad y restricciones relevantes
+
+- No existe auto-registro público.
+- El acceso depende de Firebase Auth más perfil válido en `users/{uid}`.
+- Los roles soportados son `GERENCIA`, `AUXILIAR_ADMINISTRATIVA`, `INGENIERO_BIOMEDICO` y `VISITADOR`.
+- Firestore y Storage aplican restricciones por rol y por contexto organizacional (`empresaId` y `sedeId`).
+- Los documentos legacy deben seguir siendo compatibles.
+
+## Despliegue
+
+Flujo recomendado por etapas:
+
+```bash
+npm run build
+npx firebase-tools deploy --only firestore:rules,firestore:indexes,storage
+npx firebase-tools deploy --only functions
+npx firebase-tools deploy --only hosting
+```
+
+Despliegue completo:
+
+```bash
+npx firebase-tools deploy
+```
+
+Ver más detalle en [docs/DEPLOY.md](docs/DEPLOY.md).
+
+## Referencias internas
+
+- Contexto operativo: [CONTEXT.md](CONTEXT.md)
+- Resumen funcional: [docs/PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md)
+- Requerimientos: [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md)
+- Arquitectura: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- Despliegue: [docs/DEPLOY.md](docs/DEPLOY.md)
+- Operación: [docs/OPERATIONS.md](docs/OPERATIONS.md)
+- Continuidad técnica: [docs/HANDOFF.md](docs/HANDOFF.md)
+- Casos de prueba: [TEST_CASES.md](TEST_CASES.md)
+- Incidencias conocidas: [KNOWN_ISSUES.md](KNOWN_ISSUES.md)
+- Historial documental: [CHANGELOG.md](CHANGELOG.md)
 
 ## Troubleshooting rápido
-- `Missing or insufficient permissions`:
-  - Verificar `users/{uid}.rol` en Firestore.
-  - Publicar reglas actualizadas.
-  - Cerrar sesión e iniciar nuevamente.
-- Error por índice faltante:
-  - Crear desde el link del error o desplegar `firestore.indexes.json`.
-- Errores Storage 401/412/403:
-  - Revisar `storage.rules`, bucket y estado de App Check.
 
-## Seguridad y git
-- No subir `.env.local`.
-- Mantener reglas e índices versionados.
-- Antes de merge/deploy: validar con `npm run build`.
+- `Missing or insufficient permissions`:
+  revisar `users/{uid}.rol`, reglas desplegadas y contexto activo de empresa/sede.
+- Error por índice faltante:
+  desplegar `firestore.indexes.json` o crear el índice sugerido por Firestore.
+- Errores de Storage `401`, `403` o `412`:
+  revisar `storage.rules`, bucket configurado y App Check si aplica.
+- Usuario autenticado sin acceso:
+  verificar que exista documento en `users/{uid}` y que tenga rol válido.
