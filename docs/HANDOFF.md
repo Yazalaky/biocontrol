@@ -136,6 +136,12 @@ Ajuste UX (marzo 2026):
   activo (ubicación opcional/legacy).
 - Asignación de equipos usa `consultorioNombre` como `ubicacionActual`.
 
+Ajuste asignación paciente (mayo 2026):
+- En el módulo Pacientes, el rol `AUXILIAR_ADMINISTRATIVA` puede asignar
+  equipos con `tipoPropiedad=ALQUILADO` cuando estén `DISPONIBLE`, sin
+  asignación activa y sin acta interna pendiente. Se mantiene compatibilidad
+  legacy con `tipoPropiedad=EXTERNO`.
+
 Reglas relevantes (`firestore.rules`):
 - Visitador: lectura acotada (pacientes activos, asignaciones activas, etc.).
 - Reportes de visita: creación solo por callable `createReporteEquipo` con anti-duplicado global por asignación.

@@ -10,6 +10,7 @@ import {
   EstadoEquipo,
   EstadoAsignacion,
   RolUsuario,
+  TipoPropiedad,
   EPS,
   RegimenPaciente,
 } from '../types';
@@ -263,11 +264,16 @@ const Patients: React.FC = () => {
       const effective = lastFinal?.estadoFinal || e.estado;
       if (effective !== EstadoEquipo.DISPONIBLE) return false;
 
+      const isAlquilado =
+        e.tipoPropiedad === TipoPropiedad.ALQUILADO ||
+        e.tipoPropiedad === TipoPropiedad.EXTERNO;
+
       // Control de actas internas (Legacy):
       // - Si disponibleParaEntrega no existe => se asume true (equipos antiguos).
       // - Si existe y es false => NO se puede entregar a pacientes.
+      // - Los equipos ALQUILADOS disponibles pueden asignarse a pacientes.
       // - Si tiene acta interna pendiente => NO se puede entregar.
-      const entregable = e.disponibleParaEntrega !== false && !e.actaInternaPendienteId;
+      const entregable = (e.disponibleParaEntrega !== false || isAlquilado) && !e.actaInternaPendienteId;
       if (!entregable) return false;
 
       // Si hay múltiples auxiliares, cada uno solo puede entregar equipos que estén
@@ -1055,11 +1061,11 @@ const Patients: React.FC = () => {
 	                    </div>
 
 	                    <div className="md:col-span-2">
-	                      <label className="block text-sm font-medium text-gray-700">Buscar equipo (MBG o serie)</label>
+	                      <label className="block text-sm font-medium text-gray-700">Buscar equipo (código o serie)</label>
 	                      <div className="relative">
                         <input
                           className="mt-1 w-full border p-2 rounded"
-                          placeholder="Ej: MBG-015 o 250103654"
+                          placeholder="Ej: MBA-001, MBG-015 o 250103654"
                           value={equipoQuery}
                           onChange={(e) => {
                             setEquipoQuery(e.target.value);
