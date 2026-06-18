@@ -24,7 +24,15 @@ import { deleteObject, ref as storageRef } from 'firebase/storage';
 
 import { db, storage } from './firebase';
 import { firebaseFunctions } from './firebaseFunctions';
-import { getStoredAccessProfile, getStoredOrgContext, withOrgContext } from './orgContext';
+import {
+  empresasScopeConstraints,
+  orgScopeConstraints,
+  sedesScopeConstraints,
+  stripUndefinedDeep,
+  upper,
+  upperOptional,
+  withContext,
+} from './firestoreData/shared';
 import {
   type Empresa,
   type Consultorio,
@@ -55,8 +63,18 @@ import {
   type HojaVidaFijos,
   type Paciente,
   type Profesional,
-  type TipoEquipo,
 } from '../types';
+export {
+  deleteConsultorio,
+  saveConsultorio,
+  subscribeConsultorios,
+  updateEquipoConsultorio,
+} from './firestoreData/consultorios';
+export {
+  deleteTipoEquipo,
+  saveTipoEquipo,
+  subscribeTiposEquipo,
+} from './firestoreData/tiposEquipo';
 
 const pacientesCol = collection(db, 'pacientes');
 const profesionalesCol = collection(db, 'profesionales');
@@ -68,10 +86,8 @@ const actasInternasCol = collection(db, 'actas_internas');
 const reportesEquiposCol = collection(db, 'reportes_equipos');
 const mantenimientosCol = collection(db, 'mantenimientos');
 const solicitudesEquiposPacienteCol = collection(db, 'solicitudes_equipos_paciente');
-const tiposEquipoCol = collection(db, 'tipos_equipo');
 const empresasCol = collection(db, 'empresas');
 const sedesCol = collection(db, 'sedes');
-const consultoriosCol = collection(db, 'consultorios');
 
 export type FirmaCapturadaVisitador = {
   idAsignacion: string;
@@ -126,130 +142,11 @@ export function subscribeSedes(onData: (sedes: Sede[]) => void, onError?: (e: Er
   );
 }
 
-export function subscribeConsultorios(
-  onData: (consultorios: Consultorio[]) => void,
-  onError?: (e: Error) => void,
-) {
-  const q = query(consultoriosCol, ...orgScopeConstraints());
-  return onSnapshot(
-    q,
-    (snap) => {
-      const consultorios = snap.docs
-        .map((d) => ({ id: d.id, ...(d.data() as Omit<Consultorio, 'id'>) }))
-        .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
-      onData(consultorios);
-    },
-    (err) => onError?.(err as unknown as Error),
-  );
-}
-
-export async function saveConsultorio(consultorio: Consultorio, context?: Partial<OrgContext>) {
-  if (!consultorio.nombre?.trim()) {
-    throw new Error('El consultorio debe tener nombre.');
-  }
-  if (!consultorio.servicio?.trim()) {
-    throw new Error('El consultorio debe tener servicio.');
-  }
-
-  const payload: Omit<Consultorio, 'id'> = {
-    nombre: upper(consultorio.nombre),
-    servicio: upper(consultorio.servicio),
-    ubicacion: upperOptional(consultorio.ubicacion),
-    activo: consultorio.activo !== false,
-    updatedAt: new Date().toISOString(),
-  };
-
-  if (consultorio.id) {
-    const ref = doc(consultoriosCol, consultorio.id);
-    const updatePayload = withContext(payload, context) as any;
-    if (!consultorio.ubicacion?.trim()) {
-      updatePayload.ubicacion = deleteField();
-    }
-    await updateDoc(ref, updatePayload);
-    return consultorio.id;
-  }
-
-  const docRef = await addDoc(
-    consultoriosCol,
-    withContext({
-      ...payload,
-      createdAt: new Date().toISOString(),
-    }, context) as any,
-  );
-  return docRef.id;
-}
-
-export async function deleteConsultorio(id: string) {
-  const ref = doc(consultoriosCol, id);
-  await deleteDoc(ref);
-}
-
-export async function updateEquipoConsultorio(
-  equipoId: string,
-  consultorio?: Pick<Consultorio, 'id' | 'nombre'> | null,
-  actor?: { uid?: string; nombre?: string },
-) {
-  const fn = httpsCallable(firebaseFunctions, 'setEquipoConsultorio');
-  await fn({
-    equipoId,
-    consultorioId: consultorio?.id || null,
-    actorNombre: upperOptional(actor?.nombre) || null,
-  });
-}
-
 function assertRoleString(value: string, allowed: readonly string[], fieldName: string) {
   if (!allowed.includes(value)) {
     throw new Error(`${fieldName} inválido: "${value}". Valores permitidos: ${allowed.join(', ')}`);
   }
 }
-
-function stripUndefinedDeep<T>(value: T): T {
-  if (Array.isArray(value)) {
-    return value.map((v) => stripUndefinedDeep(v)) as any;
-  }
-  if (value && typeof value === 'object') {
-    const out: any = {};
-    for (const [key, val] of Object.entries(value as any)) {
-      if (val === undefined) continue;
-      out[key] = stripUndefinedDeep(val);
-    }
-    return out;
-  }
-  return value;
-}
-
-const withContext = <T extends object>(payload: T, context?: Partial<OrgContext>) =>
-  stripUndefinedDeep(withOrgContext(payload, context));
-
-const orgScopeConstraints = (): QueryConstraint[] => {
-  const { isGlobalRead } = getStoredAccessProfile();
-  if (isGlobalRead) return [];
-  const context = getStoredOrgContext();
-  return [
-    where('empresaId', '==', context.empresaId),
-    where('sedeId', '==', context.sedeId),
-  ];
-};
-
-const empresasScopeConstraints = (): QueryConstraint[] => {
-  const { isGlobalRead } = getStoredAccessProfile();
-  if (isGlobalRead) return [];
-  const context = getStoredOrgContext();
-  return [where(documentId(), '==', context.empresaId)];
-};
-
-const sedesScopeConstraints = (): QueryConstraint[] => {
-  const { isGlobalRead } = getStoredAccessProfile();
-  if (isGlobalRead) return [];
-  const context = getStoredOrgContext();
-  return [
-    where('empresaId', '==', context.empresaId),
-    where(documentId(), '==', context.sedeId),
-  ];
-};
-
-const upper = (value: string) => value.toUpperCase();
-const upperOptional = (value?: string | null) => (typeof value === 'string' ? value.toUpperCase() : value);
 
 const upperHojaVidaFijos = (value?: HojaVidaFijos) => {
   if (!value) return undefined;
@@ -412,47 +309,6 @@ export function subscribeProfesionales(
     },
     (err) => onError?.(err as unknown as Error),
   );
-}
-
-export function subscribeTiposEquipo(onData: (tipos: TipoEquipo[]) => void, onError?: (e: Error) => void) {
-  const q = query(tiposEquipoCol, orderBy('nombre', 'asc'));
-  return onSnapshot(
-    q,
-    (snap) => {
-      const tipos = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<TipoEquipo, 'id'>) }));
-      onData(tipos);
-    },
-    (err) => onError?.(err as unknown as Error),
-  );
-}
-
-export async function saveTipoEquipo(tipo: TipoEquipo) {
-  if (!tipo.nombre) {
-    throw new Error('El tipo de equipo debe tener nombre.');
-  }
-
-  const payload: Omit<TipoEquipo, 'id'> = {
-    nombre: upper(tipo.nombre),
-    fijos: upperHojaVidaFijos(tipo.fijos) || {},
-    trabajoRealizadoDefault: upperOptional(tipo.trabajoRealizadoDefault),
-    updatedAt: new Date().toISOString(),
-  };
-
-  if (tipo.id) {
-    const ref = doc(tiposEquipoCol, tipo.id);
-    await updateDoc(ref, stripUndefinedDeep(payload) as any);
-    return;
-  }
-
-  await addDoc(
-    tiposEquipoCol,
-    stripUndefinedDeep({ ...payload, createdAt: new Date().toISOString() }) as any,
-  );
-}
-
-export async function deleteTipoEquipo(id: string) {
-  const ref = doc(tiposEquipoCol, id);
-  await deleteDoc(ref);
 }
 
 export function subscribeEquipos(onData: (equipos: EquipoBiomedico[]) => void, onError?: (e: Error) => void) {
