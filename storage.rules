@@ -24,6 +24,7 @@ service firebase.storage {
     // Fotos de reportes (VISITADOR)
     match /reportes_equipos/{uid}/{reporteId}/{fileName} {
       allow write: if isSignedIn()
+        && hasRole('VISITADOR')
         && request.auth.uid == uid
         && request.resource.size < 5 * 1024 * 1024
         && request.resource.contentType.matches('image/(png|jpeg)');
@@ -37,6 +38,7 @@ service firebase.storage {
     // Fotos de solicitudes de equipos del paciente (VISITADOR)
     match /solicitudes_equipos_paciente/{uid}/{solicitudId}/{fileName} {
       allow write: if isSignedIn()
+        && hasRole('VISITADOR')
         && request.auth.uid == uid
         && request.resource.size < 5 * 1024 * 1024
         && request.resource.contentType.matches('image/(png|jpeg)');
