@@ -7,7 +7,10 @@ service firebase.storage {
     }
 
     function role() {
-      return isSignedIn()
+      return isSignedIn() && request.auth.token.rol is string
+        ? request.auth.token.rol
+        : isSignedIn()
+        && firestore.exists(/databases/(default)/documents/users/$(request.auth.uid))
         ? firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.rol
         : null;
     }
@@ -17,8 +20,10 @@ service firebase.storage {
     }
 
     function isAdmin() {
-      return isSignedIn()
-        && firestore.get(/databases/(default)/documents/admins/$(request.auth.uid)).data.enabled == true;
+      return (isSignedIn() && request.auth.token.admin == true)
+        || (isSignedIn()
+        && firestore.exists(/databases/(default)/documents/admins/$(request.auth.uid))
+        && firestore.get(/databases/(default)/documents/admins/$(request.auth.uid)).data.enabled == true);
     }
 
     // Fotos de reportes (VISITADOR)

@@ -149,6 +149,74 @@ test('Visitador solo lee equipos con asignadoActivo=true', async () => {
   await assertFails(getDoc(doc(db, 'equipos/eq_false')));
 });
 
+test('Visitador puede capturar firma solo en campos permitidos de asignación activa', async () => {
+  await seedDoc('asignaciones/asg_visitador_ok', {
+    empresaId: 'MEDICUC',
+    sedeId: 'BUCARAMANGA',
+    estado: 'ACTIVA',
+    idPaciente: 'p1',
+    idEquipo: 'e1',
+  });
+
+  const db = authDb(UIDS.visitador);
+  await assertSucceeds(
+    updateDoc(doc(db, 'asignaciones/asg_visitador_ok'), {
+      firmaPacienteEntrega: 'data:image/png;base64,AAA',
+      firmaPacienteEntregaCapturadaAt: new Date().toISOString(),
+      firmaPacienteEntregaCapturadaPorUid: UIDS.visitador,
+      firmaPacienteEntregaCapturadaPorNombre: 'VISITADOR',
+    }),
+  );
+});
+
+test('Visitador no puede modificar campos no permitidos en asignación activa', async () => {
+  await seedDoc('asignaciones/asg_visitador_denied', {
+    empresaId: 'MEDICUC',
+    sedeId: 'BUCARAMANGA',
+    estado: 'ACTIVA',
+    idPaciente: 'p1',
+    idEquipo: 'e1',
+  });
+
+  const db = authDb(UIDS.visitador);
+  await assertFails(
+    updateDoc(doc(db, 'asignaciones/asg_visitador_denied'), {
+      observacionesEntrega: 'INTENTO NO PERMITIDO',
+    }),
+  );
+});
+
+test('Auxiliar no puede cambiar empresa o sede de un paciente existente', async () => {
+  await seedDoc('pacientes/p_scope_locked', {
+    empresaId: 'MEDICUC',
+    sedeId: 'BUCARAMANGA',
+    estado: 'ACTIVO',
+    numeroDocumento: '999',
+    nombreCompleto: 'PACIENTE CONTEXTO',
+  });
+
+  const db = authDb(UIDS.auxiliar);
+  await assertFails(
+    updateDoc(doc(db, 'pacientes/p_scope_locked'), {
+      empresaId: 'ALIADOS',
+      sedeId: 'ALIADOS_CUC',
+    }),
+  );
+});
+
+test('Gerencia no puede crear equipos por escritura directa', async () => {
+  const db = authDb(UIDS.gerencia);
+  await assertFails(
+    setDoc(doc(db, 'equipos/eq_gerencia_write'), {
+      empresaId: 'MEDICUC',
+      sedeId: 'BUCARAMANGA',
+      estado: 'DISPONIBLE',
+      asignadoActivo: false,
+      nombre: 'EQUIPO GERENCIA',
+    }),
+  );
+});
+
 test('Biomédico: asignación inicial de consultorio permitida; mover directo bloqueado', async () => {
   await seedDoc('equipos/eq_consultorio', {
     empresaId: 'ALIADOS',

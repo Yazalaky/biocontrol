@@ -148,6 +148,12 @@ service cloud.firestore {
       return isSameUserOrg(resource.data);
     }
 
+    function isMissingOrEmptyString(data, key) {
+      return !(key in data)
+        || data[key] == null
+        || (data[key] is string && data[key] == "");
+    }
+
     function equipoPathById(equipoId) {
       return /databases/$(database)/documents/equipos/$(equipoId);
     }
@@ -341,8 +347,7 @@ service cloud.firestore {
         isVisitador()
         && canUpdateInOwnOrg()
         && resource.data.estado == "ACTIVA"
-        && (resource.data.firmaPacienteEntrega == null
-          || resource.data.firmaPacienteEntrega == "")
+        && isMissingOrEmptyString(resource.data, "firmaPacienteEntrega")
         && request.resource.data.firmaPacienteEntrega is string
         && request.resource.data.firmaPacienteEntregaCapturadaAt is string
         && request.resource.data.firmaPacienteEntregaCapturadaPorUid == request.auth.uid
