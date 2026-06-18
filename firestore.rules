@@ -85,6 +85,30 @@ service cloud.firestore {
       return data.empresaId is string && data.sedeId is string;
     }
 
+    function scopeEntryMatches(scopeEntry, data) {
+      return scopeEntry is map
+        && scopeEntry.empresaId is string
+        && scopeEntry.sedeId is string
+        && scopeEntry.empresaId == data.empresaId
+        && scopeEntry.sedeId == data.sedeId;
+    }
+
+    // Firestore Rules no maneja de forma fiable la comparación de objetos dentro
+    // de listas para este caso; evaluamos un número acotado de sedes por scope.
+    function isInUserScope(data) {
+      return hasOrgContext(data)
+        && (
+          (userScope().size() > 0 && scopeEntryMatches(userScope()[0], data))
+          || (userScope().size() > 1 && scopeEntryMatches(userScope()[1], data))
+          || (userScope().size() > 2 && scopeEntryMatches(userScope()[2], data))
+          || (userScope().size() > 3 && scopeEntryMatches(userScope()[3], data))
+          || (userScope().size() > 4 && scopeEntryMatches(userScope()[4], data))
+          || (userScope().size() > 5 && scopeEntryMatches(userScope()[5], data))
+          || (userScope().size() > 6 && scopeEntryMatches(userScope()[6], data))
+          || (userScope().size() > 7 && scopeEntryMatches(userScope()[7], data))
+        );
+    }
+
     function isSameUserOrg(data) {
       return hasOrgContext(data)
         && (
@@ -94,7 +118,7 @@ service cloud.firestore {
             && data.empresaId == userEmpresaId()
             && data.sedeId == userSedeId()
           )
-          || ({empresaId: data.empresaId, sedeId: data.sedeId} in userScope())
+          || isInUserScope(data)
         );
     }
 
@@ -104,32 +128,24 @@ service cloud.firestore {
         && (
           isAdmin()
           || isGlobalReader()
-          || isBiomedico()
           || isSameUserOrg(data)
         );
     }
 
     function canCreateInOwnOrg() {
       return isSignedIn()
-        && (
-          (isBiomedico() && hasOrgContext(request.resource.data))
-          || isSameUserOrg(request.resource.data)
-        );
+        && isSameUserOrg(request.resource.data);
     }
 
     function canUpdateInOwnOrg() {
-      return (
-        isBiomedico()
+      return isSameUserOrg(resource.data)
         && hasOrgContext(request.resource.data)
-      ) || (
-        isSameUserOrg(resource.data)
-        && isSameUserOrg(request.resource.data)
-      );
+        && request.resource.data.empresaId == resource.data.empresaId
+        && request.resource.data.sedeId == resource.data.sedeId;
     }
 
     function canDeleteInOwnOrg() {
-      return (isBiomedico() && hasOrgContext(resource.data))
-        || isSameUserOrg(resource.data);
+      return isSameUserOrg(resource.data);
     }
 
     function equipoPathById(equipoId) {
@@ -150,12 +166,21 @@ service cloud.firestore {
     }
 
     function hasConsultorioId(data) {
-      return data.consultorioId is string && data.consultorioId != "";
+      return consultorioIdValue(data) != "";
+    }
+
+    function consultorioIdValue(data) {
+      return data is map
+        && data.keys().hasAny(["consultorioId"])
+        && data.consultorioId is string
+        ? data.consultorioId
+        : "";
     }
 
     function consultorioTransitionAllowed() {
       // No cambia consultorio: permitido.
-      return request.resource.data.consultorioId == resource.data.consultorioId
+      return consultorioIdValue(request.resource.data)
+          == consultorioIdValue(resource.data)
         // Quitar consultorio siempre permitido.
         || !hasConsultorioId(request.resource.data)
         // Asignar por primera vez (no mover directo entre consultorios).
@@ -255,9 +280,15 @@ service cloud.firestore {
       // VISITADOR: solo puede ver equipos con asignación activa
       allow read: if canReadOrgDoc(resource.data)
         && (!isVisitador() || resource.data.asignadoActivo == true);
-      allow create: if isBiomedico() && consultorioCreateAllowed();
-      allow update: if isBiomedico() && consultorioTransitionAllowed();
-      allow delete: if isBiomedico() && canDeleteEquipoDoc();
+      allow create: if isBiomedico()
+        && canCreateInOwnOrg()
+        && consultorioCreateAllowed();
+      allow update: if isBiomedico()
+        && canUpdateInOwnOrg()
+        && consultorioTransitionAllowed();
+      allow delete: if isBiomedico()
+        && canDeleteInOwnOrg()
+        && canDeleteEquipoDoc();
 
       // --- CALIBRACIONES (subcolección) ---
       match /calibraciones/{calId} {

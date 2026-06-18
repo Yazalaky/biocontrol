@@ -6,7 +6,7 @@ import {
   assertSucceeds,
   initializeTestEnvironment,
 } from '@firebase/rules-unit-testing';
-import { doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
+import { deleteDoc, doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
 
 const PROJECT_ID = `biocontrol-rules-${Date.now()}`;
 
@@ -185,6 +185,96 @@ test('Biomédico: equipo dado de baja no se puede asignar a consultorio', async 
       consultorioId: 'c1',
     }),
   );
+});
+
+test('Biomédico puede leer equipos en cualquier sede de su scope', async () => {
+  await seedDoc('equipos/eq_scope_primary', {
+    empresaId: 'MEDICUC',
+    sedeId: 'BUCARAMANGA',
+    estado: 'DISPONIBLE',
+    asignadoActivo: false,
+    nombre: 'EQUIPO SCOPE PRINCIPAL',
+  });
+  await seedDoc('equipos/eq_scope_secondary', {
+    empresaId: 'ALIADOS',
+    sedeId: 'ALIADOS_CUC',
+    estado: 'DISPONIBLE',
+    asignadoActivo: false,
+    nombre: 'EQUIPO SCOPE SECUNDARIO',
+  });
+
+  const db = authDb(UIDS.biomedico);
+  await assertSucceeds(getDoc(doc(db, 'equipos/eq_scope_primary')));
+  await assertSucceeds(getDoc(doc(db, 'equipos/eq_scope_secondary')));
+});
+
+test('Biomédico no puede leer equipos fuera de su scope', async () => {
+  await seedDoc('equipos/eq_outside_scope', {
+    empresaId: 'OTRA',
+    sedeId: 'CENTRO',
+    estado: 'DISPONIBLE',
+    asignadoActivo: false,
+    nombre: 'EQUIPO FUERA DE SCOPE',
+  });
+
+  const db = authDb(UIDS.biomedico);
+  await assertFails(getDoc(doc(db, 'equipos/eq_outside_scope')));
+});
+
+test('Biomédico puede crear equipos en cualquier sede de su scope', async () => {
+  const db = authDb(UIDS.biomedico);
+  await assertSucceeds(
+    setDoc(doc(db, 'equipos/eq_new_scope'), {
+      empresaId: 'ALIADOS',
+      sedeId: 'ALIADOS_CUC',
+      estado: 'DISPONIBLE',
+      asignadoActivo: false,
+      nombre: 'EQUIPO NUEVO SCOPE',
+    }),
+  );
+});
+
+test('Biomédico no puede crear equipos fuera de su scope', async () => {
+  const db = authDb(UIDS.biomedico);
+  await assertFails(
+    setDoc(doc(db, 'equipos/eq_new_outside_scope'), {
+      empresaId: 'OTRA',
+      sedeId: 'CENTRO',
+      estado: 'DISPONIBLE',
+      asignadoActivo: false,
+      nombre: 'EQUIPO NUEVO FUERA SCOPE',
+    }),
+  );
+});
+
+test('Biomédico no puede actualizar equipos fuera de su scope', async () => {
+  await seedDoc('equipos/eq_update_outside_scope', {
+    empresaId: 'OTRA',
+    sedeId: 'CENTRO',
+    estado: 'DISPONIBLE',
+    asignadoActivo: false,
+    nombre: 'EQUIPO UPDATE FUERA SCOPE',
+  });
+
+  const db = authDb(UIDS.biomedico);
+  await assertFails(
+    updateDoc(doc(db, 'equipos/eq_update_outside_scope'), {
+      consultorioId: 'c1',
+    }),
+  );
+});
+
+test('Biomédico no puede eliminar equipos fuera de su scope', async () => {
+  await seedDoc('equipos/eq_delete_outside_scope', {
+    empresaId: 'OTRA',
+    sedeId: 'CENTRO',
+    estado: 'DISPONIBLE',
+    asignadoActivo: false,
+    nombre: 'EQUIPO DELETE FUERA SCOPE',
+  });
+
+  const db = authDb(UIDS.biomedico);
+  await assertFails(deleteDoc(doc(db, 'equipos/eq_delete_outside_scope')));
 });
 
 test('Documento users sin rol válido no obtiene acceso', async () => {
