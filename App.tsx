@@ -1,21 +1,31 @@
-import React, { useState, useEffect } from 'react';
+import React, { Suspense, lazy, useState, useEffect } from 'react';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
-import Patients from './pages/Patients';
-import Professionals from './pages/Professionals';
-import Inventory from './pages/Inventory';
-import Admin from './pages/Admin';
-import Reports from './pages/Reports';
-import InternalActas from './pages/InternalActas';
 import Visits from './pages/Visits';
 import Rutero from './pages/Rutero';
-import Mantenimientos from './pages/Mantenimientos';
-import Calibraciones from './pages/Calibraciones';
-import Consultorios from './pages/Consultorios';
 import FeedbackHost from './components/FeedbackHost';
 import { RolUsuario } from './types';
+
+const Patients = lazy(() => import('./pages/Patients'));
+const Professionals = lazy(() => import('./pages/Professionals'));
+const Inventory = lazy(() => import('./pages/Inventory'));
+const Admin = lazy(() => import('./pages/Admin'));
+const Reports = lazy(() => import('./pages/Reports'));
+const InternalActas = lazy(() => import('./pages/InternalActas'));
+const Mantenimientos = lazy(() => import('./pages/Mantenimientos'));
+const Calibraciones = lazy(() => import('./pages/Calibraciones'));
+const Consultorios = lazy(() => import('./pages/Consultorios'));
+
+const RouteFallback = () => (
+  <div className="min-h-screen bg-gradient-to-br from-blue-900 to-slate-800 flex items-center justify-center p-4">
+    <div className="bg-white rounded-xl shadow-2xl p-6 max-w-md w-full text-center">
+      <h1 className="text-xl font-bold text-gray-900">BioControl</h1>
+      <p className="text-gray-500 mt-2">Cargando modulo...</p>
+    </div>
+  </div>
+);
 
 // Simple Router Component
 const Router = () => {
@@ -76,32 +86,47 @@ const Router = () => {
     return <Dashboard />;
   }
 
+  let page: React.ReactNode;
+
   // Rutas
   switch (currentHash) {
     case '#/pacientes':
-      return <Patients />;
+      page = <Patients />;
+      break;
     case '#/profesionales':
-      return <Professionals />;
+      page = <Professionals />;
+      break;
     case '#/equipos':
-      return <Inventory />;
+      page = <Inventory />;
+      break;
     case '#/informes':
-      return <Reports />;
+      page = <Reports />;
+      break;
     case '#/actas-internas':
-      return <InternalActas />;
+      page = <InternalActas />;
+      break;
     case '#/visitas':
-      return <Visits />;
+      page = <Visits />;
+      break;
     case '#/mantenimientos':
-      return <Mantenimientos />;
+      page = <Mantenimientos />;
+      break;
     case '#/calibraciones':
-      return <Calibraciones />;
+      page = <Calibraciones />;
+      break;
     case '#/consultorios':
-      return isAliadosContext ? <Consultorios /> : <Dashboard />;
+      page = isAliadosContext ? <Consultorios /> : <Dashboard />;
+      break;
     case '#/admin':
-      return <Admin />;
+      page = <Admin />;
+      break;
     case '#/':
     default:
-      return <Dashboard />;
+      page = <Dashboard />;
+      break;
   }
+
+  return <Suspense fallback={<RouteFallback />}>{page}</Suspense>;
 };
 
 const App: React.FC = () => {
