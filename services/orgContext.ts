@@ -5,6 +5,11 @@ export const DEFAULT_SEDE_ID = 'BUCARAMANGA';
 const ACTIVE_ORG_STORAGE_KEY = 'biocontrol_active_org_context';
 const ACCESS_PROFILE_STORAGE_KEY = 'biocontrol_access_profile';
 
+const getSessionStorage = () => {
+  if (typeof window === 'undefined') return null;
+  return window.sessionStorage;
+};
+
 const sanitizeId = (value: unknown, fallback: string) => {
   if (typeof value !== 'string') return fallback;
   const normalized = value.trim().toUpperCase();
@@ -44,9 +49,10 @@ export type StoredAccessProfile = {
 };
 
 export const getStoredAccessProfile = (): StoredAccessProfile => {
-  if (typeof window === 'undefined') return { isGlobalRead: false };
+  const storage = getSessionStorage();
+  if (!storage) return { isGlobalRead: false };
   try {
-    const raw = localStorage.getItem(ACCESS_PROFILE_STORAGE_KEY);
+    const raw = storage.getItem(ACCESS_PROFILE_STORAGE_KEY);
     if (!raw) return { isGlobalRead: false };
     const parsed = JSON.parse(raw) as Partial<StoredAccessProfile>;
     return { isGlobalRead: parsed.isGlobalRead === true };
@@ -56,16 +62,18 @@ export const getStoredAccessProfile = (): StoredAccessProfile => {
 };
 
 export const setStoredAccessProfile = (profile: Partial<StoredAccessProfile>) => {
-  if (typeof window === 'undefined') return;
-  localStorage.setItem(
+  const storage = getSessionStorage();
+  if (!storage) return;
+  storage.setItem(
     ACCESS_PROFILE_STORAGE_KEY,
     JSON.stringify({ isGlobalRead: profile.isGlobalRead === true }),
   );
 };
 
 export const clearStoredAccessProfile = () => {
-  if (typeof window === 'undefined') return;
-  localStorage.removeItem(ACCESS_PROFILE_STORAGE_KEY);
+  const storage = getSessionStorage();
+  if (!storage) return;
+  storage.removeItem(ACCESS_PROFILE_STORAGE_KEY);
 };
 
 export const withOrgContext = <T extends object>(
