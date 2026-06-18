@@ -86,7 +86,7 @@ function formatError(err: unknown, fallback: string) {
 }
 
 const Visits: React.FC = () => {
-  const { usuario } = useAuth();
+  const { usuario, activeOrgContext } = useAuth();
   const isVisitador = usuario?.rol === RolUsuario.VISITADOR;
   const isBiomedico = usuario?.rol === RolUsuario.INGENIERO_BIOMEDICO;
 
@@ -102,6 +102,8 @@ const Visits: React.FC = () => {
   const [firmasCapturadasHistorial, setFirmasCapturadasHistorial] =
     useState<FirmaCapturadaVisitador[]>([]);
   const [loadingFirmasHistorial, setLoadingFirmasHistorial] = useState(false);
+  const [visitadorTab, setVisitadorTab] = useState<'PENDIENTES' | 'HISTORIAL' | 'REPORTES'>('PENDIENTES');
+  const [openSolicitud, setOpenSolicitud] = useState<PacienteLite | null>(null);
 
   // BIOMEDICO data
   const [reportes, setReportes] = useState<ReporteEquipo[]>([]);
@@ -110,7 +112,6 @@ const Visits: React.FC = () => {
     setFirestoreError(null);
 
     if (isVisitador) {
-      let canceled = false;
       const unsubPacientes = subscribePacientesConAsignacionActiva(setPacientes, (e) => {
         console.error('subscribePacientesConAsignacionActiva error:', e);
         setFirestoreError(`No tienes permisos para leer pacientes activos. Detalle: ${e.message}`);
@@ -130,66 +131,11 @@ const Visits: React.FC = () => {
             (e) => setFirestoreError(`No tienes permisos para leer tus reportes. Detalle: ${e.message}`),
           )
         : () => {};
-      const unsubSolicitudes = usuario?.id
-        ? subscribeSolicitudesEquiposPacienteByUser(
-            usuario.id,
-            setSolicitudes,
-            (e) => setFirestoreError(`No tienes permisos para leer tus solicitudes. Detalle: ${e.message}`),
-          )
-        : () => {};
-      const loadFirmasHistorial = async () => {
-        if (!usuario?.id) return;
-        setLoadingFirmasHistorial(true);
-        try {
-          const firmas = await listFirmasCapturadasVisitador();
-          if (!canceled) setFirmasCapturadasHistorial(firmas);
-        } catch (err: unknown) {
-          console.error('listFirmasCapturadasVisitador error:', err);
-          if (!canceled) {
-            const { message } = parseError(err, 'Error desconocido');
-            setFirestoreError(
-              `No se pudo cargar historial de firmas. Detalle: ${message}`,
-            );
-          }
-        } finally {
-          if (!canceled) setLoadingFirmasHistorial(false);
-        }
-      };
-
-      const loadPacientesSinAsignacion = async () => {
-        setLoadingPacientesSinAsignacion(true);
-        try {
-          const fn = httpsCallable(firebaseFunctions, 'listPacientesSinAsignacion');
-          const res = await fn();
-          const data = res.data as { pacientes?: Array<{ id?: string; nombre?: string; doc?: string }> };
-          const items = (data.pacientes || [])
-            .map((p) => ({
-              id: p.id || '',
-              nombreCompleto: p.nombre || '',
-              numeroDocumento: p.doc || '',
-            }))
-            .filter((p) => p.id);
-          setPacientesSinAsignacion(items);
-        } catch (err: unknown) {
-          console.error('listPacientesSinAsignacion error:', err);
-          const { message } = parseError(err, 'Error desconocido');
-          setFirestoreError(
-            `No se pudo cargar pacientes sin asignacion. Detalle: ${message}`,
-          );
-        } finally {
-          setLoadingPacientesSinAsignacion(false);
-        }
-      };
-
-      loadPacientesSinAsignacion();
-      loadFirmasHistorial();
       return () => {
-        canceled = true;
         unsubPacientes();
         unsubEquipos();
         unsubAsignaciones();
         unsubReportes();
-        unsubSolicitudes();
       };
     }
 
@@ -200,7 +146,83 @@ const Visits: React.FC = () => {
       });
       return () => unsubReportes();
     }
-  }, [isVisitador, isBiomedico, usuario?.id]);
+  }, [isVisitador, isBiomedico, usuario?.id, activeOrgContext.empresaId, activeOrgContext.sedeId]);
+
+  useEffect(() => {
+    if (!isVisitador || !usuario?.id) return;
+    if (visitadorTab !== 'PENDIENTES') return;
+
+    let canceled = false;
+    const loadPacientesSinAsignacion = async () => {
+      setLoadingPacientesSinAsignacion(true);
+      try {
+        const fn = httpsCallable(firebaseFunctions, 'listPacientesSinAsignacion');
+        const res = await fn();
+        const data = res.data as { pacientes?: Array<{ id?: string; nombre?: string; doc?: string }> };
+        const items = (data.pacientes || [])
+          .map((p) => ({
+            id: p.id || '',
+            nombreCompleto: p.nombre || '',
+            numeroDocumento: p.doc || '',
+          }))
+          .filter((p) => p.id);
+        if (!canceled) setPacientesSinAsignacion(items);
+      } catch (err: unknown) {
+        console.error('listPacientesSinAsignacion error:', err);
+        if (!canceled) {
+          const { message } = parseError(err, 'Error desconocido');
+          setFirestoreError(`No se pudo cargar pacientes sin asignacion. Detalle: ${message}`);
+        }
+      } finally {
+        if (!canceled) setLoadingPacientesSinAsignacion(false);
+      }
+    };
+
+    loadPacientesSinAsignacion();
+    return () => {
+      canceled = true;
+    };
+  }, [isVisitador, usuario?.id, visitadorTab, activeOrgContext.empresaId, activeOrgContext.sedeId]);
+
+  useEffect(() => {
+    if (!isVisitador || !usuario?.id) return;
+    if (visitadorTab !== 'HISTORIAL') return;
+
+    let canceled = false;
+    const loadFirmasHistorial = async () => {
+      setLoadingFirmasHistorial(true);
+      try {
+        const firmas = await listFirmasCapturadasVisitador();
+        if (!canceled) setFirmasCapturadasHistorial(firmas);
+      } catch (err: unknown) {
+        console.error('listFirmasCapturadasVisitador error:', err);
+        if (!canceled) {
+          const { message } = parseError(err, 'Error desconocido');
+          setFirestoreError(`No se pudo cargar historial de firmas. Detalle: ${message}`);
+        }
+      } finally {
+        if (!canceled) setLoadingFirmasHistorial(false);
+      }
+    };
+
+    loadFirmasHistorial();
+    return () => {
+      canceled = true;
+    };
+  }, [isVisitador, usuario?.id, visitadorTab, activeOrgContext.empresaId, activeOrgContext.sedeId]);
+
+  useEffect(() => {
+    if (!isVisitador || !usuario?.id) return;
+    if (visitadorTab !== 'HISTORIAL' && !openSolicitud) return;
+
+    const unsubSolicitudes = subscribeSolicitudesEquiposPacienteByUser(
+      usuario.id,
+      setSolicitudes,
+      (e) => setFirestoreError(`No tienes permisos para leer tus solicitudes. Detalle: ${e.message}`),
+    );
+
+    return () => unsubSolicitudes();
+  }, [isVisitador, usuario?.id, visitadorTab, openSolicitud, activeOrgContext.empresaId, activeOrgContext.sedeId]);
 
   const pacientesById = useMemo(() => new Map(pacientes.map((p) => [p.id, p])), [pacientes]);
   const equiposById = useMemo(() => new Map(equipos.map((e) => [e.id, e])), [equipos]);
@@ -277,8 +299,6 @@ const Visits: React.FC = () => {
     const q = pacientesSinAsignacionSearch.trim().toLowerCase();
     return pacientesSinAsignacion.filter((p) => matchesPacienteQuery(q, p));
   }, [pacientesSinAsignacion, pacientesSinAsignacionSearch]);
-
-  const [visitadorTab, setVisitadorTab] = useState<'PENDIENTES' | 'HISTORIAL' | 'REPORTES'>('PENDIENTES');
 
   // Tabs y detalle de reportes (VISITADOR y BIOMEDICO)
   const [reporteTab, setReporteTab] = useState<'ABIERTO' | 'EN_PROCESO' | 'CERRADO'>('ABIERTO');
@@ -365,7 +385,6 @@ const Visits: React.FC = () => {
   const [descripcion, setDescripcion] = useState('');
   const [files, setFiles] = useState<File[]>([]);
 
-  const [openSolicitud, setOpenSolicitud] = useState<PacienteLite | null>(null);
   const [solicitudTipo, setSolicitudTipo] = useState<TipoPropiedad>(TipoPropiedad.PACIENTE);
   const [solicitudEquipoNombre, setSolicitudEquipoNombre] = useState('');
   const [solicitudEmpresa, setSolicitudEmpresa] = useState('');
