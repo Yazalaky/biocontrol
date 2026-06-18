@@ -244,7 +244,7 @@ Si quieres todo junto:
 - Unificar y ampliar README (actualmente es base de AI Studio).
 - Documentar colección por colección (campos obligatorios/opcionales).
 - Agregar tests mínimos de reglas (Firestore/Storage emulator).
-- Revisar code-splitting (bundle principal alto en build).
+- Seguir reduciendo bundle principal (`index-*`) con chunking adicional.
 
 ### Estado marzo 2026
 - Se añadió arnés inicial de pruebas de reglas Firestore:
@@ -253,6 +253,26 @@ Si quieres todo junto:
 - Cubre casos base por rol (auxiliar, biomédico, gerencia, visitador) y
   transiciones de consultorio en equipos.
 - Requisito local: Java disponible en PATH para Emulator Suite.
+
+### Estado junio 2026
+- Se aplicó code-splitting en `App.tsx` con `React.lazy`/`Suspense` para:
+  - `Patients`
+  - `Professionals`
+  - `Inventory`
+  - `Admin`
+  - `Reports`
+  - `InternalActas`
+  - `Mantenimientos`
+  - `Calibraciones`
+  - `Consultorios`
+- Línea base post-splitting (`npx vite build`):
+  - chunk principal `index-*`: `1173.45 kB` minificado / `315.73 kB` gzip
+  - chunk `Inventory-*`: `110.41 kB` / `21.24 kB` gzip
+  - chunk `Patients-*`: `60.61 kB` / `13.91 kB` gzip
+  - chunk `Professionals-*`: `54.12 kB` / `10.05 kB` gzip
+- Siguiente foco recomendado de rendimiento:
+  - revisar dependencias compartidas del chunk principal
+  - auditar listeners y carga de datos en `Inventory`
 
 ## 14) Prompt recomendado para retomar con Codex
 Usar este prompt al abrir el proyecto en el nuevo equipo:

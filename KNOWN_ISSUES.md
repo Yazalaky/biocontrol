@@ -37,6 +37,20 @@ Registrar problemas confirmados, limitaciones actuales y observaciones operativa
 - Acción sugerida:
   definir convención mínima de versionado documental o de releases.
 
+### 4. Bundle principal de frontend sigue alto tras code-splitting inicial
+
+- Estado: Mitigado parcialmente
+- Impacto: Medio
+- Descripción:
+  se dividió el router principal en chunks, pero el archivo base `index-*`
+  todavía queda en `~1173 kB` minificado (`~315 kB` gzip) en `vite build`.
+- Riesgo:
+  tiempo de carga inicial más alto de lo deseable, sobre todo en equipos o
+  redes lentas.
+- Acción sugerida:
+  revisar chunking adicional de dependencias compartidas y optimizar primero
+  `Inventory`, que sigue siendo el módulo lazy más pesado.
+
 ## Problemas operativos frecuentes
 
 - `Missing or insufficient permissions` por rol inválido, perfil faltante o reglas no desplegadas.
