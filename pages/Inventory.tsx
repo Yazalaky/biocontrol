@@ -285,21 +285,38 @@ const Inventory: React.FC = () => {
       console.error('Firestore subscribeTiposEquipo error:', e);
       setFirestoreError(`No tienes permisos para leer "tipos_equipo" en Firestore. Detalle: ${e.message}`);
     });
-    const unsubPacientes = subscribePacientes(setPacientes, (e) => {
-      console.error('Firestore subscribePacientes error:', e);
-      setFirestoreError(`No tienes permisos para leer "pacientes" en Firestore. Detalle: ${e.message}`);
-    });
-    const unsubAsignaciones = subscribeAsignaciones(setAsignaciones, (e) => {
-      console.error('Firestore subscribeAsignaciones error:', e);
-      setFirestoreError(`No tienes permisos para leer "asignaciones" en Firestore. Detalle: ${e.message}`);
-    });
-    const unsubProfesionales = subscribeProfesionales(setProfesionales, () => {});
-    const unsubAsignacionesProfesionales = subscribeAsignacionesProfesionales(setAsignacionesProfesionales, (e) => {
-      console.error('Firestore subscribeAsignacionesProfesionales error:', e);
-      setFirestoreError(
-        `No tienes permisos para leer "asignaciones_profesionales" en Firestore. Detalle: ${e.message}`,
-      );
-    });
+
+    if (isAliadosContext) {
+      setPacientes([]);
+      setAsignaciones([]);
+      setProfesionales([]);
+      setAsignacionesProfesionales([]);
+    }
+
+    const unsubPacientes = isAliadosContext
+      ? () => {}
+      : subscribePacientes(setPacientes, (e) => {
+          console.error('Firestore subscribePacientes error:', e);
+          setFirestoreError(`No tienes permisos para leer "pacientes" en Firestore. Detalle: ${e.message}`);
+        });
+    const unsubAsignaciones = isAliadosContext
+      ? () => {}
+      : subscribeAsignaciones(setAsignaciones, (e) => {
+          console.error('Firestore subscribeAsignaciones error:', e);
+          setFirestoreError(`No tienes permisos para leer "asignaciones" en Firestore. Detalle: ${e.message}`);
+        });
+    const unsubProfesionales = isAliadosContext
+      ? () => {}
+      : subscribeProfesionales(setProfesionales, () => {});
+    const unsubAsignacionesProfesionales = isAliadosContext
+      ? () => {}
+      : subscribeAsignacionesProfesionales(setAsignacionesProfesionales, (e) => {
+          console.error('Firestore subscribeAsignacionesProfesionales error:', e);
+          setFirestoreError(
+            `No tienes permisos para leer "asignaciones_profesionales" en Firestore. Detalle: ${e.message}`,
+          );
+        });
+
     return () => {
       unsubEquipos();
       unsubTipos();
@@ -308,7 +325,7 @@ const Inventory: React.FC = () => {
       unsubProfesionales();
       unsubAsignacionesProfesionales();
     };
-  }, []);
+  }, [activeOrgContext.empresaId, activeOrgContext.sedeId, isAliadosContext]);
 
   useEffect(() => {
     if (!canReadReportes) return;
@@ -317,7 +334,7 @@ const Inventory: React.FC = () => {
       (e) => console.error('Firestore subscribeReportesEquipos error:', e),
     );
     return () => unsub();
-  }, [canReadReportes]);
+  }, [canReadReportes, activeOrgContext.empresaId, activeOrgContext.sedeId]);
 
   useEffect(() => {
     if (usuario?.rol !== RolUsuario.INGENIERO_BIOMEDICO) return;
@@ -327,7 +344,7 @@ const Inventory: React.FC = () => {
       setFirestoreError(`No tienes permisos para leer solicitudes. Detalle: ${e.message}`);
     });
     return () => unsubSolicitudes();
-  }, [usuario?.rol, isAliadosContext]);
+  }, [usuario?.rol, isAliadosContext, activeOrgContext.empresaId, activeOrgContext.sedeId]);
 
   useEffect(() => {
     const counts: { [key: string]: number } = {};
