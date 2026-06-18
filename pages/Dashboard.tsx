@@ -347,16 +347,21 @@ const Dashboard: React.FC = () => {
 
       const estados = equipos.map(effectiveEstado);
       setStats({
-        pacientesActivos: pacientes.filter((p) => p.estado === EstadoPaciente.ACTIVO).length,
-        pacientesConActaActiva: pacientesConActaActiva.size,
+        pacientesActivos: hideAliadosAssignmentCards ? 0 : pacientes.filter((p) => p.estado === EstadoPaciente.ACTIVO).length,
+        pacientesConActaActiva: hideAliadosAssignmentCards ? 0 : pacientesConActaActiva.size,
         totalEquipos: equipos.length,
         equiposDisponibles: estados.filter((s) => s === EstadoEquipo.DISPONIBLE).length,
-        equiposAsignadosPacientes: activosPacientes.size,
-        equiposAsignadosProfesionales: activosProfesionales.size,
+        equiposAsignadosPacientes: hideAliadosAssignmentCards ? 0 : activosPacientes.size,
+        equiposAsignadosProfesionales: hideAliadosAssignmentCards ? 0 : activosProfesionales.size,
         equiposAsignados: estados.filter((s) => s === EstadoEquipo.ASIGNADO).length,
         equiposMantenimiento: estados.filter((s) => s === EstadoEquipo.MANTENIMIENTO).length,
         equiposBaja: estados.filter((s) => s === EstadoEquipo.DADO_DE_BAJA).length,
       });
+
+      if (hideAliadosAssignmentCards) {
+        setRecentAssignments([]);
+        return;
+      }
 
       // Últimas 5 asignaciones (por fechaAsignacion ISO)
       const sorted = [...asignaciones].sort(
@@ -376,13 +381,6 @@ const Dashboard: React.FC = () => {
 
     setFirestoreError(null);
 
-    const unsubPacientes = subscribePacientes((p) => {
-      pacientes = p;
-      recompute();
-    }, (e) => {
-      console.error('Firestore subscribePacientes error:', e);
-      setFirestoreError(`No tienes permisos para leer "pacientes" en Firestore. Detalle: ${e.message}`);
-    });
     const unsubEquipos = subscribeEquipos((e) => {
       equipos = e;
       setEquiposData(e);
@@ -391,20 +389,36 @@ const Dashboard: React.FC = () => {
       console.error('Firestore subscribeEquipos error:', e);
       setFirestoreError(`No tienes permisos para leer "equipos" en Firestore. Detalle: ${e.message}`);
     });
-    const unsubAsignaciones = subscribeAsignaciones((a) => {
-      asignaciones = a;
+    if (hideAliadosAssignmentCards) {
       recompute();
-    }, (e) => {
-      console.error('Firestore subscribeAsignaciones error:', e);
-      setFirestoreError(`No tienes permisos para leer "asignaciones" en Firestore. Detalle: ${e.message}`);
-    });
-    const unsubAsignacionesProfesionales = subscribeAsignacionesProfesionales((a) => {
-      asignacionesProfesionales = a;
-      recompute();
-    }, (e) => {
-      console.error('Firestore subscribeAsignacionesProfesionales error:', e);
-      setFirestoreError(`No tienes permisos para leer "asignaciones_profesionales" en Firestore. Detalle: ${e.message}`);
-    });
+    }
+    const unsubPacientes = hideAliadosAssignmentCards
+      ? () => {}
+      : subscribePacientes((p) => {
+          pacientes = p;
+          recompute();
+        }, (e) => {
+          console.error('Firestore subscribePacientes error:', e);
+          setFirestoreError(`No tienes permisos para leer "pacientes" en Firestore. Detalle: ${e.message}`);
+        });
+    const unsubAsignaciones = hideAliadosAssignmentCards
+      ? () => {}
+      : subscribeAsignaciones((a) => {
+          asignaciones = a;
+          recompute();
+        }, (e) => {
+          console.error('Firestore subscribeAsignaciones error:', e);
+          setFirestoreError(`No tienes permisos para leer "asignaciones" en Firestore. Detalle: ${e.message}`);
+        });
+    const unsubAsignacionesProfesionales = hideAliadosAssignmentCards
+      ? () => {}
+      : subscribeAsignacionesProfesionales((a) => {
+          asignacionesProfesionales = a;
+          recompute();
+        }, (e) => {
+          console.error('Firestore subscribeAsignacionesProfesionales error:', e);
+          setFirestoreError(`No tienes permisos para leer "asignaciones_profesionales" en Firestore. Detalle: ${e.message}`);
+        });
     const unsubMantenimientos = subscribeMantenimientos(setMantenimientos, (e) => {
       console.error('Firestore subscribeMantenimientos error:', e);
     });
@@ -420,7 +434,7 @@ const Dashboard: React.FC = () => {
       unsubMantenimientos();
       unsubCalibraciones();
     };
-  }, []);
+  }, [activeOrgContext.empresaId, activeOrgContext.sedeId, hideAliadosAssignmentCards]);
 
   const dataChart = [
     { name: 'Disponibles', value: stats.equiposDisponibles, color: '#4ade80' }, // Green
@@ -687,6 +701,7 @@ const Dashboard: React.FC = () => {
         </div>
 
         {/* Recent Activity */}
+        {!hideAliadosAssignmentCards && (
         <div className="md-card p-6 overflow-hidden">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
@@ -738,6 +753,7 @@ const Dashboard: React.FC = () => {
             </table>
           </div>
         </div>
+        )}
       </div>
 
       {showCalibPopup && isBiomedico && calibracionesProximas.length > 0 && (
