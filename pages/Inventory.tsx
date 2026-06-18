@@ -178,21 +178,6 @@ const Inventory: React.FC = () => {
   const SEDE_DEFAULT = 'BUCARAMANGA';
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const saved = localStorage.getItem('biocontrol_biomedico_sig');
-    if (saved) setAutoActaFirma(saved);
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (autoActaFirma) {
-      localStorage.setItem('biocontrol_biomedico_sig', autoActaFirma);
-    } else {
-      localStorage.removeItem('biocontrol_biomedico_sig');
-    }
-  }, [autoActaFirma]);
-
-  useEffect(() => {
     if (!equipoFotoFile) {
       setEquipoFotoPreview(null);
       return;

@@ -114,13 +114,6 @@ const Professionals: React.FC = () => {
   const actaMeasureRef = useRef<HTMLDivElement>(null);
   const [actaPreviewScale, setActaPreviewScale] = useState(1);
 
-  // Load admin signature from localStorage on mount (aux only)
-  useEffect(() => {
-    if (!canManage) return;
-    const savedSig = localStorage.getItem('biocontrol_admin_sig');
-    if (savedSig) setAdminSignature(savedSig);
-  }, [canManage]);
-
   useEffect(() => {
     if (!hasRole([RolUsuario.AUXILIAR_ADMINISTRATIVA, RolUsuario.GERENCIA, RolUsuario.INGENIERO_BIOMEDICO])) {
       setFirestoreError('No tienes permisos para acceder a Profesionales.');
@@ -607,7 +600,6 @@ const Professionals: React.FC = () => {
     reader.onload = async (evt) => {
       const res = evt.target?.result as string;
       setAdminSignature(res);
-      localStorage.setItem('biocontrol_admin_sig', res);
 
       if (actaData) {
         try {
@@ -1290,7 +1282,6 @@ const Professionals: React.FC = () => {
                                 <button
                                   onClick={() => {
                                     setAdminSignature(null);
-                                    localStorage.removeItem('biocontrol_admin_sig');
                                   }}
                                   className="absolute top-0 right-0 bg-red-100 text-red-600 p-1 rounded-bl text-xs"
                                 >

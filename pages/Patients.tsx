@@ -155,22 +155,9 @@ const Patients: React.FC = () => {
   const actaMeasureRef = useRef<HTMLDivElement>(null);
   const [actaPreviewScale, setActaPreviewScale] = useState(1);
 
-  // Load Admin Signature from LocalStorage on mount
-  useEffect(() => {
-    if (!canManage) return;
-    const savedSig = localStorage.getItem('biocontrol_admin_sig');
-    if (savedSig) setAdminSignature(savedSig);
-  }, [canManage]);
-
   useEffect(() => {
     if (!canManage) return;
     if (adminSignature) return;
-
-    const savedSig = localStorage.getItem('biocontrol_admin_sig');
-    if (savedSig) {
-      setAdminSignature(savedSig);
-      return;
-    }
 
     const latestWithSig = [...allAsignaciones]
       .filter((a) => {
@@ -187,7 +174,6 @@ const Patients: React.FC = () => {
 
     if (latestWithSig?.firmaAuxiliar) {
       setAdminSignature(latestWithSig.firmaAuxiliar);
-      localStorage.setItem('biocontrol_admin_sig', latestWithSig.firmaAuxiliar);
     }
   }, [canManage, adminSignature, allAsignaciones, usuario?.id, usuario?.nombre]);
 
@@ -748,7 +734,6 @@ const Patients: React.FC = () => {
     reader.onload = async (evt) => {
       const res = evt.target?.result as string;
       setAdminSignature(res);
-      localStorage.setItem('biocontrol_admin_sig', res);
 
       // Si estamos en una acta y aún no hay firma guardada para esta asignación, la persistimos en Firestore.
       if (actaData && !actaData.asig.firmaAuxiliar) {
@@ -1408,14 +1393,13 @@ const Patients: React.FC = () => {
 	                                        className="h-16 mx-auto object-contain"
 	                                        alt="Firma Auxiliar"
 	                                      />
-	                                      {canManage && !locked && (
-	                                        <button
-	                                          onClick={() => {
-	                                            setAdminSignature(null);
-	                                            localStorage.removeItem('biocontrol_admin_sig');
-	                                          }}
-	                                          className="absolute top-0 right-0 bg-red-100 text-red-600 p-1 rounded-bl text-xs"
-	                                        >
+                                      {canManage && !locked && (
+                                        <button
+                                          onClick={() => {
+                                            setAdminSignature(null);
+                                          }}
+                                          className="absolute top-0 right-0 bg-red-100 text-red-600 p-1 rounded-bl text-xs"
+                                        >
 	                                          ✕
 	                                        </button>
 	                                      )}
