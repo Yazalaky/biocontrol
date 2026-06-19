@@ -1264,42 +1264,13 @@ export async function addCalibracionEquipo(params: {
   creadoPorNombre: string;
   context?: Partial<OrgContext>;
 }) {
-  const {
-    equipoId,
-    fecha,
-    proximaFecha,
-    periodicidad,
-    costo,
-    observaciones,
-    certificado,
-    creadoPorUid,
-    creadoPorNombre,
-    context,
-  } = params;
-  const col = collection(db, 'equipos', equipoId, 'calibraciones');
-  const payload: Omit<CalibracionEquipo, 'id'> = withContext({
-    equipoId,
-    fecha,
-    proximaFecha,
-    periodicidad: upperOptional(periodicidad),
-    costo: upperOptional(costo),
-    observaciones: upperOptional(observaciones),
-    certificado,
-    creadoPorUid,
-    creadoPorNombre,
-    createdAt: new Date().toISOString(),
-  }, context) as any;
-
-  await addDoc(col, payload as any);
-
-  const ref = doc(equiposCol, equipoId);
-  const updatePayload: any = {
-    calibracionUltima: fecha,
-    calibracionProxima: proximaFecha,
-    calibracionPeriodicidad: upperOptional(periodicidad),
-    calibracionCertificado: certificado,
-  };
-  await updateDoc(ref, updatePayload);
+  const fn = httpsCallable(firebaseFunctions, 'addCalibracionEquipo');
+  await fn({
+    calibracion: withContext({
+      ...params,
+      createdAt: new Date().toISOString(),
+    }, params.context),
+  });
 }
 
 export async function updateCalibracionCertificado(params: {
@@ -1308,13 +1279,8 @@ export async function updateCalibracionCertificado(params: {
   certificado: CalibracionCertificado;
   syncEquipo?: boolean;
 }) {
-  const { equipoId, calibracionId, certificado, syncEquipo } = params;
-  const ref = doc(db, 'equipos', equipoId, 'calibraciones', calibracionId);
-  await updateDoc(ref, stripUndefinedDeep({ certificado, updatedAt: new Date().toISOString() }) as any);
-  if (syncEquipo) {
-    const equipoRef = doc(equiposCol, equipoId);
-    await updateDoc(equipoRef, { calibracionCertificado: certificado } as any);
-  }
+  const fn = httpsCallable(firebaseFunctions, 'updateCalibracionCertificado');
+  await fn(params);
 }
 
 export async function updateCalibracionFields(params: {
@@ -1323,16 +1289,8 @@ export async function updateCalibracionFields(params: {
   costo?: string;
   observaciones?: string;
 }) {
-  const { equipoId, calibracionId, costo, observaciones } = params;
-  const ref = doc(db, 'equipos', equipoId, 'calibraciones', calibracionId);
-  await updateDoc(
-    ref,
-    stripUndefinedDeep({
-      costo: upperOptional(costo),
-      observaciones: upperOptional(observaciones),
-      updatedAt: new Date().toISOString(),
-    }) as any,
-  );
+  const fn = httpsCallable(firebaseFunctions, 'updateCalibracionFields');
+  await fn(params);
 }
 
 export async function isNumeroSerieDisponible(numeroSerie: string, excludeId?: string) {

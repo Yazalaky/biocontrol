@@ -3451,6 +3451,159 @@ export const addMantenimientoHistorial = onCall(async (request) => {
   return {ok: true};
 });
 
+export const addCalibracionEquipo = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
+  }
+  const callerUid = request.auth.uid;
+  await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
+  const callerAccess = await getUserAccessContext(callerUid);
+
+  const raw = (request.data as {calibracion?: unknown})?.calibracion;
+  if (!raw || typeof raw !== "object") {
+    throw new HttpsError("invalid-argument", "calibracion es requerida.");
+  }
+  const data = raw as Record<string, unknown>;
+  const equipoId = assertNonEmptyString(data.equipoId, "equipoId");
+  const equipoRef = db.doc(`equipos/${equipoId}`);
+  const equipoSnap = await equipoRef.get();
+  if (!equipoSnap.exists) {
+    throw new HttpsError("not-found", "El equipo no existe.");
+  }
+  const equipo = equipoSnap.data() as Record<string, unknown>;
+  const equipoOrg = buildOrgContext(equipo);
+  assertHasOrgAccessOrThrow(
+    callerAccess,
+    equipoOrg,
+    "No puedes registrar calibraciones fuera de tu sede.",
+  );
+
+  const payload = stripUndefined({
+    ...data,
+    ...equipoOrg,
+    periodicidad: upperMaybe(data.periodicidad),
+    costo: upperMaybe(data.costo),
+    observaciones: upperMaybe(data.observaciones),
+    creadoPorNombre: upperTrim(data.creadoPorNombre),
+    createdAt:
+      typeof data.createdAt === "string" ?
+        data.createdAt :
+        new Date().toISOString(),
+  }) as Record<string, unknown>;
+
+  const ref = db.collection(`equipos/${equipoId}/calibraciones`).doc();
+  await ref.set(payload);
+  await equipoRef.update(stripUndefined({
+    calibracionUltima: data.fecha,
+    calibracionProxima: data.proximaFecha,
+    calibracionPeriodicidad: upperMaybe(data.periodicidad),
+    calibracionCertificado: data.certificado,
+    updatedAt: FieldValue.serverTimestamp(),
+  }) as Record<string, unknown>);
+  return {ok: true, id: ref.id};
+});
+
+export const updateCalibracionCertificado = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
+  }
+  const callerUid = request.auth.uid;
+  await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
+  const callerAccess = await getUserAccessContext(callerUid);
+
+  const data = request.data as {
+    equipoId?: unknown;
+    calibracionId?: unknown;
+    certificado?: unknown;
+    syncEquipo?: unknown;
+  };
+  const equipoId = assertNonEmptyString(data.equipoId, "equipoId");
+  const calibracionId = assertNonEmptyString(
+    data.calibracionId,
+    "calibracionId",
+  );
+  if (!data.certificado || typeof data.certificado !== "object") {
+    throw new HttpsError("invalid-argument", "certificado es requerido.");
+  }
+
+  const equipoRef = db.doc(`equipos/${equipoId}`);
+  const equipoSnap = await equipoRef.get();
+  if (!equipoSnap.exists) {
+    throw new HttpsError("not-found", "El equipo no existe.");
+  }
+  const equipo = equipoSnap.data() as Record<string, unknown>;
+  const equipoOrg = buildOrgContext(equipo);
+  assertHasOrgAccessOrThrow(
+    callerAccess,
+    equipoOrg,
+    "No puedes actualizar calibraciones fuera de tu sede.",
+  );
+
+  const ref = db.doc(`equipos/${equipoId}/calibraciones/${calibracionId}`);
+  await ref.update({
+    certificado: data.certificado,
+    updatedAt: new Date().toISOString(),
+  });
+  if (data.syncEquipo === true) {
+    await equipoRef.update({
+      calibracionCertificado: data.certificado,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  }
+  return {ok: true};
+});
+
+export const updateCalibracionFields = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
+  }
+  const callerUid = request.auth.uid;
+  await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
+  const callerAccess = await getUserAccessContext(callerUid);
+
+  const data = request.data as {
+    equipoId?: unknown;
+    calibracionId?: unknown;
+    costo?: unknown;
+    observaciones?: unknown;
+  };
+  const equipoId = assertNonEmptyString(data.equipoId, "equipoId");
+  const calibracionId = assertNonEmptyString(
+    data.calibracionId,
+    "calibracionId",
+  );
+
+  const equipoRef = db.doc(`equipos/${equipoId}`);
+  const equipoSnap = await equipoRef.get();
+  if (!equipoSnap.exists) {
+    throw new HttpsError("not-found", "El equipo no existe.");
+  }
+  const equipo = equipoSnap.data() as Record<string, unknown>;
+  const equipoOrg = buildOrgContext(equipo);
+  assertHasOrgAccessOrThrow(
+    callerAccess,
+    equipoOrg,
+    "No puedes actualizar calibraciones fuera de tu sede.",
+  );
+
+  const ref = db.doc(`equipos/${equipoId}/calibraciones/${calibracionId}`);
+  await ref.update(stripUndefined({
+    costo: upperMaybe(data.costo),
+    observaciones: upperMaybe(data.observaciones),
+    updatedAt: new Date().toISOString(),
+  }) as Record<string, unknown>);
+  return {ok: true};
+});
+
 /**
  * Reportes de visita/falla (VISITADOR -> Biomedico)
  * Al crear un reporte, insertamos un doc en /mail (Trigger Email Extension).
