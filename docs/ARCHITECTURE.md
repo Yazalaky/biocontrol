@@ -225,3 +225,82 @@ Archivos relevantes observados:
 - La seguridad de acceso depende de que `users/{uid}` esté correctamente provisionado; un alta incompleta bloquea login funcional aunque el usuario exista en Auth.
 - La falta de documentación formal de rollback aumenta el riesgo operativo ante incidentes de despliegue.
 - La cobertura automatizada detectada para reglas es parcial; siguen existiendo flujos críticos sin validación automatizada visible en el repositorio.
+
+## Matriz Cliente vs Backend
+
+### Operaciones ya protegidas por Cloud Functions
+
+- `createPaciente`
+  - Alta de paciente con consecutivo y validaciones transaccionales.
+- `createEquipo`
+  - Alta de equipo con reglas de inventario, contexto y consecutivos.
+- `setEquipoConsultorio`
+  - Asignación/quitar consultorio con validaciones de sede y estado.
+- `deleteEquipoDoc`
+  - Eliminación de equipo con validaciones de historial y dependencias.
+- `createAsignacionPaciente`
+  - Asignación transaccional paciente-equipo.
+- `createReporteEquipo`
+  - Creación de reporte con anti-duplicado y contexto.
+- `guardarFirmaEntregaVisitador`
+  - Firma del visitador validada server-side.
+- `approveSolicitudEquipoPaciente`
+  - Aprobación de solicitud y flujo posterior en backend.
+- `createInternalActa`
+- `acceptInternalActa`
+- `cancelInternalActa`
+- `adminCreateUser`
+- `adminSetUserRole`
+- `listAuxiliares`
+- `listPacientesSinAsignacion`
+- `listFirmasCapturadasVisitador`
+- `rebuildVisitadorFlags`
+
+### Operaciones que siguen con escritura directa desde cliente
+
+- `savePaciente` cuando edita un paciente existente.
+- `saveEquipo` cuando edita un equipo existente.
+- `updateEquipoFoto` / `clearEquipoFoto`.
+- `createMantenimiento` / `updateMantenimiento` / `addMantenimientoHistorial`.
+- `createSolicitudEquipoPaciente`.
+- `iniciarReporteEnProceso` / `agregarNotaReporte` / `cerrarReporteEquipo` / `marcarReporteVistoPorVisitador`.
+- `addCalibracionEquipo` / `updateCalibracionCertificado` / `updateCalibracionFields`.
+- `devolverEquipo`.
+- `validarSalidaPaciente`.
+- `guardarFirmaPaciente`.
+- `guardarFirmaAuxiliar`.
+- `guardarFirmaProfesionalActa`.
+- `guardarFirmaAuxiliarActa`.
+- `guardarFirmaProfesional`.
+- `guardarFirmaAuxiliarProfesional`.
+- `saveProfesional`.
+- `createActaProfesional`.
+- `asignarEquipoProfesional`.
+- `vincularAsignacionProfesionalActa`.
+- `devolverEquipoProfesional`.
+
+### Clasificación para P6.2
+
+Prioridad alta:
+- `devolverEquipo`
+- `validarSalidaPaciente`
+- `iniciarReporteEnProceso`
+- `agregarNotaReporte`
+- `cerrarReporteEquipo`
+- `createMantenimiento` y `updateMantenimiento`
+- `addCalibracionEquipo` y updates de calibración
+
+Prioridad media:
+- `savePaciente` edición
+- `saveEquipo` edición
+- `saveProfesional`
+- firmas auxiliares/paciente/profesional que hoy escriben directo en documentos
+
+Prioridad baja:
+- operaciones administrativas o de apoyo cuya integridad ya está bastante acotada por rules y contexto.
+
+### Conclusión técnica
+
+- Las altas críticas y varios flujos sensibles ya están bien encaminados hacia backend.
+- Aún persisten mutaciones importantes en cliente directo para mantenimientos, calibraciones, devoluciones, firmas y transiciones de reportes.
+- El siguiente paso recomendado es mover primero las operaciones con más impacto de integridad de negocio y más side effects cruzados.
