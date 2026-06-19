@@ -946,34 +946,22 @@ const normalizeMantenimientoUpdate = (value: Partial<Mantenimiento>): Partial<Ma
 };
 
 export async function createMantenimiento(mantenimiento: Omit<Mantenimiento, 'id' | 'consecutivo'>) {
-  const consecutivo = await getNextNumber('mantenimientos');
-  const ref = doc(mantenimientosCol);
-  const normalized = normalizeMantenimientoPayload({
-    ...mantenimiento,
-    consecutivo,
-  });
-  const payload = withContext(normalized);
-  await setDoc(ref, payload as any);
-  return { id: ref.id, ...payload };
+  const fn = httpsCallable(firebaseFunctions, 'createMantenimiento');
+  const res = await fn({ mantenimiento: withContext(mantenimiento) });
+  return res.data as { id: string } & Omit<Mantenimiento, 'id'>;
 }
 
 export async function updateMantenimiento(id: string, patch: Partial<Mantenimiento>) {
-  const ref = doc(mantenimientosCol, id);
-  await updateDoc(ref, normalizeMantenimientoUpdate(patch) as any);
+  const fn = httpsCallable(firebaseFunctions, 'updateMantenimiento');
+  await fn({ id, patch });
 }
 
 export async function addMantenimientoHistorial(
   id: string,
   entry: MantenimientoHistorial,
 ) {
-  const ref = doc(mantenimientosCol, id);
-  await updateDoc(ref, {
-    historial: arrayUnion({
-      ...entry,
-      nota: upper(entry.nota),
-      porNombre: upper(entry.porNombre),
-    }),
-  } as any);
+  const fn = httpsCallable(firebaseFunctions, 'addMantenimientoHistorial');
+  await fn({ id, entry });
 }
 
 export async function createSolicitudEquipoPaciente(solicitud: SolicitudEquipoPaciente) {

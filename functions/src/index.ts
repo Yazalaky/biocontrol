@@ -3243,6 +3243,215 @@ export const cerrarReporteEquipo = onCall(async (request) => {
 });
 
 /**
+ * Normaliza a mayúsculas cuando recibe string.
+ * @param {unknown} value Valor recibido.
+ * @return {unknown} Valor normalizado.
+ */
+function upperMaybe(value: unknown) {
+  return typeof value === "string" ? upperTrim(value) : value;
+}
+
+/**
+ * Normaliza campos operativos de mantenimiento antes de persistir.
+ * @param {Record<string, unknown>} value Payload recibido.
+ * @return {Record<string, unknown>} Payload normalizado.
+ */
+function normalizeMantenimientoPatchRecord(value: Record<string, unknown>) {
+  const repuestos = Array.isArray(value.repuestos) ?
+    value.repuestos.map((item) => {
+      const repuesto = item as Record<string, unknown>;
+      return {
+        ...repuesto,
+        descripcion: upperMaybe(repuesto.descripcion),
+      };
+    }) :
+    value.repuestos;
+
+  const historial = Array.isArray(value.historial) ?
+    value.historial.map((item) => {
+      const entry = item as Record<string, unknown>;
+      return {
+        ...entry,
+        nota: upperMaybe(entry.nota),
+        porNombre: upperMaybe(entry.porNombre),
+      };
+    }) :
+    value.historial;
+
+  return stripUndefined({
+    ...value,
+    codigoInventario: upperMaybe(value.codigoInventario),
+    equipoNombre: upperMaybe(value.equipoNombre),
+    marca: upperMaybe(value.marca),
+    modelo: upperMaybe(value.modelo),
+    serie: upperMaybe(value.serie),
+    ubicacion: upperMaybe(value.ubicacion),
+    sede: upperMaybe(value.sede),
+    ciudad: upperMaybe(value.ciudad),
+    direccion: upperMaybe(value.direccion),
+    telefono: upperMaybe(value.telefono),
+    email: upperMaybe(value.email),
+    trabajoRealizado: upperMaybe(value.trabajoRealizado),
+    fallaReportada: upperMaybe(value.fallaReportada),
+    fallaEncontrada: upperMaybe(value.fallaEncontrada),
+    observaciones: upperMaybe(value.observaciones),
+    creadoPorNombre: upperMaybe(value.creadoPorNombre),
+    aceptadoPorNombre: upperMaybe(value.aceptadoPorNombre),
+    repuestos,
+    historial,
+  }) as Record<string, unknown>;
+}
+
+export const createMantenimiento = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
+  }
+  const callerUid = request.auth.uid;
+  const callerRole = await getUserRole(callerUid);
+  if (
+    callerRole !== "INGENIERO_BIOMEDICO" &&
+    callerRole !== "AUXILIAR_ADMINISTRATIVA"
+  ) {
+    throw new HttpsError(
+      "permission-denied",
+      "No autorizado para crear mantenimientos.",
+    );
+  }
+  const callerAccess = await getUserAccessContext(callerUid);
+
+  const raw = (request.data as {mantenimiento?: unknown})?.mantenimiento;
+  if (!raw || typeof raw !== "object") {
+    throw new HttpsError("invalid-argument", "mantenimiento es requerido.");
+  }
+  const data = raw as Record<string, unknown>;
+  const requestedOrg = buildOrgContext({
+    empresaId: data.empresaId ?? callerAccess.empresaId,
+    sedeId: data.sedeId ?? callerAccess.sedeId,
+  });
+  assertHasOrgAccessOrThrow(
+    callerAccess,
+    requestedOrg,
+    "No puedes crear mantenimientos fuera de tu sede.",
+  );
+
+  const created = await db.runTransaction(async (tx) => {
+    const consecutivo = await nextConsecutivoInTx(
+      tx,
+      "mantenimientos_consecutivo",
+      "mantenimientos",
+    );
+    const ref = db.collection("mantenimientos").doc();
+    const payload = normalizeMantenimientoPatchRecord({
+      ...data,
+      ...requestedOrg,
+      consecutivo,
+    });
+    tx.set(ref, payload);
+    return {id: ref.id, ...payload};
+  });
+
+  return created;
+});
+
+export const updateMantenimiento = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
+  }
+  const callerUid = request.auth.uid;
+  const callerRole = await getUserRole(callerUid);
+  if (
+    callerRole !== "INGENIERO_BIOMEDICO" &&
+    callerRole !== "AUXILIAR_ADMINISTRATIVA"
+  ) {
+    throw new HttpsError(
+      "permission-denied",
+      "No autorizado para actualizar mantenimientos.",
+    );
+  }
+  const callerAccess = await getUserAccessContext(callerUid);
+
+  const data = request.data as {id?: unknown; patch?: unknown};
+  const id = assertNonEmptyString(data.id, "id");
+  if (!data.patch || typeof data.patch !== "object") {
+    throw new HttpsError("invalid-argument", "patch es requerido.");
+  }
+
+  const ref = db.doc(`mantenimientos/${id}`);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    throw new HttpsError("not-found", "El mantenimiento no existe.");
+  }
+  const mantenimiento = snap.data() as Record<string, unknown>;
+  const mantenimientoOrg = buildOrgContext(mantenimiento);
+  assertHasOrgAccessOrThrow(
+    callerAccess,
+    mantenimientoOrg,
+    "No puedes actualizar mantenimientos fuera de tu sede.",
+  );
+
+  await ref.update(
+    normalizeMantenimientoPatchRecord(data.patch as Record<string, unknown>),
+  );
+  return {ok: true};
+});
+
+export const addMantenimientoHistorial = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
+  }
+  const callerUid = request.auth.uid;
+  const callerRole = await getUserRole(callerUid);
+  if (
+    callerRole !== "INGENIERO_BIOMEDICO" &&
+    callerRole !== "AUXILIAR_ADMINISTRATIVA"
+  ) {
+    throw new HttpsError(
+      "permission-denied",
+      "No autorizado para registrar historial de mantenimiento.",
+    );
+  }
+  const callerAccess = await getUserAccessContext(callerUid);
+
+  const data = request.data as {id?: unknown; entry?: unknown};
+  const id = assertNonEmptyString(data.id, "id");
+  if (!data.entry || typeof data.entry !== "object") {
+    throw new HttpsError("invalid-argument", "entry es requerido.");
+  }
+
+  const ref = db.doc(`mantenimientos/${id}`);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    throw new HttpsError("not-found", "El mantenimiento no existe.");
+  }
+  const mantenimiento = snap.data() as Record<string, unknown>;
+  const mantenimientoOrg = buildOrgContext(mantenimiento);
+  assertHasOrgAccessOrThrow(
+    callerAccess,
+    mantenimientoOrg,
+    "No puedes registrar historial fuera de tu sede.",
+  );
+
+  const entry = data.entry as Record<string, unknown>;
+  await ref.update({
+    historial: FieldValue.arrayUnion({
+      ...entry,
+      nota: upperMaybe(entry.nota),
+      porNombre: upperMaybe(entry.porNombre),
+    }),
+  });
+  return {ok: true};
+});
+
+/**
  * Reportes de visita/falla (VISITADOR -> Biomedico)
  * Al crear un reporte, insertamos un doc en /mail (Trigger Email Extension).
  */
