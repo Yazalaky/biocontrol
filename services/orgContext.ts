@@ -16,6 +16,11 @@ const sanitizeId = (value: unknown, fallback: string) => {
   return normalized || fallback;
 };
 
+const sanitizeIdStrict = (value: unknown) => {
+  if (typeof value !== 'string') return '';
+  return value.trim().toUpperCase();
+};
+
 export const getDefaultOrgContext = (): OrgContext => ({
   empresaId: DEFAULT_EMPRESA_ID,
   sedeId: DEFAULT_SEDE_ID,
@@ -25,6 +30,21 @@ export const normalizeOrgContext = (value: Partial<OrgContext> | null | undefine
   empresaId: sanitizeId(value?.empresaId, DEFAULT_EMPRESA_ID),
   sedeId: sanitizeId(value?.sedeId, DEFAULT_SEDE_ID),
 });
+
+export const tryNormalizeOrgContext = (
+  value: Partial<OrgContext> | null | undefined,
+): OrgContext | null => {
+  const empresaId = sanitizeIdStrict(value?.empresaId);
+  const sedeId = sanitizeIdStrict(value?.sedeId);
+  if (!empresaId || !sedeId) return null;
+  return { empresaId, sedeId };
+};
+
+export const hasValidOrgContext = (
+  value: Partial<OrgContext> | null | undefined,
+): value is OrgContext => {
+  return !!tryNormalizeOrgContext(value);
+};
 
 export const getStoredOrgContext = (): OrgContext => {
   if (typeof window === 'undefined') return getDefaultOrgContext();
@@ -38,9 +58,22 @@ export const getStoredOrgContext = (): OrgContext => {
   }
 };
 
+export const getStoredOrgContextStrict = (): OrgContext | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(ACTIVE_ORG_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<OrgContext>;
+    return tryNormalizeOrgContext(parsed);
+  } catch {
+    return null;
+  }
+};
+
 export const setStoredOrgContext = (context: Partial<OrgContext>) => {
   if (typeof window === 'undefined') return;
-  const normalized = normalizeOrgContext(context);
+  const normalized = tryNormalizeOrgContext(context);
+  if (!normalized) return;
   localStorage.setItem(ACTIVE_ORG_STORAGE_KEY, JSON.stringify(normalized));
 };
 
@@ -80,7 +113,12 @@ export const withOrgContext = <T extends object>(
   payload: T,
   context?: Partial<OrgContext> | null,
 ): T & OrgContext => {
-  const base = context ? normalizeOrgContext(context) : getStoredOrgContext();
+  const base = context ? tryNormalizeOrgContext(context) : getStoredOrgContextStrict();
+  if (!base) {
+    throw new Error(
+      'No hay un contexto organizacional válido. Recarga la sesión una vez y, si el problema continúa, contacta al administrador.',
+    );
+  }
   return {
     ...payload,
     empresaId: base.empresaId,

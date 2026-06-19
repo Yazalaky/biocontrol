@@ -5,8 +5,8 @@ import { auth, db } from '../services/firebase';
 import {
   clearStoredAccessProfile,
   getDefaultOrgContext,
-  getStoredOrgContext,
-  normalizeOrgContext,
+  getStoredOrgContextStrict,
+  tryNormalizeOrgContext,
   setStoredAccessProfile,
   setStoredOrgContext,
 } from '../services/orgContext';
@@ -29,17 +29,22 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider = ({ children }: { children?: ReactNode }) => {
   const [usuario, setUsuario] = useState<Usuario | null>(null);
-  const [activeOrgContext, setActiveOrgContextState] = useState<OrgContext>(getStoredOrgContext());
+  const [activeOrgContext, setActiveOrgContextState] = useState<OrgContext>(
+    getStoredOrgContextStrict() ?? getDefaultOrgContext(),
+  );
   const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const setActiveOrgContext = (context: Partial<OrgContext>) => {
-    const normalized = normalizeOrgContext(context);
+    const normalized = tryNormalizeOrgContext(context);
+    if (!normalized) return;
     if (usuario && !usuario.isGlobalRead) {
       const userScopes = Array.isArray(usuario.scope) && usuario.scope.length > 0
-        ? usuario.scope.map((item) => normalizeOrgContext(item))
-        : [normalizeOrgContext({ empresaId: usuario.empresaId, sedeId: usuario.sedeId })];
+        ? usuario.scope
+        : usuario.empresaId && usuario.sedeId
+          ? [{ empresaId: usuario.empresaId, sedeId: usuario.sedeId }]
+          : [];
       const isAllowed = userScopes.some(
         (item) => item.empresaId === normalized.empresaId && item.sedeId === normalized.sedeId,
       );
@@ -96,21 +101,60 @@ export const AuthProvider = ({ children }: { children?: ReactNode }) => {
         }
 
         const isGlobalRead = data.isGlobalRead === true || rol === RolUsuario.GERENCIA;
+        const parseScopeItem = (item: { empresaId?: string; sedeId?: string } | undefined): OrgScope | null =>
+          tryNormalizeOrgContext(item);
         const scope: OrgScope[] = Array.isArray(data.scope)
           ? data.scope
-              .map((item) => normalizeOrgContext(item))
-              .filter((item) => item.empresaId && item.sedeId)
+              .map((item) => parseScopeItem(item))
+              .filter((item): item is OrgScope => !!item)
           : [];
-        const userOrg = normalizeOrgContext({
-          empresaId: data.empresaId || scope[0]?.empresaId,
-          sedeId: data.sedeId || scope[0]?.sedeId,
+        let primaryOrg = tryNormalizeOrgContext({
+          empresaId: data.empresaId,
+          sedeId: data.sedeId,
         });
-        const storedContext = getStoredOrgContext();
-        const allowedScopes = scope.length > 0 ? scope : [userOrg];
-        const storedIsAllowed = allowedScopes.some(
-          (item) => item.empresaId === storedContext.empresaId && item.sedeId === storedContext.sedeId,
-        );
-        const resolvedContext = storedIsAllowed ? storedContext : userOrg;
+
+        if (!primaryOrg && scope[0]) {
+          primaryOrg = scope[0];
+        }
+
+        if (!primaryOrg) {
+          const retrySnap = await getDoc(userDocRef);
+          const retryData = retrySnap.exists()
+            ? (retrySnap.data() as {
+                empresaId?: string;
+                sedeId?: string;
+                scope?: Array<{ empresaId?: string; sedeId?: string }>;
+              })
+            : null;
+          const retryScope = Array.isArray(retryData?.scope)
+            ? retryData.scope
+                .map((item) => parseScopeItem(item))
+                .filter((item): item is OrgScope => !!item)
+            : [];
+          primaryOrg = tryNormalizeOrgContext({
+            empresaId: retryData?.empresaId,
+            sedeId: retryData?.sedeId,
+          }) || retryScope[0] || null;
+        }
+
+        if (!primaryOrg) {
+          setUsuario(null);
+          setIsAdmin(false);
+          setError(
+            'Tu perfil no tiene un contexto organizacional válido. Recargamos una vez y el problema persiste. Corrige users/{uid} agregando empresaId y sedeId válidos o un scope válido.',
+          );
+          setLoading(false);
+          return;
+        }
+
+        const storedContext = getStoredOrgContextStrict();
+        const allowedScopes = scope.length > 0 ? scope : [primaryOrg];
+        const storedIsAllowed = storedContext
+          ? allowedScopes.some(
+              (item) => item.empresaId === storedContext.empresaId && item.sedeId === storedContext.sedeId,
+            )
+          : false;
+        const resolvedContext = storedIsAllowed ? storedContext! : primaryOrg;
         setActiveOrgContextState(resolvedContext);
         setStoredOrgContext(resolvedContext);
 
@@ -118,8 +162,8 @@ export const AuthProvider = ({ children }: { children?: ReactNode }) => {
           id: firebaseUser.uid,
           nombre: data.nombre || firebaseUser.email || 'Usuario',
           rol: rol as RolUsuario,
-          empresaId: userOrg.empresaId,
-          sedeId: userOrg.sedeId,
+          empresaId: primaryOrg.empresaId,
+          sedeId: primaryOrg.sedeId,
           scope,
           isGlobalRead,
         });

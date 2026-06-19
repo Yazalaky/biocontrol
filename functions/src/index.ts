@@ -1,3 +1,5 @@
+/* eslint-disable require-jsdoc */
+
 import {setGlobalOptions} from "firebase-functions";
 import {HttpsError, onCall} from "firebase-functions/v2/https";
 import {
@@ -21,6 +23,7 @@ import {
   getUserAccessContext,
   getUserOrgContext,
   isCallerAdminEnabled,
+  readStoredOrgContextOrThrow,
   isSameOrg,
   normalizeOrgId,
   normalizeTipoActivo,
@@ -28,12 +31,11 @@ import {
   stripUndefined,
   upperTrim,
 } from "./core/access";
+import {withAdminIncidentLogging} from "./core/incidents";
 import {
   COUNTERS_COLLECTION,
   db,
   auth,
-  DEFAULT_EMPRESA_ID,
-  DEFAULT_SEDE_ID,
   ESTADO_EQUIPO_VALUES,
   ESTADO_PACIENTE_VALUES,
   type OrgContext,
@@ -44,10 +46,24 @@ import {
 export {
   adminCreateUser,
   adminSetUserRole,
+  fixLegacyOrgDoc,
   listAuxiliares,
+  listLegacyOrgDocs,
 } from "./adminUsers";
 
 setGlobalOptions({maxInstances: 10, region: "us-central1"});
+
+function onCallLogged<T, R>(
+  config: {
+    functionName: string;
+    module: string;
+    action: string;
+    omitPayloadKeys?: string[];
+  },
+  handler: Parameters<typeof withAdminIncidentLogging<T, R>>[1],
+) {
+  return onCall(withAdminIncidentLogging<T, R>(config, handler));
+}
 
 /**
  * Obtiene consecutivo en transacción con fallback a max existente.
@@ -242,18 +258,11 @@ export const syncUserProfile = authTriggers.user().onCreate(async (user) => {
   const existing = await userRef.get();
   if (existing.exists) return;
 
-  const defaultScope = [
-    {empresaId: DEFAULT_EMPRESA_ID, sedeId: DEFAULT_SEDE_ID},
-  ];
-
   await userRef.set(
     {
       nombre: user.displayName ?? user.email ?? "Usuario",
       email: user.email ?? null,
       rol: null,
-      empresaId: DEFAULT_EMPRESA_ID,
-      sedeId: DEFAULT_SEDE_ID,
-      scope: defaultScope,
       isGlobalRead: false,
       createdAt: FieldValue.serverTimestamp(),
     },
@@ -276,14 +285,21 @@ async function backfillCollectionOrgContext(
 
   for (const docSnap of snap.docs) {
     const data = docSnap.data() as Record<string, unknown>;
-    const org = buildOrgContext(data);
-    const currentEmpresa = normalizeOrgId(data.empresaId, org.empresaId);
-    const currentSede = normalizeOrgId(data.sedeId, org.sedeId);
+    const hasStoredOrg =
+      typeof data.empresaId === "string" &&
+      data.empresaId.trim() !== "" &&
+      typeof data.sedeId === "string" &&
+      data.sedeId.trim() !== "";
+    if (!hasStoredOrg) continue;
+    const org = readStoredOrgContextOrThrow(
+      data,
+      `${collectionName}/${docSnap.id}`,
+    );
+    const currentEmpresa = normalizeOrgId(data.empresaId, "");
+    const currentSede = normalizeOrgId(data.sedeId, "");
     const needsUpdate =
       currentEmpresa !== org.empresaId ||
-      currentSede !== org.sedeId ||
-      typeof data.empresaId !== "string" ||
-      typeof data.sedeId !== "string";
+      currentSede !== org.sedeId;
     if (!needsUpdate) continue;
 
     batch.set(
@@ -320,15 +336,42 @@ async function backfillUsersOrgContext(): Promise<number> {
 
   for (const docSnap of snap.docs) {
     const data = docSnap.data() as Record<string, unknown>;
-    const org = buildOrgContext(data);
     const role = typeof data.rol === "string" ? data.rol : "";
     const isGlobalRead =
       data.isGlobalRead === true || role === "GERENCIA";
+    const org = (() => {
+      const scope = Array.isArray(data.scope) ? data.scope : [];
+      for (const item of scope) {
+        if (!item || typeof item !== "object") continue;
+        const candidate = item as Record<string, unknown>;
+        if (
+          typeof candidate.empresaId === "string" &&
+          candidate.empresaId.trim() !== "" &&
+          typeof candidate.sedeId === "string" &&
+          candidate.sedeId.trim() !== ""
+        ) {
+          return {
+            empresaId: normalizeOrgId(candidate.empresaId, ""),
+            sedeId: normalizeOrgId(candidate.sedeId, ""),
+          };
+        }
+      }
+      if (
+        typeof data.empresaId === "string" &&
+        data.empresaId.trim() !== "" &&
+        typeof data.sedeId === "string" &&
+        data.sedeId.trim() !== ""
+      ) {
+        return readStoredOrgContextOrThrow(data, `users/${docSnap.id}`);
+      }
+      return null;
+    })();
+    if (!org) continue;
     const currentScope = Array.isArray(data.scope) ? data.scope : [];
     const hasAnyScope = currentScope.length > 0;
     const needsUpdate =
-      typeof data.empresaId !== "string" ||
-      typeof data.sedeId !== "string" ||
+      normalizeOrgId(data.empresaId, "") !== org.empresaId ||
+      normalizeOrgId(data.sedeId, "") !== org.sedeId ||
       data.isGlobalRead !== isGlobalRead ||
       !hasAnyScope;
     if (!needsUpdate) continue;
@@ -434,292 +477,766 @@ export const backfillOrgContextPhase1 = onCall(async (request) => {
 });
 
 /**
- * 3.2) Crear paciente (transaccional).
- * Asigna consecutivo único y evita colisiones por concurrencia.
+ * Convierte timestamps flexibles a ISO string para la respuesta del panel.
+ * @param {unknown} value Valor crudo.
+ * @return {string | null} Fecha ISO o null.
  */
-export const createPaciente = onCall(async (request) => {
+function toIsoString(value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) return value;
+  if (
+    value &&
+    typeof value === "object" &&
+    "toDate" in value &&
+    typeof (value as {toDate?: unknown}).toDate === "function"
+  ) {
+    try {
+      return ((value as {toDate: () => Date}).toDate()).toISOString();
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+export const listAdminIncidentes = onCall(async (request) => {
   if (!request.auth?.uid) {
     throw new HttpsError(
       "unauthenticated",
       "Debes iniciar sesión para usar esta función.",
     );
   }
-  await assertCallerHasRole(request.auth.uid, "AUXILIAR_ADMINISTRATIVA");
-  const callerAccess = await getUserAccessContext(request.auth.uid);
+  await assertCallerIsAdmin(request.auth.uid);
 
-  const raw = (request.data as {paciente?: unknown})?.paciente;
-  if (!raw || typeof raw !== "object") {
-    throw new HttpsError("invalid-argument", "paciente es requerido.");
+  const rawLimit =
+    typeof (request.data as {limit?: unknown})?.limit === "number" ?
+      (request.data as {limit?: number}).limit :
+      50;
+  const limit = Math.max(1, Math.min(100, rawLimit ?? 50));
+  const statusFilter =
+    typeof (request.data as {status?: unknown})?.status === "string" ?
+      upperTrim((request.data as {status?: string}).status) :
+      "ABIERTO";
+
+  const snap = await db
+    .collection("admin_incidentes")
+    .orderBy("createdAt", "desc")
+    .limit(200)
+    .get();
+
+  const incidentes = snap.docs
+    .map((docSnap) => {
+      const data = docSnap.data() as Record<string, unknown>;
+      const status =
+        typeof data.status === "string" ? data.status : "ABIERTO";
+      if (statusFilter !== "TODOS" && status !== statusFilter) return null;
+      return {
+        id: docSnap.id,
+        status,
+        category:
+          typeof data.category === "string" ?
+            data.category :
+            "INTERNAL_ERROR",
+        functionName:
+          typeof data.functionName === "string" ? data.functionName : "",
+        module: typeof data.module === "string" ? data.module : "",
+        action: typeof data.action === "string" ? data.action : "",
+        errorCode: typeof data.errorCode === "string" ? data.errorCode : "",
+        errorMessage:
+          typeof data.errorMessage === "string" ? data.errorMessage : "",
+        suggestedFix:
+          typeof data.suggestedFix === "string" ? data.suggestedFix : "",
+        userUid: typeof data.userUid === "string" ? data.userUid : "",
+        userEmail: typeof data.userEmail === "string" ? data.userEmail : "",
+        userNombre: typeof data.userNombre === "string" ? data.userNombre : "",
+        userRole: typeof data.userRole === "string" ? data.userRole : "",
+        empresaId: typeof data.empresaId === "string" ? data.empresaId : "",
+        sedeId: typeof data.sedeId === "string" ? data.sedeId : "",
+        payloadSummary: data.payloadSummary ?? null,
+        createdAt: toIsoString(data.createdAt),
+        updatedAt: toIsoString(data.updatedAt),
+        resolvedAt: toIsoString(data.resolvedAt),
+        resolvedByUid:
+          typeof data.resolvedByUid === "string" ? data.resolvedByUid : "",
+        resolvedByNombre:
+          typeof data.resolvedByNombre === "string" ?
+            data.resolvedByNombre :
+            "",
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => !!item)
+    .slice(0, limit);
+
+  return {incidentes};
+});
+
+export const resolveAdminIncidente = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
   }
-  const paciente = raw as Record<string, unknown>;
-  const orgContext = buildOrgContext({
-    empresaId: paciente.empresaId ?? callerAccess.empresaId,
-    sedeId: paciente.sedeId ?? callerAccess.sedeId,
-  });
-  assertHasOrgAccessOrThrow(
-    callerAccess,
-    orgContext,
-    "No puedes crear pacientes fuera de tu sede.",
+  await assertCallerIsAdmin(request.auth.uid);
+
+  const incidenteId =
+    typeof (request.data as {incidenteId?: unknown})?.incidenteId === "string" ?
+      (request.data as {incidenteId: string}).incidenteId.trim() :
+      "";
+  if (!incidenteId) {
+    throw new HttpsError(
+      "invalid-argument",
+      "incidenteId es requerido.",
+    );
+  }
+
+  const ref = db.doc(`admin_incidentes/${incidenteId}`);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    throw new HttpsError("not-found", "El incidente no existe.");
+  }
+
+  const userSnap = await db.doc(`users/${request.auth.uid}`).get();
+  const resolvedByNombre =
+    userSnap.exists && typeof userSnap.data()?.nombre === "string" ?
+      userSnap.data()?.nombre :
+      request.auth.token.email ?? "ADMIN";
+
+  await ref.set(
+    {
+      status: "RESUELTO",
+      resolvedAt: FieldValue.serverTimestamp(),
+      resolvedByUid: request.auth.uid,
+      resolvedByNombre,
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    {merge: true},
   );
 
-  const nombreCompleto = upperTrim(paciente.nombreCompleto);
-  const tipoDocumento = upperTrim(paciente.tipoDocumento);
-  const numeroDocumento = upperTrim(paciente.numeroDocumento);
-  const direccion = upperTrim(paciente.direccion);
-  const eps =
+  return {ok: true};
+});
+
+/**
+ * 3.2) Crear paciente (transaccional).
+ * Asigna consecutivo único y evita colisiones por concurrencia.
+ */
+export const createPaciente = onCallLogged(
+  {
+    functionName: "createPaciente",
+    module: "PACIENTES",
+    action: "CREAR_PACIENTE",
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesión para usar esta función.",
+      );
+    }
+    await assertCallerHasRole(request.auth.uid, "AUXILIAR_ADMINISTRATIVA");
+    const callerAccess = await getUserAccessContext(request.auth.uid);
+
+    const raw = (request.data as {paciente?: unknown})?.paciente;
+    if (!raw || typeof raw !== "object") {
+      throw new HttpsError("invalid-argument", "paciente es requerido.");
+    }
+    const paciente = raw as Record<string, unknown>;
+    const orgContext = buildOrgContext({
+      empresaId: paciente.empresaId ?? callerAccess.empresaId,
+      sedeId: paciente.sedeId ?? callerAccess.sedeId,
+    });
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      orgContext,
+      "No puedes crear pacientes fuera de tu sede.",
+    );
+
+    const nombreCompleto = upperTrim(paciente.nombreCompleto);
+    const tipoDocumento = upperTrim(paciente.tipoDocumento);
+    const numeroDocumento = upperTrim(paciente.numeroDocumento);
+    const direccion = upperTrim(paciente.direccion);
+    const eps =
     typeof paciente.eps === "string" ? paciente.eps.trim() : "";
-  const regimenRaw = upperTrim(paciente.regimen);
-  const fechaInicioPrograma =
+    const regimenRaw = upperTrim(paciente.regimen);
+    const fechaInicioPrograma =
     typeof paciente.fechaInicioPrograma === "string" ?
       paciente.fechaInicioPrograma.trim() :
       "";
-  const horasPrestadas = upperTrim(paciente.horasPrestadas);
-  const tipoServicio = upperTrim(paciente.tipoServicio);
-  const diagnostico = upperTrim(paciente.diagnostico);
-  const telefono = upperTrim(paciente.telefono);
-  const nombreFamiliar = upperTrim(paciente.nombreFamiliar);
-  const telefonoFamiliar = upperTrim(paciente.telefonoFamiliar);
-  const estado = upperTrim(paciente.estado || "ACTIVO");
+    const horasPrestadas = upperTrim(paciente.horasPrestadas);
+    const tipoServicio = upperTrim(paciente.tipoServicio);
+    const diagnostico = upperTrim(paciente.diagnostico);
+    const telefono = upperTrim(paciente.telefono);
+    const nombreFamiliar = upperTrim(paciente.nombreFamiliar);
+    const telefonoFamiliar = upperTrim(paciente.telefonoFamiliar);
+    const estado = upperTrim(paciente.estado || "ACTIVO");
 
-  if (!nombreCompleto) {
-    throw new HttpsError(
-      "invalid-argument",
-      "paciente.nombreCompleto es requerido.",
-    );
-  }
-  if (!(TIPO_DOCUMENTO_VALUES as readonly string[]).includes(tipoDocumento)) {
-    throw new HttpsError(
-      "invalid-argument",
-      "tipoDocumento inválido. Valores permitidos: CC, TI, CE, RC.",
-    );
-  }
-  if (!numeroDocumento) {
-    throw new HttpsError(
-      "invalid-argument",
-      "paciente.numeroDocumento es requerido.",
-    );
-  }
-  if (!direccion || !eps || !fechaInicioPrograma || !horasPrestadas) {
-    throw new HttpsError(
-      "invalid-argument",
-      "Faltan campos requeridos del paciente.",
-    );
-  }
-  if (!tipoServicio || !diagnostico || !telefono) {
-    throw new HttpsError(
-      "invalid-argument",
-      "Faltan campos clínicos requeridos del paciente.",
-    );
-  }
-  if (!nombreFamiliar || !telefonoFamiliar) {
-    throw new HttpsError(
-      "invalid-argument",
-      "Faltan datos del familiar/acudiente.",
-    );
-  }
-  if (
-    !(ESTADO_PACIENTE_VALUES as readonly string[]).includes(estado)
-  ) {
-    throw new HttpsError(
-      "invalid-argument",
-      "estado inválido. Valores permitidos: ACTIVO, EGRESADO.",
-    );
-  }
+    if (!nombreCompleto) {
+      throw new HttpsError(
+        "invalid-argument",
+        "paciente.nombreCompleto es requerido.",
+      );
+    }
+    if (!(TIPO_DOCUMENTO_VALUES as readonly string[]).includes(tipoDocumento)) {
+      throw new HttpsError(
+        "invalid-argument",
+        "tipoDocumento inválido. Valores permitidos: CC, TI, CE, RC.",
+      );
+    }
+    if (!numeroDocumento) {
+      throw new HttpsError(
+        "invalid-argument",
+        "paciente.numeroDocumento es requerido.",
+      );
+    }
+    if (!direccion || !eps || !fechaInicioPrograma || !horasPrestadas) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Faltan campos requeridos del paciente.",
+      );
+    }
+    if (!tipoServicio || !diagnostico || !telefono) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Faltan campos clínicos requeridos del paciente.",
+      );
+    }
+    if (!nombreFamiliar || !telefonoFamiliar) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Faltan datos del familiar/acudiente.",
+      );
+    }
+    if (
+      !(ESTADO_PACIENTE_VALUES as readonly string[]).includes(estado)
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "estado inválido. Valores permitidos: ACTIVO, EGRESADO.",
+      );
+    }
 
-  const regimen =
+    const regimen =
     regimenRaw &&
       ["CONTRIBUTIVO", "SUBSIDIADO", "ESPECIAL"].includes(regimenRaw) ?
       regimenRaw :
       undefined;
-  const zona = upperTrim(paciente.zona);
-  if (
-    zona &&
+    const zona = upperTrim(paciente.zona);
+    if (
+      zona &&
     !["GIRON", "BGA1", "BGA2", "PIEDECUESTA", "FLORIDABLANCA"].includes(zona)
-  ) {
-    throw new HttpsError(
-      "invalid-argument",
-      "zona inválida. Valores permitidos: " +
-        "GIRON, BGA1, BGA2, PIEDECUESTA, FLORIDABLANCA.",
-    );
-  }
-
-  const pacienteData = stripUndefined({
-    ...orgContext,
-    nombreCompleto,
-    tipoDocumento,
-    numeroDocumento,
-    direccion,
-    eps,
-    fechaInicioPrograma,
-    horasPrestadas,
-    tipoServicio,
-    diagnostico,
-    telefono,
-    nombreFamiliar,
-    telefonoFamiliar,
-    estado,
-    barrio: upperTrim(paciente.barrio) || undefined,
-    zona: zona || undefined,
-    regimen,
-    documentoFamiliar: upperTrim(paciente.documentoFamiliar) || undefined,
-    parentescoFamiliar: upperTrim(paciente.parentescoFamiliar) || undefined,
-    fechaSalida:
-      typeof paciente.fechaSalida === "string" ?
-        paciente.fechaSalida.trim() :
-        undefined,
-  }) as Record<string, unknown>;
-
-  const created = await db.runTransaction(async (tx) => {
-    const dupSnap = await tx.get(
-      db.collection("pacientes")
-        .where("empresaId", "==", orgContext.empresaId)
-        .where("sedeId", "==", orgContext.sedeId)
-        .where("numeroDocumento", "==", numeroDocumento)
-        .limit(1),
-    );
-    if (!dupSnap.empty) {
+    ) {
       throw new HttpsError(
-        "already-exists",
-        `Ya existe un paciente con documento ${numeroDocumento}.`,
+        "invalid-argument",
+        "zona inválida. Valores permitidos: " +
+        "GIRON, BGA1, BGA2, PIEDECUESTA, FLORIDABLANCA.",
       );
     }
 
-    const consecutivo = await nextConsecutivoInTx(
-      tx,
-      "pacientes_consecutivo",
-      "pacientes",
-    );
-    const pacienteRef = db.collection("pacientes").doc();
-    tx.set(pacienteRef, {
-      ...pacienteData,
-      consecutivo,
-      createdAt: FieldValue.serverTimestamp(),
-    });
-    return {id: pacienteRef.id, consecutivo};
-  });
+    const pacienteData = stripUndefined({
+      ...orgContext,
+      nombreCompleto,
+      tipoDocumento,
+      numeroDocumento,
+      direccion,
+      eps,
+      fechaInicioPrograma,
+      horasPrestadas,
+      tipoServicio,
+      diagnostico,
+      telefono,
+      nombreFamiliar,
+      telefonoFamiliar,
+      estado,
+      barrio: upperTrim(paciente.barrio) || undefined,
+      zona: zona || undefined,
+      regimen,
+      documentoFamiliar: upperTrim(paciente.documentoFamiliar) || undefined,
+      parentescoFamiliar: upperTrim(paciente.parentescoFamiliar) || undefined,
+      fechaSalida:
+      typeof paciente.fechaSalida === "string" ?
+        paciente.fechaSalida.trim() :
+        undefined,
+    }) as Record<string, unknown>;
 
-  return created;
-});
+    const created = await db.runTransaction(async (tx) => {
+      const dupSnap = await tx.get(
+        db.collection("pacientes")
+          .where("empresaId", "==", orgContext.empresaId)
+          .where("sedeId", "==", orgContext.sedeId)
+          .where("numeroDocumento", "==", numeroDocumento)
+          .limit(1),
+      );
+      if (!dupSnap.empty) {
+        throw new HttpsError(
+          "already-exists",
+          `Ya existe un paciente con documento ${numeroDocumento}.`,
+        );
+      }
+
+      const consecutivo = await nextConsecutivoInTx(
+        tx,
+        "pacientes_consecutivo",
+        "pacientes",
+      );
+      const pacienteRef = db.collection("pacientes").doc();
+      tx.set(pacienteRef, {
+        ...pacienteData,
+        consecutivo,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      return {id: pacienteRef.id, consecutivo};
+    });
+
+    return created;
+  },
+);
 
 /**
  * 3.3) Crear equipo (transaccional).
  * Genera código inventario único según empresa/tipo.
  */
-export const createEquipo = onCall(async (request) => {
-  if (!request.auth?.uid) {
-    throw new HttpsError(
-      "unauthenticated",
-      "Debes iniciar sesión para usar esta función.",
+export const createEquipo = onCallLogged(
+  {
+    functionName: "createEquipo",
+    module: "INVENTARIO",
+    action: "CREAR_EQUIPO",
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesión para usar esta función.",
+      );
+    }
+    await assertCallerHasRole(request.auth.uid, "INGENIERO_BIOMEDICO");
+    const callerAccess = await getUserAccessContext(request.auth.uid);
+
+    const raw = (request.data as {equipo?: unknown})?.equipo;
+    if (!raw || typeof raw !== "object") {
+      throw new HttpsError("invalid-argument", "equipo es requerido.");
+    }
+    const equipo = raw as Record<string, unknown>;
+    const orgContext = buildOrgContext({
+      empresaId: equipo.empresaId ?? callerAccess.empresaId,
+      sedeId: equipo.sedeId ?? callerAccess.sedeId,
+    });
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      orgContext,
+      "No puedes crear equipos fuera de tu sede.",
     );
-  }
-  await assertCallerHasRole(request.auth.uid, "INGENIERO_BIOMEDICO");
-  const callerAccess = await getUserAccessContext(request.auth.uid);
 
-  const raw = (request.data as {equipo?: unknown})?.equipo;
-  if (!raw || typeof raw !== "object") {
-    throw new HttpsError("invalid-argument", "equipo es requerido.");
-  }
-  const equipo = raw as Record<string, unknown>;
-  const orgContext = buildOrgContext({
-    empresaId: equipo.empresaId ?? callerAccess.empresaId,
-    sedeId: equipo.sedeId ?? callerAccess.sedeId,
-  });
-  assertHasOrgAccessOrThrow(
-    callerAccess,
-    orgContext,
-    "No puedes crear equipos fuera de tu sede.",
-  );
-
-  const tipoActivo = normalizeTipoActivo(equipo.tipoActivo);
-  const isAliadosOrg = orgContext.empresaId === "ALIADOS";
-  const numeroSerie = upperTrim(equipo.numeroSerie);
-  const codigoInventarioManual = upperTrim(equipo.codigoInventario);
-  const nombre = upperTrim(equipo.nombre);
-  const marca = upperTrim(equipo.marca);
-  const modelo = upperTrim(equipo.modelo);
-  const estado = upperTrim(equipo.estado || "DISPONIBLE");
-  const tipoPropiedad = normalizeTipoPropiedad(equipo.tipoPropiedad);
-  const observaciones = upperTrim(equipo.observaciones);
-  const detalleActivoRaw =
+    const tipoActivo = normalizeTipoActivo(equipo.tipoActivo);
+    const isAliadosOrg = orgContext.empresaId === "ALIADOS";
+    const numeroSerie = upperTrim(equipo.numeroSerie);
+    const codigoInventarioManual = upperTrim(equipo.codigoInventario);
+    const nombre = upperTrim(equipo.nombre);
+    const marca = upperTrim(equipo.marca);
+    const modelo = upperTrim(equipo.modelo);
+    const estado = upperTrim(equipo.estado || "DISPONIBLE");
+    const tipoPropiedad = normalizeTipoPropiedad(equipo.tipoPropiedad);
+    const observaciones = upperTrim(equipo.observaciones);
+    const detalleActivoRaw =
     typeof equipo.detalleActivo === "object" && equipo.detalleActivo ?
       (equipo.detalleActivo as Record<string, unknown>) :
       null;
-  const consultorioIdRaw =
+    const consultorioIdRaw =
     typeof equipo.consultorioId === "string" ?
       equipo.consultorioId.trim() :
       "";
-  const detalleActivo = detalleActivoRaw ? {
-    tipo: upperTrim(detalleActivoRaw.tipo) || undefined,
-    servicio: upperTrim(detalleActivoRaw.servicio) || undefined,
-    ubicacion: upperTrim(detalleActivoRaw.ubicacion) || undefined,
-    sede: upperTrim(detalleActivoRaw.sede) || undefined,
-    fechaAdquisicion:
+    const detalleActivo = detalleActivoRaw ? {
+      tipo: upperTrim(detalleActivoRaw.tipo) || undefined,
+      servicio: upperTrim(detalleActivoRaw.servicio) || undefined,
+      ubicacion: upperTrim(detalleActivoRaw.ubicacion) || undefined,
+      sede: upperTrim(detalleActivoRaw.sede) || undefined,
+      fechaAdquisicion:
       typeof detalleActivoRaw.fechaAdquisicion === "string" &&
         detalleActivoRaw.fechaAdquisicion.trim() ?
         detalleActivoRaw.fechaAdquisicion.trim() :
         undefined,
-    costo: upperTrim(detalleActivoRaw.costo) || undefined,
-    proveedor: upperTrim(detalleActivoRaw.proveedor) || undefined,
-    estadoActual: upperTrim(detalleActivoRaw.estadoActual) || undefined,
-  } : undefined;
-  const fechaIngreso =
+      costo: upperTrim(detalleActivoRaw.costo) || undefined,
+      proveedor: upperTrim(detalleActivoRaw.proveedor) || undefined,
+      estadoActual: upperTrim(detalleActivoRaw.estadoActual) || undefined,
+    } : undefined;
+    const fechaIngreso =
     typeof equipo.fechaIngreso === "string" && equipo.fechaIngreso.trim() ?
       equipo.fechaIngreso.trim() :
       new Date().toISOString();
 
-  if (!nombre) {
-    throw new HttpsError(
-      "invalid-argument",
-      "equipo.nombre es requerido.",
-    );
-  }
-  if (
-    tipoActivo === "BIOMEDICO" &&
+    if (!nombre) {
+      throw new HttpsError(
+        "invalid-argument",
+        "equipo.nombre es requerido.",
+      );
+    }
+    if (
+      tipoActivo === "BIOMEDICO" &&
     (!numeroSerie || !marca || !modelo)
-  ) {
-    throw new HttpsError(
-      "invalid-argument",
-      "Faltan campos biomédicos requeridos del equipo.",
-    );
-  }
-  if (
-    !(ESTADO_EQUIPO_VALUES as readonly string[]).includes(estado)
-  ) {
-    throw new HttpsError(
-      "invalid-argument",
-      "estado inválido. Valores permitidos: DISPONIBLE, ASIGNADO, " +
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Faltan campos biomédicos requeridos del equipo.",
+      );
+    }
+    if (
+      !(ESTADO_EQUIPO_VALUES as readonly string[]).includes(estado)
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "estado inválido. Valores permitidos: DISPONIBLE, ASIGNADO, " +
         "MANTENIMIENTO, DADO_DE_BAJA.",
-    );
-  }
-  if (isAliadosOrg && !codigoInventarioManual) {
-    throw new HttpsError(
-      "invalid-argument",
-      "En Aliados el código de inventario es obligatorio y manual.",
-    );
-  }
+      );
+    }
+    if (isAliadosOrg && !codigoInventarioManual) {
+      throw new HttpsError(
+        "invalid-argument",
+        "En Aliados el código de inventario es obligatorio y manual.",
+      );
+    }
 
-  const created = await db.runTransaction(async (tx) => {
-    let consultorioId: string | undefined;
-    let consultorioNombre: string | undefined;
+    const created = await db.runTransaction(async (tx) => {
+      let consultorioId: string | undefined;
+      let consultorioNombre: string | undefined;
 
-    if (consultorioIdRaw) {
-      const consultorioRef = db.doc(`consultorios/${consultorioIdRaw}`);
-      const consultorioSnap = await tx.get(consultorioRef);
-      if (!consultorioSnap.exists) {
-        throw new HttpsError(
-          "not-found",
-          "El consultorio seleccionado no existe.",
-        );
-      }
-      const consultorioData = consultorioSnap.data() as Record<
+      if (consultorioIdRaw) {
+        const consultorioRef = db.doc(`consultorios/${consultorioIdRaw}`);
+        const consultorioSnap = await tx.get(consultorioRef);
+        if (!consultorioSnap.exists) {
+          throw new HttpsError(
+            "not-found",
+            "El consultorio seleccionado no existe.",
+          );
+        }
+        const consultorioData = consultorioSnap.data() as Record<
         string,
         unknown
       >;
-      const consultorioOrg = buildOrgContext(consultorioData);
-      if (!isSameOrg(consultorioOrg, orgContext)) {
+        const consultorioOrg = readStoredOrgContextOrThrow(
+          consultorioData,
+          `El consultorio ${consultorioSnap.id}`,
+        );
+        if (!isSameOrg(consultorioOrg, orgContext)) {
+          throw new HttpsError(
+            "permission-denied",
+            "El consultorio no pertenece a la sede activa.",
+          );
+        }
+        if (consultorioData.activo === false) {
+          throw new HttpsError(
+            "failed-precondition",
+            "El consultorio está inactivo.",
+          );
+        }
+        const nombreConsultorio = upperTrim(consultorioData.nombre);
+        if (!nombreConsultorio) {
+          throw new HttpsError(
+            "failed-precondition",
+            "El consultorio no tiene nombre válido.",
+          );
+        }
+        consultorioId = consultorioSnap.id;
+        consultorioNombre = nombreConsultorio;
+      }
+
+      if (numeroSerie) {
+        const dupSerieSnap = await tx.get(
+          db.collection("equipos")
+            .where("empresaId", "==", orgContext.empresaId)
+            .where("sedeId", "==", orgContext.sedeId)
+            .where("numeroSerie", "==", numeroSerie)
+            .limit(1),
+        );
+        if (!dupSerieSnap.empty) {
+          throw new HttpsError(
+            "already-exists",
+            `El serial ${numeroSerie} ya existe en inventario.`,
+          );
+        }
+      }
+
+      let codigoInventario = "";
+      if (isAliadosOrg) {
+        const prefix = aliadosPrefixByTipoActivo(tipoActivo);
+        const regex = new RegExp(`^${prefix}\\d{3}$`);
+        if (!regex.test(codigoInventarioManual)) {
+          throw new HttpsError(
+            "invalid-argument",
+            `Código inválido. Para ${prefix} usa formato ${prefix}001.`,
+          );
+        }
+
+        const dupCodigoSnap = await tx.get(
+          db.collection("equipos")
+            .where("empresaId", "==", orgContext.empresaId)
+            .where("sedeId", "==", orgContext.sedeId)
+            .where("codigoInventario", "==", codigoInventarioManual)
+            .limit(1),
+        );
+        if (!dupCodigoSnap.empty) {
+          throw new HttpsError(
+            "already-exists",
+            `El código ${codigoInventarioManual} ya existe en inventario.`,
+          );
+        }
+
+        const equiposOrgSnap = await tx.get(
+          db.collection("equipos")
+            .where("empresaId", "==", orgContext.empresaId)
+            .where("sedeId", "==", orgContext.sedeId),
+        );
+        let maxSeq = 0;
+        for (const docSnap of equiposOrgSnap.docs) {
+          const codeRaw = docSnap.data()?.codigoInventario;
+          if (typeof codeRaw !== "string" || !regex.test(codeRaw)) continue;
+          const seq = Number.parseInt(codeRaw.slice(prefix.length), 10);
+          if (!Number.isFinite(seq) || seq <= 0) continue;
+          if (seq > maxSeq) maxSeq = seq;
+        }
+        const expectedSeq = maxSeq + 1;
+        const providedSeq = Number.parseInt(
+          codigoInventarioManual.slice(prefix.length),
+          10,
+        );
+        if (providedSeq !== expectedSeq) {
+          const expectedCode =
+            `${prefix}${String(expectedSeq).padStart(3, "0")}`;
+          throw new HttpsError(
+            "failed-precondition",
+            `Consecutivo inválido. Debes registrar primero ${expectedCode}.`,
+          );
+        }
+        codigoInventario = codigoInventarioManual;
+      } else {
+        codigoInventario = await nextCodigoInventarioInTx(tx, tipoPropiedad);
+      }
+
+      const equipoRef = db.collection("equipos").doc();
+      const payload = stripUndefined({
+        ...orgContext,
+        codigoInventario,
+        numeroSerie,
+        nombre,
+        marca,
+        modelo,
+        estado,
+        tipoPropiedad,
+        tipoActivo,
+        detalleActivo:
+        tipoActivo !== "BIOMEDICO" && detalleActivo ?
+          detalleActivo :
+          undefined,
+        observaciones,
+        fechaIngreso,
+        disponibleParaEntrega:
+        typeof equipo.disponibleParaEntrega === "boolean" ?
+          equipo.disponibleParaEntrega :
+          false,
+        ubicacionActual:
+        typeof equipo.ubicacionActual === "string" &&
+          equipo.ubicacionActual.trim() ?
+          upperTrim(equipo.ubicacionActual) :
+          "BODEGA",
+        tipoEquipoId:
+        tipoActivo === "BIOMEDICO" &&
+          typeof equipo.tipoEquipoId === "string" &&
+          equipo.tipoEquipoId.trim() ?
+          equipo.tipoEquipoId.trim() :
+          undefined,
+        hojaVidaDatos:
+        tipoActivo === "BIOMEDICO" &&
+          typeof equipo.hojaVidaDatos === "object" &&
+          equipo.hojaVidaDatos ?
+          equipo.hojaVidaDatos :
+          undefined,
+        hojaVidaOverrides:
+        tipoActivo === "BIOMEDICO" &&
+          typeof equipo.hojaVidaOverrides === "object" &&
+          equipo.hojaVidaOverrides ?
+          equipo.hojaVidaOverrides :
+          undefined,
+        calibracionPeriodicidad:
+        tipoActivo === "BIOMEDICO" &&
+          typeof equipo.calibracionPeriodicidad === "string" &&
+          equipo.calibracionPeriodicidad.trim() ?
+          upperTrim(equipo.calibracionPeriodicidad) :
+          undefined,
+        fechaMantenimiento:
+        tipoActivo === "BIOMEDICO" &&
+          typeof equipo.fechaMantenimiento === "string" &&
+          equipo.fechaMantenimiento.trim() ?
+          equipo.fechaMantenimiento.trim() :
+          undefined,
+        fechaBaja:
+        typeof equipo.fechaBaja === "string" && equipo.fechaBaja.trim() ?
+          equipo.fechaBaja.trim() :
+          undefined,
+        custodioUid:
+        typeof equipo.custodioUid === "string" && equipo.custodioUid.trim() ?
+          equipo.custodioUid.trim() :
+          undefined,
+        empresaAlquiler:
+        tipoPropiedad === "ALQUILADO" &&
+          typeof equipo.empresaAlquiler === "string" &&
+          equipo.empresaAlquiler.trim() ?
+          upperTrim(equipo.empresaAlquiler) :
+          undefined,
+        datosPropietario:
+        typeof equipo.datosPropietario === "object" &&
+          equipo.datosPropietario ?
+          equipo.datosPropietario :
+          undefined,
+        consultorioId,
+        consultorioNombre,
+        createdAt: FieldValue.serverTimestamp(),
+      }) as Record<string, unknown>;
+
+      tx.set(equipoRef, payload);
+      return {id: equipoRef.id, codigoInventario};
+    });
+
+    return created;
+  },
+);
+
+/**
+ * 3.3.1) Asignar o quitar consultorio de un equipo (server-side).
+ * Evita depender de reglas de cliente para el flujo masivo de consultorios.
+ */
+export const setEquipoConsultorio = onCallLogged(
+  {
+    functionName: "setEquipoConsultorio",
+    module: "CONSULTORIOS",
+    action: "ACTUALIZAR_CONSULTORIO_EQUIPO",
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesión para usar esta función.",
+      );
+    }
+    const callerUid = request.auth.uid;
+    await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
+    const callerAccess = await getUserAccessContext(callerUid);
+
+    const data = request.data as {
+    equipoId?: unknown;
+    consultorioId?: unknown;
+    actorNombre?: unknown;
+  };
+    const equipoId = assertNonEmptyString(data.equipoId, "equipoId");
+    const consultorioId =
+    typeof data.consultorioId === "string" && data.consultorioId.trim() ?
+      data.consultorioId.trim() :
+      "";
+    const actorNombreFromPayload =
+    typeof data.actorNombre === "string" ?
+      upperTrim(data.actorNombre) :
+      "";
+
+    const callerSnap = await db.doc(`users/${callerUid}`).get();
+    const callerData = callerSnap.data() as Record<string, unknown> | undefined;
+    const tokenName =
+    typeof request.auth.token.name === "string" ?
+      request.auth.token.name :
+      "";
+    const tokenEmail =
+    typeof request.auth.token.email === "string" ?
+      request.auth.token.email :
+      "";
+    const actorNombre =
+    actorNombreFromPayload ||
+    upperTrim(callerData?.nombre || tokenName || tokenEmail) ||
+    "INGENIERO BIOMEDICO";
+
+    return db.runTransaction(async (tx) => {
+      const equipoRef = db.doc(`equipos/${equipoId}`);
+      const equipoSnap = await tx.get(equipoRef);
+      if (!equipoSnap.exists) {
+        throw new HttpsError("not-found", "El equipo no existe.");
+      }
+
+      const equipoData = equipoSnap.data() as Record<string, unknown>;
+      const equipoOrg = readStoredOrgContextOrThrow(
+        equipoData,
+        `El equipo ${equipoSnap.id}`,
+      );
+      assertHasOrgAccessOrThrow(
+        callerAccess,
+        equipoOrg,
+        "No puedes operar equipos fuera de tu sede.",
+      );
+
+      const estadoEquipo = upperTrim(equipoData.estado);
+      const currentConsultorioId =
+      typeof equipoData.consultorioId === "string" ?
+        equipoData.consultorioId.trim() :
+        "";
+      const currentConsultorioNombre =
+      typeof equipoData.consultorioNombre === "string" ?
+        upperTrim(equipoData.consultorioNombre) :
+        "";
+      const nowIso = new Date().toISOString();
+      const baseHistory = {
+        fecha: nowIso,
+        fromConsultorioId: currentConsultorioId || undefined,
+        fromConsultorioNombre: currentConsultorioNombre || undefined,
+        actorUid: callerUid,
+        actorNombre,
+      };
+
+      if (!consultorioId) {
+        const payload: Record<string, unknown> = {
+          empresaId: equipoOrg.empresaId,
+          sedeId: equipoOrg.sedeId,
+          consultorioId: FieldValue.delete(),
+          consultorioNombre: FieldValue.delete(),
+          ubicacionActual: "BODEGA",
+          updatedAt: nowIso,
+        };
+        if (currentConsultorioId) {
+          payload.consultorioHistorial = FieldValue.arrayUnion(
+          stripUndefined({
+            ...baseHistory,
+            accion: "QUITAR",
+          }) as Record<string, unknown>,
+          );
+        }
+        tx.update(equipoRef, payload);
+        return {ok: true, action: "QUITAR"};
+      }
+
+      if (estadoEquipo === "DADO_DE_BAJA") {
         throw new HttpsError(
-          "permission-denied",
-          "El consultorio no pertenece a la sede activa.",
+          "failed-precondition",
+          "No puedes asignar a consultorio un equipo dado de baja.",
+        );
+      }
+      if (currentConsultorioId && currentConsultorioId !== consultorioId) {
+        throw new HttpsError(
+          "failed-precondition",
+          "El equipo ya está en otro consultorio. Debes quitarlo primero.",
+        );
+      }
+
+      const consultorioRef = db.doc(`consultorios/${consultorioId}`);
+      const consultorioSnap = await tx.get(consultorioRef);
+      if (!consultorioSnap.exists) {
+        throw new HttpsError("not-found", "El consultorio no existe.");
+      }
+      const consultorioData = consultorioSnap.data() as Record<string, unknown>;
+      const consultorioOrg = readStoredOrgContextOrThrow(
+        consultorioData,
+        `El consultorio ${consultorioSnap.id}`,
+      );
+      assertHasOrgAccessOrThrow(
+        callerAccess,
+        consultorioOrg,
+        "No puedes operar consultorios fuera de tu sede.",
+      );
+      if (!isSameOrg(consultorioOrg, equipoOrg)) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Equipo y consultorio pertenecen a contextos distintos.",
         );
       }
       if (consultorioData.activo === false) {
@@ -728,399 +1245,104 @@ export const createEquipo = onCall(async (request) => {
           "El consultorio está inactivo.",
         );
       }
-      const nombreConsultorio = upperTrim(consultorioData.nombre);
-      if (!nombreConsultorio) {
+      const consultorioNombre = upperTrim(consultorioData.nombre);
+      if (!consultorioNombre) {
         throw new HttpsError(
           "failed-precondition",
           "El consultorio no tiene nombre válido.",
         );
       }
-      consultorioId = consultorioSnap.id;
-      consultorioNombre = nombreConsultorio;
-    }
 
-    if (numeroSerie) {
-      const dupSerieSnap = await tx.get(
-        db.collection("equipos")
-          .where("empresaId", "==", orgContext.empresaId)
-          .where("sedeId", "==", orgContext.sedeId)
-          .where("numeroSerie", "==", numeroSerie)
-          .limit(1),
-      );
-      if (!dupSerieSnap.empty) {
-        throw new HttpsError(
-          "already-exists",
-          `El serial ${numeroSerie} ya existe en inventario.`,
-        );
-      }
-    }
-
-    let codigoInventario = "";
-    if (isAliadosOrg) {
-      const prefix = aliadosPrefixByTipoActivo(tipoActivo);
-      const regex = new RegExp(`^${prefix}\\d{3}$`);
-      if (!regex.test(codigoInventarioManual)) {
-        throw new HttpsError(
-          "invalid-argument",
-          `Código inválido. Para ${prefix} usa formato ${prefix}001.`,
-        );
-      }
-
-      const dupCodigoSnap = await tx.get(
-        db.collection("equipos")
-          .where("empresaId", "==", orgContext.empresaId)
-          .where("sedeId", "==", orgContext.sedeId)
-          .where("codigoInventario", "==", codigoInventarioManual)
-          .limit(1),
-      );
-      if (!dupCodigoSnap.empty) {
-        throw new HttpsError(
-          "already-exists",
-          `El código ${codigoInventarioManual} ya existe en inventario.`,
-        );
-      }
-
-      const equiposOrgSnap = await tx.get(
-        db.collection("equipos")
-          .where("empresaId", "==", orgContext.empresaId)
-          .where("sedeId", "==", orgContext.sedeId),
-      );
-      let maxSeq = 0;
-      for (const docSnap of equiposOrgSnap.docs) {
-        const codeRaw = docSnap.data()?.codigoInventario;
-        if (typeof codeRaw !== "string" || !regex.test(codeRaw)) continue;
-        const seq = Number.parseInt(codeRaw.slice(prefix.length), 10);
-        if (!Number.isFinite(seq) || seq <= 0) continue;
-        if (seq > maxSeq) maxSeq = seq;
-      }
-      const expectedSeq = maxSeq + 1;
-      const providedSeq = Number.parseInt(
-        codigoInventarioManual.slice(prefix.length),
-        10,
-      );
-      if (providedSeq !== expectedSeq) {
-        const expectedCode = `${prefix}${String(expectedSeq).padStart(3, "0")}`;
-        throw new HttpsError(
-          "failed-precondition",
-          `Consecutivo inválido. Debes registrar primero ${expectedCode}.`,
-        );
-      }
-      codigoInventario = codigoInventarioManual;
-    } else {
-      codigoInventario = await nextCodigoInventarioInTx(tx, tipoPropiedad);
-    }
-
-    const equipoRef = db.collection("equipos").doc();
-    const payload = stripUndefined({
-      ...orgContext,
-      codigoInventario,
-      numeroSerie,
-      nombre,
-      marca,
-      modelo,
-      estado,
-      tipoPropiedad,
-      tipoActivo,
-      detalleActivo:
-        tipoActivo !== "BIOMEDICO" && detalleActivo ?
-          detalleActivo :
-          undefined,
-      observaciones,
-      fechaIngreso,
-      disponibleParaEntrega:
-        typeof equipo.disponibleParaEntrega === "boolean" ?
-          equipo.disponibleParaEntrega :
-          false,
-      ubicacionActual:
-        typeof equipo.ubicacionActual === "string" &&
-          equipo.ubicacionActual.trim() ?
-          upperTrim(equipo.ubicacionActual) :
-          "BODEGA",
-      tipoEquipoId:
-        tipoActivo === "BIOMEDICO" &&
-          typeof equipo.tipoEquipoId === "string" &&
-          equipo.tipoEquipoId.trim() ?
-          equipo.tipoEquipoId.trim() :
-          undefined,
-      hojaVidaDatos:
-        tipoActivo === "BIOMEDICO" &&
-          typeof equipo.hojaVidaDatos === "object" &&
-          equipo.hojaVidaDatos ?
-          equipo.hojaVidaDatos :
-          undefined,
-      hojaVidaOverrides:
-        tipoActivo === "BIOMEDICO" &&
-          typeof equipo.hojaVidaOverrides === "object" &&
-          equipo.hojaVidaOverrides ?
-          equipo.hojaVidaOverrides :
-          undefined,
-      calibracionPeriodicidad:
-        tipoActivo === "BIOMEDICO" &&
-          typeof equipo.calibracionPeriodicidad === "string" &&
-          equipo.calibracionPeriodicidad.trim() ?
-          upperTrim(equipo.calibracionPeriodicidad) :
-          undefined,
-      fechaMantenimiento:
-        tipoActivo === "BIOMEDICO" &&
-          typeof equipo.fechaMantenimiento === "string" &&
-          equipo.fechaMantenimiento.trim() ?
-          equipo.fechaMantenimiento.trim() :
-          undefined,
-      fechaBaja:
-        typeof equipo.fechaBaja === "string" && equipo.fechaBaja.trim() ?
-          equipo.fechaBaja.trim() :
-          undefined,
-      custodioUid:
-        typeof equipo.custodioUid === "string" && equipo.custodioUid.trim() ?
-          equipo.custodioUid.trim() :
-          undefined,
-      empresaAlquiler:
-        tipoPropiedad === "ALQUILADO" &&
-          typeof equipo.empresaAlquiler === "string" &&
-          equipo.empresaAlquiler.trim() ?
-          upperTrim(equipo.empresaAlquiler) :
-          undefined,
-      datosPropietario:
-        typeof equipo.datosPropietario === "object" &&
-          equipo.datosPropietario ?
-          equipo.datosPropietario :
-          undefined,
-      consultorioId,
-      consultorioNombre,
-      createdAt: FieldValue.serverTimestamp(),
-    }) as Record<string, unknown>;
-
-    tx.set(equipoRef, payload);
-    return {id: equipoRef.id, codigoInventario};
-  });
-
-  return created;
-});
-
-/**
- * 3.3.1) Asignar o quitar consultorio de un equipo (server-side).
- * Evita depender de reglas de cliente para el flujo masivo de consultorios.
- */
-export const setEquipoConsultorio = onCall(async (request) => {
-  if (!request.auth?.uid) {
-    throw new HttpsError(
-      "unauthenticated",
-      "Debes iniciar sesión para usar esta función.",
-    );
-  }
-  const callerUid = request.auth.uid;
-  await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
-  const callerAccess = await getUserAccessContext(callerUid);
-
-  const data = request.data as {
-    equipoId?: unknown;
-    consultorioId?: unknown;
-    actorNombre?: unknown;
-  };
-  const equipoId = assertNonEmptyString(data.equipoId, "equipoId");
-  const consultorioId =
-    typeof data.consultorioId === "string" && data.consultorioId.trim() ?
-      data.consultorioId.trim() :
-      "";
-  const actorNombreFromPayload =
-    typeof data.actorNombre === "string" ?
-      upperTrim(data.actorNombre) :
-      "";
-
-  const callerSnap = await db.doc(`users/${callerUid}`).get();
-  const callerData = callerSnap.data() as Record<string, unknown> | undefined;
-  const tokenName =
-    typeof request.auth.token.name === "string" ?
-      request.auth.token.name :
-      "";
-  const tokenEmail =
-    typeof request.auth.token.email === "string" ?
-      request.auth.token.email :
-      "";
-  const actorNombre =
-    actorNombreFromPayload ||
-    upperTrim(callerData?.nombre || tokenName || tokenEmail) ||
-    "INGENIERO BIOMEDICO";
-
-  return db.runTransaction(async (tx) => {
-    const equipoRef = db.doc(`equipos/${equipoId}`);
-    const equipoSnap = await tx.get(equipoRef);
-    if (!equipoSnap.exists) {
-      throw new HttpsError("not-found", "El equipo no existe.");
-    }
-
-    const equipoData = equipoSnap.data() as Record<string, unknown>;
-    const equipoOrg = buildOrgContext(equipoData);
-    assertHasOrgAccessOrThrow(
-      callerAccess,
-      equipoOrg,
-      "No puedes operar equipos fuera de tu sede.",
-    );
-
-    const estadoEquipo = upperTrim(equipoData.estado);
-    const currentConsultorioId =
-      typeof equipoData.consultorioId === "string" ?
-        equipoData.consultorioId.trim() :
-        "";
-    const currentConsultorioNombre =
-      typeof equipoData.consultorioNombre === "string" ?
-        upperTrim(equipoData.consultorioNombre) :
-        "";
-    const nowIso = new Date().toISOString();
-    const baseHistory = {
-      fecha: nowIso,
-      fromConsultorioId: currentConsultorioId || undefined,
-      fromConsultorioNombre: currentConsultorioNombre || undefined,
-      actorUid: callerUid,
-      actorNombre,
-    };
-
-    if (!consultorioId) {
       const payload: Record<string, unknown> = {
         empresaId: equipoOrg.empresaId,
         sedeId: equipoOrg.sedeId,
-        consultorioId: FieldValue.delete(),
-        consultorioNombre: FieldValue.delete(),
-        ubicacionActual: "BODEGA",
+        consultorioId,
+        consultorioNombre,
+        ubicacionActual: consultorioNombre,
         updatedAt: nowIso,
       };
-      if (currentConsultorioId) {
+      if (currentConsultorioId !== consultorioId) {
         payload.consultorioHistorial = FieldValue.arrayUnion(
-          stripUndefined({
-            ...baseHistory,
-            accion: "QUITAR",
-          }) as Record<string, unknown>,
-        );
-      }
-      tx.update(equipoRef, payload);
-      return {ok: true, action: "QUITAR"};
-    }
-
-    if (estadoEquipo === "DADO_DE_BAJA") {
-      throw new HttpsError(
-        "failed-precondition",
-        "No puedes asignar a consultorio un equipo dado de baja.",
-      );
-    }
-    if (currentConsultorioId && currentConsultorioId !== consultorioId) {
-      throw new HttpsError(
-        "failed-precondition",
-        "El equipo ya está en otro consultorio. Debes quitarlo primero.",
-      );
-    }
-
-    const consultorioRef = db.doc(`consultorios/${consultorioId}`);
-    const consultorioSnap = await tx.get(consultorioRef);
-    if (!consultorioSnap.exists) {
-      throw new HttpsError("not-found", "El consultorio no existe.");
-    }
-    const consultorioData = consultorioSnap.data() as Record<string, unknown>;
-    const consultorioOrg = buildOrgContext(consultorioData);
-    assertHasOrgAccessOrThrow(
-      callerAccess,
-      consultorioOrg,
-      "No puedes operar consultorios fuera de tu sede.",
-    );
-    if (!isSameOrg(consultorioOrg, equipoOrg)) {
-      throw new HttpsError(
-        "failed-precondition",
-        "Equipo y consultorio pertenecen a contextos distintos.",
-      );
-    }
-    if (consultorioData.activo === false) {
-      throw new HttpsError(
-        "failed-precondition",
-        "El consultorio está inactivo.",
-      );
-    }
-    const consultorioNombre = upperTrim(consultorioData.nombre);
-    if (!consultorioNombre) {
-      throw new HttpsError(
-        "failed-precondition",
-        "El consultorio no tiene nombre válido.",
-      );
-    }
-
-    const payload: Record<string, unknown> = {
-      empresaId: equipoOrg.empresaId,
-      sedeId: equipoOrg.sedeId,
-      consultorioId,
-      consultorioNombre,
-      ubicacionActual: consultorioNombre,
-      updatedAt: nowIso,
-    };
-    if (currentConsultorioId !== consultorioId) {
-      payload.consultorioHistorial = FieldValue.arrayUnion(
         stripUndefined({
           ...baseHistory,
           accion: "ASIGNAR",
           toConsultorioId: consultorioId,
           toConsultorioNombre: consultorioNombre,
         }) as Record<string, unknown>,
-      );
-    }
-    tx.update(equipoRef, payload);
-    return {
-      ok: true,
-      action: "ASIGNAR",
-      consultorioId,
-      consultorioNombre,
-    };
-  });
-});
+        );
+      }
+      tx.update(equipoRef, payload);
+      return {
+        ok: true,
+        action: "ASIGNAR",
+        consultorioId,
+        consultorioNombre,
+      };
+    });
+  },
+);
 
 /**
  * 3.3.2) Eliminar equipo desde backend con validaciones de negocio.
  */
-export const deleteEquipoDoc = onCall(async (request) => {
-  if (!request.auth?.uid) {
-    throw new HttpsError(
-      "unauthenticated",
-      "Debes iniciar sesión para usar esta función.",
-    );
-  }
-  const callerUid = request.auth.uid;
-  await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
-  const callerAccess = await getUserAccessContext(callerUid);
-
-  const data = request.data as {equipoId?: unknown};
-  const equipoId = assertNonEmptyString(data.equipoId, "equipoId");
-
-  return db.runTransaction(async (tx) => {
-    const equipoRef = db.doc(`equipos/${equipoId}`);
-    const equipoSnap = await tx.get(equipoRef);
-    if (!equipoSnap.exists) {
-      throw new HttpsError("not-found", "El equipo no existe.");
+export const deleteEquipoDoc = onCallLogged(
+  {
+    functionName: "deleteEquipoDoc",
+    module: "INVENTARIO",
+    action: "ELIMINAR_EQUIPO",
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesión para usar esta función.",
+      );
     }
+    const callerUid = request.auth.uid;
+    await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
+    const callerAccess = await getUserAccessContext(callerUid);
 
-    const equipoData = equipoSnap.data() as Record<string, unknown>;
-    const equipoOrg = buildOrgContext(equipoData);
-    assertHasOrgAccessOrThrow(
-      callerAccess,
-      equipoOrg,
-      "No puedes eliminar equipos fuera de tu sede.",
-    );
+    const data = request.data as {equipoId?: unknown};
+    const equipoId = assertNonEmptyString(data.equipoId, "equipoId");
 
-    const consultorioId =
+    return db.runTransaction(async (tx) => {
+      const equipoRef = db.doc(`equipos/${equipoId}`);
+      const equipoSnap = await tx.get(equipoRef);
+      if (!equipoSnap.exists) {
+        throw new HttpsError("not-found", "El equipo no existe.");
+      }
+
+      const equipoData = equipoSnap.data() as Record<string, unknown>;
+      const equipoOrg = readStoredOrgContextOrThrow(
+        equipoData,
+        `El equipo ${equipoSnap.id}`,
+      );
+      assertHasOrgAccessOrThrow(
+        callerAccess,
+        equipoOrg,
+        "No puedes eliminar equipos fuera de tu sede.",
+      );
+
+      const consultorioId =
       typeof equipoData.consultorioId === "string" ?
         equipoData.consultorioId.trim() :
         "";
-    if (consultorioId) {
-      throw new HttpsError(
-        "failed-precondition",
-        "No puedes eliminar un equipo asignado a consultorio.",
-      );
-    }
+      if (consultorioId) {
+        throw new HttpsError(
+          "failed-precondition",
+          "No puedes eliminar un equipo asignado a consultorio.",
+        );
+      }
 
-    if (typeof equipoData.actaInternaPendienteId === "string" &&
+      if (typeof equipoData.actaInternaPendienteId === "string" &&
       equipoData.actaInternaPendienteId.trim()) {
-      throw new HttpsError(
-        "failed-precondition",
-        "No puedes eliminar un equipo con acta interna pendiente.",
-      );
-    }
+        throw new HttpsError(
+          "failed-precondition",
+          "No puedes eliminar un equipo con acta interna pendiente.",
+        );
+      }
 
-    const [asignacionesPacienteSnap, asignacionesProfesionalSnap] =
+      const [asignacionesPacienteSnap, asignacionesProfesionalSnap] =
       await Promise.all([
         tx.get(
           db.collection("asignaciones")
@@ -1138,303 +1360,343 @@ export const deleteEquipoDoc = onCall(async (request) => {
         ),
       ]);
 
-    if (!asignacionesPacienteSnap.empty || !asignacionesProfesionalSnap.empty) {
-      throw new HttpsError(
-        "failed-precondition",
-        "No puedes eliminar un equipo con historial de asignaciones.",
-      );
-    }
+      if (
+        !asignacionesPacienteSnap.empty ||
+        !asignacionesProfesionalSnap.empty
+      ) {
+        throw new HttpsError(
+          "failed-precondition",
+          "No puedes eliminar un equipo con historial de asignaciones.",
+        );
+      }
 
-    tx.delete(equipoRef);
-    return {ok: true};
-  });
-});
+      tx.delete(equipoRef);
+      return {ok: true};
+    });
+  },
+);
 
 /**
  * 3.4) Crear asignación de paciente (transaccional).
  * Asigna consecutivo único y evita doble asignación activa del mismo equipo.
  */
-export const createAsignacionPaciente = onCall(async (request) => {
-  if (!request.auth?.uid) {
-    throw new HttpsError(
-      "unauthenticated",
-      "Debes iniciar sesión para usar esta función.",
+export const createAsignacionPaciente = onCallLogged(
+  {
+    functionName: "createAsignacionPaciente",
+    module: "PACIENTES",
+    action: "CREAR_ASIGNACION_PACIENTE",
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesión para usar esta función.",
+      );
+    }
+    await assertCallerHasRole(request.auth.uid, "AUXILIAR_ADMINISTRATIVA");
+    const callerAccess = await getUserAccessContext(request.auth.uid);
+
+    const raw = (request.data as {asignacion?: unknown})?.asignacion;
+    if (!raw || typeof raw !== "object") {
+      throw new HttpsError("invalid-argument", "asignacion es requerida.");
+    }
+    const data = raw as Record<string, unknown>;
+    const requestedOrg = buildOrgContext({
+      empresaId: data.empresaId ?? callerAccess.empresaId,
+      sedeId: data.sedeId ?? callerAccess.sedeId,
+    });
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      requestedOrg,
+      "No puedes crear asignaciones fuera de tu sede.",
     );
-  }
-  await assertCallerHasRole(request.auth.uid, "AUXILIAR_ADMINISTRATIVA");
-  const callerAccess = await getUserAccessContext(request.auth.uid);
 
-  const raw = (request.data as {asignacion?: unknown})?.asignacion;
-  if (!raw || typeof raw !== "object") {
-    throw new HttpsError("invalid-argument", "asignacion es requerida.");
-  }
-  const data = raw as Record<string, unknown>;
-  const requestedOrg = buildOrgContext({
-    empresaId: data.empresaId ?? callerAccess.empresaId,
-    sedeId: data.sedeId ?? callerAccess.sedeId,
-  });
-  assertHasOrgAccessOrThrow(
-    callerAccess,
-    requestedOrg,
-    "No puedes crear asignaciones fuera de tu sede.",
-  );
-
-  const idPaciente = assertNonEmptyString(data.idPaciente, "idPaciente");
-  const idEquipo = assertNonEmptyString(data.idEquipo, "idEquipo");
-  const usuarioAsigna = upperTrim(data.usuarioAsigna);
-  if (!usuarioAsigna) {
-    throw new HttpsError("invalid-argument", "usuarioAsigna es requerido.");
-  }
-  const fechaAsignacion =
+    const idPaciente = assertNonEmptyString(data.idPaciente, "idPaciente");
+    const idEquipo = assertNonEmptyString(data.idEquipo, "idEquipo");
+    const usuarioAsigna = upperTrim(data.usuarioAsigna);
+    if (!usuarioAsigna) {
+      throw new HttpsError("invalid-argument", "usuarioAsigna es requerido.");
+    }
+    const fechaAsignacion =
     typeof data.fechaAsignacionIso === "string" &&
       data.fechaAsignacionIso.trim() ?
       data.fechaAsignacionIso.trim() :
       new Date().toISOString();
 
-  const assignment = await db.runTransaction(async (tx) => {
-    const [pacienteSnap, equipoSnap] = await Promise.all([
-      tx.get(db.doc(`pacientes/${idPaciente}`)),
-      tx.get(db.doc(`equipos/${idEquipo}`)),
-    ]);
+    const assignment = await db.runTransaction(async (tx) => {
+      const [pacienteSnap, equipoSnap] = await Promise.all([
+        tx.get(db.doc(`pacientes/${idPaciente}`)),
+        tx.get(db.doc(`equipos/${idEquipo}`)),
+      ]);
 
-    if (!pacienteSnap.exists) {
-      throw new HttpsError("not-found", "El paciente no existe.");
-    }
-    if (!equipoSnap.exists) {
-      throw new HttpsError("not-found", "El equipo no existe.");
-    }
-    const pacienteData = pacienteSnap.data() as Record<string, unknown>;
-    const equipoData = equipoSnap.data() as Record<string, unknown>;
-    const pacienteOrg = buildOrgContext(pacienteData);
-    const equipoOrg = buildOrgContext(equipoData);
-    assertHasOrgAccessOrThrow(
-      callerAccess,
-      pacienteOrg,
-      "No puedes asignar pacientes fuera de tu sede.",
-    );
-    assertHasOrgAccessOrThrow(
-      callerAccess,
-      equipoOrg,
-      "No puedes asignar equipos fuera de tu sede.",
-    );
-    if (
-      pacienteOrg.empresaId !== equipoOrg.empresaId ||
-      pacienteOrg.sedeId !== equipoOrg.sedeId
-    ) {
-      throw new HttpsError(
-        "failed-precondition",
-        "Paciente y equipo pertenecen a contextos distintos.",
+      if (!pacienteSnap.exists) {
+        throw new HttpsError("not-found", "El paciente no existe.");
+      }
+      if (!equipoSnap.exists) {
+        throw new HttpsError("not-found", "El equipo no existe.");
+      }
+      const pacienteData = pacienteSnap.data() as Record<string, unknown>;
+      const equipoData = equipoSnap.data() as Record<string, unknown>;
+      const pacienteOrg = readStoredOrgContextOrThrow(
+        pacienteData,
+        `El paciente ${pacienteSnap.id}`,
       );
-    }
-    const asignacionOrg =
+      const equipoOrg = readStoredOrgContextOrThrow(
+        equipoData,
+        `El equipo ${equipoSnap.id}`,
+      );
+      assertHasOrgAccessOrThrow(
+        callerAccess,
+        pacienteOrg,
+        "No puedes asignar pacientes fuera de tu sede.",
+      );
+      assertHasOrgAccessOrThrow(
+        callerAccess,
+        equipoOrg,
+        "No puedes asignar equipos fuera de tu sede.",
+      );
+      if (
+        pacienteOrg.empresaId !== equipoOrg.empresaId ||
+      pacienteOrg.sedeId !== equipoOrg.sedeId
+      ) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Paciente y equipo pertenecen a contextos distintos.",
+        );
+      }
+      const asignacionOrg =
       pacienteOrg.empresaId === equipoOrg.empresaId &&
       pacienteOrg.sedeId === equipoOrg.sedeId ?
         pacienteOrg :
         requestedOrg;
 
-    const [activePacienteSnap, activeProfesionalSnap] = await Promise.all([
-      tx.get(
-        db.collection("asignaciones")
-          .where("empresaId", "==", asignacionOrg.empresaId)
-          .where("sedeId", "==", asignacionOrg.sedeId)
-          .where("idEquipo", "==", idEquipo)
-          .where("estado", "==", "ACTIVA")
-          .limit(1),
-      ),
-      tx.get(
-        db.collection("asignaciones_profesionales")
-          .where("empresaId", "==", asignacionOrg.empresaId)
-          .where("sedeId", "==", asignacionOrg.sedeId)
-          .where("idEquipo", "==", idEquipo)
-          .where("estado", "==", "ACTIVA")
-          .limit(1),
-      ),
-    ]);
-    if (!activePacienteSnap.empty || !activeProfesionalSnap.empty) {
-      throw new HttpsError(
-        "failed-precondition",
-        "El equipo no está disponible.",
+      const [activePacienteSnap, activeProfesionalSnap] = await Promise.all([
+        tx.get(
+          db.collection("asignaciones")
+            .where("empresaId", "==", asignacionOrg.empresaId)
+            .where("sedeId", "==", asignacionOrg.sedeId)
+            .where("idEquipo", "==", idEquipo)
+            .where("estado", "==", "ACTIVA")
+            .limit(1),
+        ),
+        tx.get(
+          db.collection("asignaciones_profesionales")
+            .where("empresaId", "==", asignacionOrg.empresaId)
+            .where("sedeId", "==", asignacionOrg.sedeId)
+            .where("idEquipo", "==", idEquipo)
+            .where("estado", "==", "ACTIVA")
+            .limit(1),
+        ),
+      ]);
+      if (!activePacienteSnap.empty || !activeProfesionalSnap.empty) {
+        throw new HttpsError(
+          "failed-precondition",
+          "El equipo no está disponible.",
+        );
+      }
+
+      const consecutivo = await nextConsecutivoInTx(
+        tx,
+        "asignaciones_consecutivo",
+        "asignaciones",
       );
-    }
-
-    const consecutivo = await nextConsecutivoInTx(
-      tx,
-      "asignaciones_consecutivo",
-      "asignaciones",
-    );
-    const nowIso = new Date().toISOString();
-    const asignacionRef = db.collection("asignaciones").doc();
-    const asignacion = {
-      ...asignacionOrg,
-      consecutivo,
-      idPaciente,
-      idEquipo,
-      fechaAsignacion,
-      fechaActualizacionEntrega: nowIso,
-      estado: "ACTIVA",
-      observacionesEntrega: upperTrim(data.observacionesEntrega),
-      firmaAuxiliar:
+      const nowIso = new Date().toISOString();
+      const asignacionRef = db.collection("asignaciones").doc();
+      const asignacion = {
+        ...asignacionOrg,
+        consecutivo,
+        idPaciente,
+        idEquipo,
+        fechaAsignacion,
+        fechaActualizacionEntrega: nowIso,
+        estado: "ACTIVA",
+        observacionesEntrega: upperTrim(data.observacionesEntrega),
+        firmaAuxiliar:
         typeof data.firmaAuxiliar === "string" && data.firmaAuxiliar.trim() ?
           data.firmaAuxiliar.trim() :
           undefined,
-      usuarioAsigna,
-      auxiliarNombre:
+        usuarioAsigna,
+        auxiliarNombre:
         typeof data.auxiliarNombre === "string" && data.auxiliarNombre.trim() ?
           upperTrim(data.auxiliarNombre) :
           undefined,
-      auxiliarUid:
+        auxiliarUid:
         typeof data.auxiliarUid === "string" && data.auxiliarUid.trim() ?
           data.auxiliarUid.trim() :
           undefined,
-      createdAt: FieldValue.serverTimestamp(),
-    };
-    tx.set(asignacionRef, asignacion);
+        createdAt: FieldValue.serverTimestamp(),
+      };
+      tx.set(asignacionRef, asignacion);
 
-    return {
-      id: asignacionRef.id,
-      ...asignacionOrg,
-      consecutivo,
-      idPaciente,
-      idEquipo,
-      fechaAsignacion,
-      fechaActualizacionEntrega: nowIso,
-      estado: "ACTIVA",
-      observacionesEntrega: upperTrim(data.observacionesEntrega),
-      firmaAuxiliar:
+      return {
+        id: asignacionRef.id,
+        ...asignacionOrg,
+        consecutivo,
+        idPaciente,
+        idEquipo,
+        fechaAsignacion,
+        fechaActualizacionEntrega: nowIso,
+        estado: "ACTIVA",
+        observacionesEntrega: upperTrim(data.observacionesEntrega),
+        firmaAuxiliar:
         typeof data.firmaAuxiliar === "string" && data.firmaAuxiliar.trim() ?
           data.firmaAuxiliar.trim() :
           undefined,
-      usuarioAsigna,
-      auxiliarNombre:
+        usuarioAsigna,
+        auxiliarNombre:
         typeof data.auxiliarNombre === "string" && data.auxiliarNombre.trim() ?
           upperTrim(data.auxiliarNombre) :
           undefined,
-      auxiliarUid:
+        auxiliarUid:
         typeof data.auxiliarUid === "string" && data.auxiliarUid.trim() ?
           data.auxiliarUid.trim() :
           undefined,
-    };
-  });
+      };
+    });
 
-  return {asignacion: assignment};
-});
+    return {asignacion: assignment};
+  },
+);
 
 /**
  * Finaliza una asignación activa registrando la devolución del equipo.
  */
-export const finalizarDevolucionAsignacion = onCall(async (request) => {
-  if (!request.auth?.uid) {
-    throw new HttpsError(
-      "unauthenticated",
-      "Debes iniciar sesión para usar esta función.",
-    );
-  }
-  const callerUid = request.auth.uid;
-  await assertCallerHasRole(callerUid, "AUXILIAR_ADMINISTRATIVA");
-  const callerAccess = await getUserAccessContext(callerUid);
+export const finalizarDevolucionAsignacion = onCallLogged(
+  {
+    functionName: "finalizarDevolucionAsignacion",
+    module: "PACIENTES",
+    action: "FINALIZAR_DEVOLUCION_ASIGNACION",
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesión para usar esta función.",
+      );
+    }
+    const callerUid = request.auth.uid;
+    await assertCallerHasRole(callerUid, "AUXILIAR_ADMINISTRATIVA");
+    const callerAccess = await getUserAccessContext(callerUid);
 
-  const data = request.data as {
-    idAsignacion?: unknown;
-    observacionesDevolucion?: unknown;
-    estadoFinalEquipo?: unknown;
-  };
-  const idAsignacion = assertNonEmptyString(data.idAsignacion, "idAsignacion");
-  const observacionesDevolucion = upperTrim(data.observacionesDevolucion);
-  const estadoFinalEquipo = upperTrim(data.estadoFinalEquipo);
-  if (
-    !(ESTADO_EQUIPO_VALUES as readonly string[]).includes(estadoFinalEquipo)
-  ) {
-    throw new HttpsError(
-      "invalid-argument",
-      "estadoFinalEquipo inválido. Valores permitidos: " +
+    const data = request.data as {
+      idAsignacion?: unknown;
+      observacionesDevolucion?: unknown;
+      estadoFinalEquipo?: unknown;
+    };
+    const idAsignacion = assertNonEmptyString(
+      data.idAsignacion,
+      "idAsignacion",
+    );
+    const observacionesDevolucion = upperTrim(data.observacionesDevolucion);
+    const estadoFinalEquipo = upperTrim(data.estadoFinalEquipo);
+    if (
+      !(ESTADO_EQUIPO_VALUES as readonly string[]).includes(estadoFinalEquipo)
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "estadoFinalEquipo inválido. Valores permitidos: " +
         ESTADO_EQUIPO_VALUES.join(", "),
+      );
+    }
+
+    const asignacionRef = db.doc(`asignaciones/${idAsignacion}`);
+    const asignacionSnap = await asignacionRef.get();
+    if (!asignacionSnap.exists) {
+      throw new HttpsError("not-found", "La asignación no existe.");
+    }
+
+    const asignacionData = asignacionSnap.data() as Record<string, unknown>;
+    const asignacionOrg = readStoredOrgContextOrThrow(
+      asignacionData,
+      `La asignacion ${asignacionSnap.id}`,
     );
-  }
-
-  const asignacionRef = db.doc(`asignaciones/${idAsignacion}`);
-  const asignacionSnap = await asignacionRef.get();
-  if (!asignacionSnap.exists) {
-    throw new HttpsError("not-found", "La asignación no existe.");
-  }
-
-  const asignacionData = asignacionSnap.data() as Record<string, unknown>;
-  const asignacionOrg = buildOrgContext(asignacionData);
-  assertHasOrgAccessOrThrow(
-    callerAccess,
-    asignacionOrg,
-    "No puedes devolver equipos fuera de tu sede.",
-  );
-  const estado =
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      asignacionOrg,
+      "No puedes devolver equipos fuera de tu sede.",
+    );
+    const estado =
     typeof asignacionData.estado === "string" ? asignacionData.estado : "";
-  if (estado !== "ACTIVA") {
-    throw new HttpsError(
-      "failed-precondition",
-      "La asignación no está en estado ACTIVA.",
-    );
-  }
+    if (estado !== "ACTIVA") {
+      throw new HttpsError(
+        "failed-precondition",
+        "La asignación no está en estado ACTIVA.",
+      );
+    }
 
-  await asignacionRef.update({
-    fechaDevolucion: new Date().toISOString(),
-    estado: "FINALIZADA",
-    observacionesDevolucion,
-    estadoFinalEquipo,
-    updatedAt: FieldValue.serverTimestamp(),
-  });
+    await asignacionRef.update({
+      fechaDevolucion: new Date().toISOString(),
+      estado: "FINALIZADA",
+      observacionesDevolucion,
+      estadoFinalEquipo,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
 
-  return {ok: true};
-});
+    return {ok: true};
+  },
+);
 
 /**
  * Egreso de paciente cuando no tiene asignaciones activas.
  */
-export const egresarPaciente = onCall(async (request) => {
-  if (!request.auth?.uid) {
-    throw new HttpsError(
-      "unauthenticated",
-      "Debes iniciar sesión para usar esta función.",
+export const egresarPaciente = onCallLogged(
+  {
+    functionName: "egresarPaciente",
+    module: "PACIENTES",
+    action: "EGRESAR_PACIENTE",
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesión para usar esta función.",
+      );
+    }
+    const callerUid = request.auth.uid;
+    await assertCallerHasRole(callerUid, "AUXILIAR_ADMINISTRATIVA");
+    const callerAccess = await getUserAccessContext(callerUid);
+
+    const data = request.data as {idPaciente?: unknown};
+    const idPaciente = assertNonEmptyString(data.idPaciente, "idPaciente");
+
+    const pacienteRef = db.doc(`pacientes/${idPaciente}`);
+    const pacienteSnap = await pacienteRef.get();
+    if (!pacienteSnap.exists) {
+      throw new HttpsError("not-found", "El paciente no existe.");
+    }
+
+    const pacienteData = pacienteSnap.data() as Record<string, unknown>;
+    const pacienteOrg = readStoredOrgContextOrThrow(
+      pacienteData,
+      `El paciente ${pacienteSnap.id}`,
     );
-  }
-  const callerUid = request.auth.uid;
-  await assertCallerHasRole(callerUid, "AUXILIAR_ADMINISTRATIVA");
-  const callerAccess = await getUserAccessContext(callerUid);
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      pacienteOrg,
+      "No puedes egresar pacientes fuera de tu sede.",
+    );
 
-  const data = request.data as {idPaciente?: unknown};
-  const idPaciente = assertNonEmptyString(data.idPaciente, "idPaciente");
+    const activasSnap = await db
+      .collection("asignaciones")
+      .where("empresaId", "==", pacienteOrg.empresaId)
+      .where("sedeId", "==", pacienteOrg.sedeId)
+      .where("idPaciente", "==", idPaciente)
+      .where("estado", "==", "ACTIVA")
+      .limit(1)
+      .get();
+    if (!activasSnap.empty) {
+      return {ok: true, egresado: false};
+    }
 
-  const pacienteRef = db.doc(`pacientes/${idPaciente}`);
-  const pacienteSnap = await pacienteRef.get();
-  if (!pacienteSnap.exists) {
-    throw new HttpsError("not-found", "El paciente no existe.");
-  }
+    await pacienteRef.update({
+      estado: "EGRESADO",
+      fechaSalida: new Date().toISOString(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
 
-  const pacienteData = pacienteSnap.data() as Record<string, unknown>;
-  const pacienteOrg = buildOrgContext(pacienteData);
-  assertHasOrgAccessOrThrow(
-    callerAccess,
-    pacienteOrg,
-    "No puedes egresar pacientes fuera de tu sede.",
-  );
-
-  const activasSnap = await db
-    .collection("asignaciones")
-    .where("empresaId", "==", pacienteOrg.empresaId)
-    .where("sedeId", "==", pacienteOrg.sedeId)
-    .where("idPaciente", "==", idPaciente)
-    .where("estado", "==", "ACTIVA")
-    .limit(1)
-    .get();
-  if (!activasSnap.empty) {
-    return {ok: true, egresado: false};
-  }
-
-  await pacienteRef.update({
-    estado: "EGRESADO",
-    fechaSalida: new Date().toISOString(),
-    updatedAt: FieldValue.serverTimestamp(),
-  });
-
-  return {ok: true, egresado: true};
-});
+    return {ok: true, egresado: true};
+  },
+);
 
 /**
  * 3.5) LISTAR PACIENTES SIN ASIGNACION ACTIVA (VISITADOR).
@@ -1743,103 +2005,121 @@ export const rebuildVisitadorFlags = onCall(async (request) => {
  * 3.3) VISITADOR: guardar firma de entrega del paciente.
  * Actualiza la asignación activa con firma y auditoría.
  */
-export const guardarFirmaEntregaVisitador = onCall(async (request) => {
-  if (!request.auth?.uid) {
-    throw new HttpsError(
-      "unauthenticated",
-      "Debes iniciar sesión para usar esta función.",
+export const guardarFirmaEntregaVisitador = onCallLogged(
+  {
+    functionName: "guardarFirmaEntregaVisitador",
+    module: "VISITAS",
+    action: "GUARDAR_FIRMA_ENTREGA_VISITADOR",
+    omitPayloadKeys: ["firmaEntrega"],
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesión para usar esta función.",
+      );
+    }
+
+    const callerUid = request.auth.uid;
+    await assertCallerHasRole(callerUid, "VISITADOR");
+    const callerAccess = await getUserAccessContext(callerUid);
+
+    const data = request.data as {
+      idAsignacion?: unknown;
+      firmaEntrega?: unknown;
+      capturadoPorNombre?: unknown;
+    };
+    const idAsignacion = assertNonEmptyString(
+      data.idAsignacion,
+      "idAsignacion",
     );
-  }
-
-  const callerUid = request.auth.uid;
-  await assertCallerHasRole(callerUid, "VISITADOR");
-  const callerAccess = await getUserAccessContext(callerUid);
-
-  const data = request.data as {
-    idAsignacion?: unknown;
-    firmaEntrega?: unknown;
-    capturadoPorNombre?: unknown;
-  };
-  const idAsignacion = assertNonEmptyString(data.idAsignacion, "idAsignacion");
-  const firmaEntrega = assertNonEmptyString(data.firmaEntrega, "firmaEntrega");
-  const capturadoPorNombre =
-    typeof data.capturadoPorNombre === "string" ?
-      data.capturadoPorNombre.trim() :
-      "";
-  if (!capturadoPorNombre) {
-    throw new HttpsError(
-      "invalid-argument",
-      "capturadoPorNombre es requerido.",
+    const firmaEntrega = assertNonEmptyString(
+      data.firmaEntrega,
+      "firmaEntrega",
     );
-  }
+    const capturadoPorNombre =
+      typeof data.capturadoPorNombre === "string" ?
+        data.capturadoPorNombre.trim() :
+        "";
+    if (!capturadoPorNombre) {
+      throw new HttpsError(
+        "invalid-argument",
+        "capturadoPorNombre es requerido.",
+      );
+    }
 
-  const asignacionRef = db.doc(`asignaciones/${idAsignacion}`);
-  const asignacionSnap = await asignacionRef.get();
-  if (!asignacionSnap.exists) {
-    throw new HttpsError("not-found", "La asignación no existe.");
-  }
+    const asignacionRef = db.doc(`asignaciones/${idAsignacion}`);
+    const asignacionSnap = await asignacionRef.get();
+    if (!asignacionSnap.exists) {
+      throw new HttpsError("not-found", "La asignación no existe.");
+    }
 
-  const asignacion = asignacionSnap.data() as Record<string, unknown>;
-  const asignacionOrg = buildOrgContext(asignacion);
-  assertHasOrgAccessOrThrow(
-    callerAccess,
-    asignacionOrg,
-    "No puedes firmar asignaciones de otra sede.",
-  );
-  const estado = typeof asignacion.estado === "string" ? asignacion.estado : "";
-  if (estado !== "ACTIVA") {
-    throw new HttpsError(
-      "failed-precondition",
-      "La asignación no está en estado ACTIVA.",
+    const asignacion = asignacionSnap.data() as Record<string, unknown>;
+    const asignacionOrg = readStoredOrgContextOrThrow(
+      asignacion,
+      `La asignacion ${asignacionSnap.id}`,
     );
-  }
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      asignacionOrg,
+      "No puedes firmar asignaciones de otra sede.",
+    );
+    const estado =
+      typeof asignacion.estado === "string" ? asignacion.estado : "";
+    if (estado !== "ACTIVA") {
+      throw new HttpsError(
+        "failed-precondition",
+        "La asignación no está en estado ACTIVA.",
+      );
+    }
 
-  const firmaActual =
+    const firmaActual =
     typeof asignacion.firmaPacienteEntrega === "string" ?
       asignacion.firmaPacienteEntrega.trim() :
       "";
-  if (firmaActual) {
-    throw new HttpsError(
-      "failed-precondition",
-      "La asignación ya tiene firma registrada.",
-    );
-  }
+    if (firmaActual) {
+      throw new HttpsError(
+        "failed-precondition",
+        "La asignación ya tiene firma registrada.",
+      );
+    }
 
-  let auxiliarNombre = "";
-  let auxiliarUid = "";
-  const auxActual =
+    let auxiliarNombre = "";
+    let auxiliarUid = "";
+    const auxActual =
     typeof asignacion.auxiliarNombre === "string" ?
       asignacion.auxiliarNombre.trim() :
       "";
-  if (!auxActual) {
-    const auxSnap = await db
-      .collection("users")
-      .where("rol", "==", "AUXILIAR_ADMINISTRATIVA")
-      .where("empresaId", "==", asignacionOrg.empresaId)
-      .where("sedeId", "==", asignacionOrg.sedeId)
-      .limit(1)
-      .get();
-    if (!auxSnap.empty) {
-      const auxDoc = auxSnap.docs[0];
-      const auxData = auxDoc.data() as Record<string, unknown>;
-      auxiliarUid = auxDoc.id;
-      auxiliarNombre =
+    if (!auxActual) {
+      const auxSnap = await db
+        .collection("users")
+        .where("rol", "==", "AUXILIAR_ADMINISTRATIVA")
+        .where("empresaId", "==", asignacionOrg.empresaId)
+        .where("sedeId", "==", asignacionOrg.sedeId)
+        .limit(1)
+        .get();
+      if (!auxSnap.empty) {
+        const auxDoc = auxSnap.docs[0];
+        const auxData = auxDoc.data() as Record<string, unknown>;
+        auxiliarUid = auxDoc.id;
+        auxiliarNombre =
         typeof auxData.nombre === "string" ? auxData.nombre : "";
+      }
     }
-  }
 
-  await asignacionRef.update({
-    firmaPacienteEntrega: firmaEntrega,
-    firmaPacienteEntregaCapturadaAt: new Date().toISOString(),
-    firmaPacienteEntregaCapturadaPorUid: callerUid,
-    firmaPacienteEntregaCapturadaPorNombre: capturadoPorNombre,
-    ...(auxiliarNombre ? {auxiliarNombre} : {}),
-    ...(auxiliarUid ? {auxiliarUid} : {}),
-    updatedAt: FieldValue.serverTimestamp(),
-  });
+    await asignacionRef.update({
+      firmaPacienteEntrega: firmaEntrega,
+      firmaPacienteEntregaCapturadaAt: new Date().toISOString(),
+      firmaPacienteEntregaCapturadaPorUid: callerUid,
+      firmaPacienteEntregaCapturadaPorNombre: capturadoPorNombre,
+      ...(auxiliarNombre ? {auxiliarNombre} : {}),
+      ...(auxiliarUid ? {auxiliarUid} : {}),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
 
-  return {ok: true};
-});
+    return {ok: true};
+  },
+);
 
 /**
  * 4) INVENTARIO: por defecto, los equipos nuevos NO quedan disponibles para
@@ -1997,19 +2277,26 @@ function assertNonEmptyString(value: unknown, field: string): string {
  * Crea doc en /actas_internas y marca cada equipo como pendiente de aceptación
  * (disponibleParaEntrega=false, actaInternaPendienteId=...).
  */
-export const createInternalActa = onCall(async (request) => {
-  if (!request.auth?.uid) {
-    throw new HttpsError(
-      "unauthenticated",
-      "Debes iniciar sesión para usar esta función.",
-    );
-  }
+export const createInternalActa = onCallLogged(
+  {
+    functionName: "createInternalActa",
+    module: "ACTAS_INTERNAS",
+    action: "CREAR_ACTA_INTERNA",
+    omitPayloadKeys: ["firmaEntrega"],
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesión para usar esta función.",
+      );
+    }
 
-  const callerUid = request.auth.uid;
-  await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
-  const callerAccess = await getUserAccessContext(callerUid);
+    const callerUid = request.auth.uid;
+    await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
+    const callerAccess = await getUserAccessContext(callerUid);
 
-  const data = request.data as {
+    const data = request.data as {
     empresaId?: unknown;
     sedeId?: unknown;
     recibeEmail?: unknown;
@@ -2024,304 +2311,320 @@ export const createInternalActa = onCall(async (request) => {
     firmaEntrega?: unknown;
   };
 
-  const ciudad =
+    const ciudad =
     typeof data.ciudad === "string" ? data.ciudad.trim() : "";
-  const sede = typeof data.sede === "string" ? data.sede.trim() : "";
-  const area =
+    const sede = typeof data.sede === "string" ? data.sede.trim() : "";
+    const area =
     typeof data.area === "string" && data.area.trim() ?
       data.area.trim() :
       "Biomedica";
-  const cargoRecibe = assertNonEmptyString(data.cargoRecibe, "cargoRecibe");
-  const observaciones =
+    const cargoRecibe = assertNonEmptyString(data.cargoRecibe, "cargoRecibe");
+    const observaciones =
     typeof data.observaciones === "string" ? data.observaciones.trim() : "";
-  const firmaEntrega =
+    const firmaEntrega =
     typeof data.firmaEntrega === "string" ? data.firmaEntrega.trim() : "";
-  if (!firmaEntrega) {
-    throw new HttpsError(
-      "invalid-argument",
-      "firmaEntrega es requerida (firma del biomédico).",
-    );
-  }
-
-  const fechaIsoRaw =
-    typeof data.fechaIso === "string" ? data.fechaIso.trim() : "";
-  const fechaIso = (() => {
-    const d = fechaIsoRaw ? new Date(fechaIsoRaw) : new Date();
-    return Number.isNaN(d.getTime()) ?
-      new Date().toISOString() :
-      d.toISOString();
-  })();
-
-  const equipoIds = Array.isArray(data.equipoIds) ?
-    data.equipoIds.filter((x) => typeof x === "string" && x.trim()) :
-    [];
-  if (equipoIds.length === 0) {
-    throw new HttpsError(
-      "invalid-argument",
-      "Debes seleccionar al menos 1 equipo.",
-    );
-  }
-  if (equipoIds.length > 200) {
-    throw new HttpsError(
-      "invalid-argument",
-      "Máximo 200 equipos por acta.",
-    );
-  }
-  const requestedOrg = buildOrgContext({
-    empresaId: data.empresaId ?? callerAccess.empresaId,
-    sedeId: data.sedeId ?? callerAccess.sedeId,
-  });
-  assertHasOrgAccessOrThrow(
-    callerAccess,
-    requestedOrg,
-    "No puedes crear actas fuera de tu alcance.",
-  );
-
-  // Resolver auxiliar receptor (por UID o email)
-  let recibeUid = typeof data.recibeUid === "string" ?
-    data.recibeUid.trim() :
-    "";
-  let recibeEmail = typeof data.recibeEmail === "string" ?
-    data.recibeEmail.trim() :
-    "";
-
-  if (!recibeUid && !recibeEmail) {
-    throw new HttpsError(
-      "invalid-argument",
-      "recibeEmail o recibeUid es requerido.",
-    );
-  }
-
-  if (!recibeUid && recibeEmail) {
-    try {
-      const auxUser = await auth.getUserByEmail(recibeEmail);
-      recibeUid = auxUser.uid;
-    } catch {
+    if (!firmaEntrega) {
       throw new HttpsError(
-        "not-found",
-        "No existe un usuario en Authentication con ese email.",
+        "invalid-argument",
+        "firmaEntrega es requerida (firma del biomédico).",
       );
     }
-  }
 
-  const auxRole = await getUserRole(recibeUid);
-  if (auxRole !== "AUXILIAR_ADMINISTRATIVA") {
-    throw new HttpsError(
-      "failed-precondition",
-      "El usuario receptor no tiene rol AUXILIAR_ADMINISTRATIVA en Firestore.",
+    const fechaIsoRaw =
+    typeof data.fechaIso === "string" ? data.fechaIso.trim() : "";
+    const fechaIso = (() => {
+      const d = fechaIsoRaw ? new Date(fechaIsoRaw) : new Date();
+      return Number.isNaN(d.getTime()) ?
+        new Date().toISOString() :
+        d.toISOString();
+    })();
+
+    const equipoIds = Array.isArray(data.equipoIds) ?
+      data.equipoIds.filter((x) => typeof x === "string" && x.trim()) :
+      [];
+    if (equipoIds.length === 0) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Debes seleccionar al menos 1 equipo.",
+      );
+    }
+    if (equipoIds.length > 200) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Máximo 200 equipos por acta.",
+      );
+    }
+    const requestedOrg = buildOrgContext({
+      empresaId: data.empresaId ?? callerAccess.empresaId,
+      sedeId: data.sedeId ?? callerAccess.sedeId,
+    });
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      requestedOrg,
+      "No puedes crear actas fuera de tu alcance.",
     );
-  }
 
-  const entregaSnap = await db.doc(`users/${callerUid}`).get();
-  const entregaNombre =
+    // Resolver auxiliar receptor (por UID o email)
+    let recibeUid = typeof data.recibeUid === "string" ?
+      data.recibeUid.trim() :
+      "";
+    let recibeEmail = typeof data.recibeEmail === "string" ?
+      data.recibeEmail.trim() :
+      "";
+
+    if (!recibeUid && !recibeEmail) {
+      throw new HttpsError(
+        "invalid-argument",
+        "recibeEmail o recibeUid es requerido.",
+      );
+    }
+
+    if (!recibeUid && recibeEmail) {
+      try {
+        const auxUser = await auth.getUserByEmail(recibeEmail);
+        recibeUid = auxUser.uid;
+      } catch {
+        throw new HttpsError(
+          "not-found",
+          "No existe un usuario en Authentication con ese email.",
+        );
+      }
+    }
+
+    const auxRole = await getUserRole(recibeUid);
+    if (auxRole !== "AUXILIAR_ADMINISTRATIVA") {
+      throw new HttpsError(
+        "failed-precondition",
+        "El usuario receptor no tiene rol " +
+          "AUXILIAR_ADMINISTRATIVA en Firestore.",
+      );
+    }
+
+    const entregaSnap = await db.doc(`users/${callerUid}`).get();
+    const entregaNombre =
     entregaSnap.exists && typeof entregaSnap.data()?.nombre === "string" ?
       (entregaSnap.data()?.nombre as string) :
       "INGENIERO_BIOMEDICO";
 
-  const recibeSnap = await db.doc(`users/${recibeUid}`).get();
-  const recibeNombre =
+    const recibeSnap = await db.doc(`users/${recibeUid}`).get();
+    const recibeNombre =
     recibeSnap.exists && typeof recibeSnap.data()?.nombre === "string" ?
       (recibeSnap.data()?.nombre as string) :
       "AUXILIAR_ADMINISTRATIVA";
-  const recibeOrg = buildOrgContext(
-    recibeSnap.exists ?
-      (recibeSnap.data() as Record<string, unknown>) :
-      undefined,
-  );
-  assertHasOrgAccessOrThrow(
-    callerAccess,
-    recibeOrg,
-    "El auxiliar receptor debe pertenecer a la misma sede.",
-  );
-  if (!recibeEmail) {
-    const maybeEmail = recibeSnap.exists ? recibeSnap.data()?.email : null;
-    if (typeof maybeEmail === "string") recibeEmail = maybeEmail;
-  }
-
-  // Validar equipos + armar snapshot de items
-  const equipoRefs = equipoIds.map((id) => db.doc(`equipos/${id}`));
-  const equipoSnaps = await Promise.all(equipoRefs.map((r) => r.get()));
-  let actaOrgContext: OrgContext | null = null;
-
-  const items = equipoSnaps.map((snap) => {
-    if (!snap.exists) {
-      throw new HttpsError("not-found", "Uno de los equipos no existe.");
-    }
-    const d = snap.data() as Record<string, unknown>;
-    const equipoOrg = buildOrgContext(d);
+    const recibeOrg = readStoredOrgContextOrThrow(
+      recibeSnap.exists ?
+        (recibeSnap.data() as Record<string, unknown>) :
+        undefined,
+      `El perfil users/${recibeUid}`,
+    );
     assertHasOrgAccessOrThrow(
       callerAccess,
-      equipoOrg,
-      "No puedes incluir equipos de otra sede en el acta.",
+      recibeOrg,
+      "El auxiliar receptor debe pertenecer a la misma sede.",
     );
-    if (!actaOrgContext) {
-      actaOrgContext = equipoOrg;
-    } else if (!isSameOrg(actaOrgContext, equipoOrg)) {
-      throw new HttpsError(
-        "failed-precondition",
-        "Todos los equipos del acta deben ser de la misma sede.",
-      );
+    if (!recibeEmail) {
+      const maybeEmail = recibeSnap.exists ? recibeSnap.data()?.email : null;
+      if (typeof maybeEmail === "string") recibeEmail = maybeEmail;
     }
-    const pendiente = d.actaInternaPendienteId;
-    if (typeof pendiente === "string" && pendiente.trim()) {
-      const codigo = String(d.codigoInventario || snap.id);
-      throw new HttpsError(
-        "failed-precondition",
-        `El equipo ${codigo} ya está en un acta interna pendiente.`,
+
+    // Validar equipos + armar snapshot de items
+    const equipoRefs = equipoIds.map((id) => db.doc(`equipos/${id}`));
+    const equipoSnaps = await Promise.all(equipoRefs.map((r) => r.get()));
+    let actaOrgContext: OrgContext | null = null;
+
+    const items = equipoSnaps.map((snap) => {
+      if (!snap.exists) {
+        throw new HttpsError("not-found", "Uno de los equipos no existe.");
+      }
+      const d = snap.data() as Record<string, unknown>;
+      const equipoOrg = readStoredOrgContextOrThrow(
+        d,
+        `El equipo ${snap.id}`,
       );
-    }
-    return {
-      idEquipo: snap.id,
-      codigoInventario: String(d.codigoInventario || ""),
-      numeroSerie: String(d.numeroSerie || ""),
-      nombre: String(d.nombre || ""),
-      marca: String(d.marca || ""),
-      modelo: String(d.modelo || ""),
-      estado: typeof d.estado === "string" ? d.estado : "",
-    };
-  });
-  if (!actaOrgContext) {
-    throw new HttpsError("failed-precondition", "No hay equipos válidos.");
-  }
-  if (!isSameOrg(actaOrgContext, requestedOrg)) {
-    throw new HttpsError(
-      "failed-precondition",
-      "Los equipos seleccionados no corresponden al contexto activo.",
-    );
-  }
-  if (!isSameOrg(actaOrgContext, recibeOrg)) {
-    throw new HttpsError(
-      "failed-precondition",
-      "El auxiliar receptor debe pertenecer a la sede del acta.",
-    );
-  }
-  const actaOrg = actaOrgContext as OrgContext;
-
-  // Consecutivo (simple: max+1)
-  const lastSnap = await db
-    .collection("actas_internas")
-    .orderBy("consecutivo", "desc")
-    .limit(1)
-    .get();
-  const last = lastSnap.docs[0]?.data()?.consecutivo;
-  const consecutivo = (typeof last === "number" && Number.isFinite(last) ?
-    last :
-    0) + 1;
-
-  const actaRef = db.collection("actas_internas").doc();
-  const batch = db.batch();
-
-  const estado: InternalActaEstado = "ENVIADA";
-  batch.set(actaRef, {
-    ...actaOrg,
-    consecutivo,
-    fecha: fechaIso,
-    ciudad,
-    sede,
-    area,
-    cargoRecibe,
-    observaciones,
-    entregaUid: callerUid,
-    entregaNombre,
-    recibeUid,
-    recibeNombre,
-    ...(recibeEmail ? {recibeEmail} : {}),
-    estado,
-    items,
-    firmaEntrega,
-    createdAt: FieldValue.serverTimestamp(),
-  });
-
-  for (const snap of equipoSnaps) {
-    batch.update(snap.ref, {
-      disponibleParaEntrega: false,
-      custodioUid: callerUid,
-      actaInternaPendienteId: actaRef.id,
-      actaInternaPendienteRecibeUid: recibeUid,
-      updatedAt: FieldValue.serverTimestamp(),
+      assertHasOrgAccessOrThrow(
+        callerAccess,
+        equipoOrg,
+        "No puedes incluir equipos de otra sede en el acta.",
+      );
+      if (!actaOrgContext) {
+        actaOrgContext = equipoOrg;
+      } else if (!isSameOrg(actaOrgContext, equipoOrg)) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Todos los equipos del acta deben ser de la misma sede.",
+        );
+      }
+      const pendiente = d.actaInternaPendienteId;
+      if (typeof pendiente === "string" && pendiente.trim()) {
+        const codigo = String(d.codigoInventario || snap.id);
+        throw new HttpsError(
+          "failed-precondition",
+          `El equipo ${codigo} ya está en un acta interna pendiente.`,
+        );
+      }
+      return {
+        idEquipo: snap.id,
+        codigoInventario: String(d.codigoInventario || ""),
+        numeroSerie: String(d.numeroSerie || ""),
+        nombre: String(d.nombre || ""),
+        marca: String(d.marca || ""),
+        modelo: String(d.modelo || ""),
+        estado: typeof d.estado === "string" ? d.estado : "",
+      };
     });
-  }
+    if (!actaOrgContext) {
+      throw new HttpsError("failed-precondition", "No hay equipos válidos.");
+    }
+    if (!isSameOrg(actaOrgContext, requestedOrg)) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Los equipos seleccionados no corresponden al contexto activo.",
+      );
+    }
+    if (!isSameOrg(actaOrgContext, recibeOrg)) {
+      throw new HttpsError(
+        "failed-precondition",
+        "El auxiliar receptor debe pertenecer a la sede del acta.",
+      );
+    }
+    const actaOrg = actaOrgContext as OrgContext;
 
-  await batch.commit();
+    // Consecutivo (simple: max+1)
+    const lastSnap = await db
+      .collection("actas_internas")
+      .orderBy("consecutivo", "desc")
+      .limit(1)
+      .get();
+    const last = lastSnap.docs[0]?.data()?.consecutivo;
+    const consecutivo = (typeof last === "number" && Number.isFinite(last) ?
+      last :
+      0) + 1;
 
-  return {id: actaRef.id, consecutivo};
-});
+    const actaRef = db.collection("actas_internas").doc();
+    const batch = db.batch();
+
+    const estado: InternalActaEstado = "ENVIADA";
+    batch.set(actaRef, {
+      ...actaOrg,
+      consecutivo,
+      fecha: fechaIso,
+      ciudad,
+      sede,
+      area,
+      cargoRecibe,
+      observaciones,
+      entregaUid: callerUid,
+      entregaNombre,
+      recibeUid,
+      recibeNombre,
+      ...(recibeEmail ? {recibeEmail} : {}),
+      estado,
+      items,
+      firmaEntrega,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+
+    for (const snap of equipoSnaps) {
+      batch.update(snap.ref, {
+        disponibleParaEntrega: false,
+        custodioUid: callerUid,
+        actaInternaPendienteId: actaRef.id,
+        actaInternaPendienteRecibeUid: recibeUid,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    }
+
+    await batch.commit();
+
+    return {id: actaRef.id, consecutivo};
+  },
+);
 
 /**
  * 6) ACTA INTERNA: aceptar acta (firma) y habilitar equipos para entrega.
  * Aceptación total: si falla un equipo, no se acepta nada (batch).
  */
-export const acceptInternalActa = onCall(async (request) => {
-  if (!request.auth?.uid) {
-    throw new HttpsError(
-      "unauthenticated",
-      "Debes iniciar sesión para usar esta función.",
-    );
-  }
+export const acceptInternalActa = onCallLogged(
+  {
+    functionName: "acceptInternalActa",
+    module: "ACTAS_INTERNAS",
+    action: "ACEPTAR_ACTA_INTERNA",
+    omitPayloadKeys: ["firmaRecibe"],
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesión para usar esta función.",
+      );
+    }
 
-  const callerUid = request.auth.uid;
-  await assertCallerHasRole(callerUid, "AUXILIAR_ADMINISTRATIVA");
-  const callerAccess = await getUserAccessContext(callerUid);
+    const callerUid = request.auth.uid;
+    await assertCallerHasRole(callerUid, "AUXILIAR_ADMINISTRATIVA");
+    const callerAccess = await getUserAccessContext(callerUid);
 
-  const data = request.data as {actaId?: unknown; firmaRecibe?: unknown};
-  const actaId = assertNonEmptyString(data.actaId, "actaId");
-  const firmaRecibe =
+    const data = request.data as {actaId?: unknown; firmaRecibe?: unknown};
+    const actaId = assertNonEmptyString(data.actaId, "actaId");
+    const firmaRecibe =
     typeof data.firmaRecibe === "string" ? data.firmaRecibe : "";
-  if (!firmaRecibe) {
-    throw new HttpsError("invalid-argument", "firmaRecibe es requerida.");
-  }
+    if (!firmaRecibe) {
+      throw new HttpsError("invalid-argument", "firmaRecibe es requerida.");
+    }
 
-  const actaRef = db.doc(`actas_internas/${actaId}`);
-  const actaSnap = await actaRef.get();
-  if (!actaSnap.exists) {
-    throw new HttpsError("not-found", "El acta no existe.");
-  }
+    const actaRef = db.doc(`actas_internas/${actaId}`);
+    const actaSnap = await actaRef.get();
+    if (!actaSnap.exists) {
+      throw new HttpsError("not-found", "El acta no existe.");
+    }
 
-  const acta = actaSnap.data() as Record<string, unknown>;
-  const actaOrg = buildOrgContext(acta);
-  assertHasOrgAccessOrThrow(
-    callerAccess,
-    actaOrg,
-    "No puedes aceptar actas de otra sede.",
-  );
-  const estado = acta.estado as InternalActaEstado | undefined;
-  if (estado !== "ENVIADA") {
-    throw new HttpsError(
-      "failed-precondition",
-      "Esta acta ya fue aceptada o no está en estado ENVIADA.",
+    const acta = actaSnap.data() as Record<string, unknown>;
+    const actaOrg = readStoredOrgContextOrThrow(
+      acta,
+      `El acta interna ${actaSnap.id}`,
     );
-  }
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      actaOrg,
+      "No puedes aceptar actas de otra sede.",
+    );
+    const estado = acta.estado as InternalActaEstado | undefined;
+    if (estado !== "ENVIADA") {
+      throw new HttpsError(
+        "failed-precondition",
+        "Esta acta ya fue aceptada o no está en estado ENVIADA.",
+      );
+    }
 
-  const recibeUid =
+    const recibeUid =
     typeof acta.recibeUid === "string" ? acta.recibeUid : "";
-  if (recibeUid !== callerUid) {
-    throw new HttpsError(
-      "permission-denied",
-      "No eres el receptor asignado para esta acta.",
-    );
-  }
+    if (recibeUid !== callerUid) {
+      throw new HttpsError(
+        "permission-denied",
+        "No eres el receptor asignado para esta acta.",
+      );
+    }
 
-  const items = Array.isArray(acta.items) ? acta.items : [];
-  if (items.length === 0) {
-    throw new HttpsError(
-      "failed-precondition",
-      "El acta no tiene equipos asociados.",
-    );
-  }
-  if (items.length > 200) {
-    throw new HttpsError(
-      "failed-precondition",
-      "Esta acta supera el límite de 200 equipos.",
-    );
-  }
+    const items = Array.isArray(acta.items) ? acta.items : [];
+    if (items.length === 0) {
+      throw new HttpsError(
+        "failed-precondition",
+        "El acta no tiene equipos asociados.",
+      );
+    }
+    if (items.length > 200) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Esta acta supera el límite de 200 equipos.",
+      );
+    }
 
-  const batch = db.batch();
-  batch.update(actaRef, {
-    estado: "ACEPTADA",
-    firmaRecibe,
-    acceptedAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-  });
+    const batch = db.batch();
+    batch.update(actaRef, {
+      estado: "ACEPTADA",
+      firmaRecibe,
+      acceptedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
 
   type ActaItem = {idEquipo?: unknown};
   for (const it of items as ActaItem[]) {
@@ -2350,61 +2653,71 @@ export const acceptInternalActa = onCall(async (request) => {
 
   await batch.commit();
   return {ok: true};
-});
+  },
+);
 
 /**
  * 7) ACTA INTERNA: anular acta enviada (borra el doc y libera equipos).
  * Solo permite anular si el acta está en estado ENVIADA.
  */
-export const cancelInternalActa = onCall(async (request) => {
-  if (!request.auth?.uid) {
-    throw new HttpsError(
-      "unauthenticated",
-      "Debes iniciar sesión para usar esta función.",
+export const cancelInternalActa = onCallLogged(
+  {
+    functionName: "cancelInternalActa",
+    module: "ACTAS_INTERNAS",
+    action: "ANULAR_ACTA_INTERNA",
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesión para usar esta función.",
+      );
+    }
+
+    const callerUid = request.auth.uid;
+    await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
+    const callerAccess = await getUserAccessContext(callerUid);
+
+    const data = request.data as {actaId?: unknown};
+    const actaId = assertNonEmptyString(data.actaId, "actaId");
+
+    const actaRef = db.doc(`actas_internas/${actaId}`);
+    const actaSnap = await actaRef.get();
+    if (!actaSnap.exists) {
+      throw new HttpsError("not-found", "El acta no existe.");
+    }
+
+    const acta = actaSnap.data() as Record<string, unknown>;
+    const actaOrg = readStoredOrgContextOrThrow(
+      acta,
+      `El acta interna ${actaSnap.id}`,
     );
-  }
-
-  const callerUid = request.auth.uid;
-  await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
-  const callerAccess = await getUserAccessContext(callerUid);
-
-  const data = request.data as {actaId?: unknown};
-  const actaId = assertNonEmptyString(data.actaId, "actaId");
-
-  const actaRef = db.doc(`actas_internas/${actaId}`);
-  const actaSnap = await actaRef.get();
-  if (!actaSnap.exists) {
-    throw new HttpsError("not-found", "El acta no existe.");
-  }
-
-  const acta = actaSnap.data() as Record<string, unknown>;
-  const actaOrg = buildOrgContext(acta);
-  assertHasOrgAccessOrThrow(
-    callerAccess,
-    actaOrg,
-    "No puedes anular actas de otra sede.",
-  );
-  const estado = acta.estado as InternalActaEstado | undefined;
-  if (estado !== "ENVIADA") {
-    throw new HttpsError(
-      "failed-precondition",
-      "Solo se pueden anular actas en estado ENVIADA.",
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      actaOrg,
+      "No puedes anular actas de otra sede.",
     );
-  }
+    const estado = acta.estado as InternalActaEstado | undefined;
+    if (estado !== "ENVIADA") {
+      throw new HttpsError(
+        "failed-precondition",
+        "Solo se pueden anular actas en estado ENVIADA.",
+      );
+    }
 
-  const entregaUid =
+    const entregaUid =
     typeof acta.entregaUid === "string" ? acta.entregaUid : "";
-  if (entregaUid && entregaUid !== callerUid) {
-    throw new HttpsError(
-      "permission-denied",
-      "Solo el biomédico que creó el acta puede anularla.",
-    );
-  }
+    if (entregaUid && entregaUid !== callerUid) {
+      throw new HttpsError(
+        "permission-denied",
+        "Solo el biomédico que creó el acta puede anularla.",
+      );
+    }
 
-  const items = Array.isArray(acta.items) ? acta.items : [];
+    const items = Array.isArray(acta.items) ? acta.items : [];
 
-  const batch = db.batch();
-  batch.delete(actaRef);
+    const batch = db.batch();
+    batch.delete(actaRef);
 
   type ActaItem = {idEquipo?: unknown};
   for (const it of items as ActaItem[]) {
@@ -2420,827 +2733,892 @@ export const cancelInternalActa = onCall(async (request) => {
 
   await batch.commit();
   return {ok: true, equipos: items.length};
-});
+  },
+);
 
 /**
  * 8) SOLICITUDES: aprobar solicitud de equipo del paciente.
  * Crea asignación automática si la propiedad es PACIENTE.
  */
-export const approveSolicitudEquipoPaciente = onCall(async (request) => {
-  if (!request.auth?.uid) {
-    throw new HttpsError(
-      "unauthenticated",
-      "Debes iniciar sesión para usar esta función.",
-    );
-  }
+export const approveSolicitudEquipoPaciente = onCallLogged(
+  {
+    functionName: "approveSolicitudEquipoPaciente",
+    module: "INVENTARIO",
+    action: "APROBAR_SOLICITUD_EQUIPO_PACIENTE",
+    omitPayloadKeys: ["firmaEntrega"],
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesión para usar esta función.",
+      );
+    }
 
-  const callerUid = request.auth.uid;
-  await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
-  const callerAccess = await getUserAccessContext(callerUid);
+    const callerUid = request.auth.uid;
+    await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
+    const callerAccess = await getUserAccessContext(callerUid);
 
-  const data = request.data as {
+    const data = request.data as {
     solicitudId?: unknown;
     equipoId?: unknown;
     firmaEntrega?: unknown;
   };
-  const solicitudId = assertNonEmptyString(data.solicitudId, "solicitudId");
-  const equipoId = assertNonEmptyString(data.equipoId, "equipoId");
-  const firmaEntrega =
+    const solicitudId = assertNonEmptyString(data.solicitudId, "solicitudId");
+    const equipoId = assertNonEmptyString(data.equipoId, "equipoId");
+    const firmaEntrega =
     typeof data.firmaEntrega === "string" ? data.firmaEntrega.trim() : "";
 
-  const solicitudRef = db.doc(`solicitudes_equipos_paciente/${solicitudId}`);
-  const equipoRef = db.doc(`equipos/${equipoId}`);
+    const solicitudRef = db.doc(`solicitudes_equipos_paciente/${solicitudId}`);
+    const equipoRef = db.doc(`equipos/${equipoId}`);
 
-  const [solicitudSnap, equipoSnap, userSnap] = await Promise.all([
-    solicitudRef.get(),
-    equipoRef.get(),
-    db.doc(`users/${callerUid}`).get(),
-  ]);
+    const [solicitudSnap, equipoSnap, userSnap] = await Promise.all([
+      solicitudRef.get(),
+      equipoRef.get(),
+      db.doc(`users/${callerUid}`).get(),
+    ]);
 
-  if (!solicitudSnap.exists) {
-    throw new HttpsError("not-found", "La solicitud no existe.");
-  }
-  if (!equipoSnap.exists) {
-    throw new HttpsError("not-found", "El equipo no existe.");
-  }
+    if (!solicitudSnap.exists) {
+      throw new HttpsError("not-found", "La solicitud no existe.");
+    }
+    if (!equipoSnap.exists) {
+      throw new HttpsError("not-found", "El equipo no existe.");
+    }
 
-  const solicitud = solicitudSnap.data() as Record<string, unknown>;
-  const solicitudOrg = buildOrgContext(solicitud);
-  assertHasOrgAccessOrThrow(
-    callerAccess,
-    solicitudOrg,
-    "No puedes aprobar solicitudes de otra sede.",
-  );
-  const estado = typeof solicitud.estado === "string" ? solicitud.estado : "";
-  if (estado !== "PENDIENTE") {
-    throw new HttpsError(
-      "failed-precondition",
-      "La solicitud no está en estado PENDIENTE.",
+    const solicitud = solicitudSnap.data() as Record<string, unknown>;
+    const solicitudOrg = readStoredOrgContextOrThrow(
+      solicitud,
+      `La solicitud ${solicitudSnap.id}`,
     );
-  }
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      solicitudOrg,
+      "No puedes aprobar solicitudes de otra sede.",
+    );
+    const estado = typeof solicitud.estado === "string" ? solicitud.estado : "";
+    if (estado !== "PENDIENTE") {
+      throw new HttpsError(
+        "failed-precondition",
+        "La solicitud no está en estado PENDIENTE.",
+      );
+    }
 
-  const idPaciente =
+    const idPaciente =
     typeof solicitud.idPaciente === "string" ? solicitud.idPaciente : "";
-  const tipoPropiedad =
+    const tipoPropiedad =
     typeof solicitud.tipoPropiedad === "string" ? solicitud.tipoPropiedad : "";
-  const observaciones =
+    const observaciones =
     typeof solicitud.observaciones === "string" ? solicitud.observaciones : "";
-  if (!idPaciente) {
-    throw new HttpsError(
-      "failed-precondition",
-      "La solicitud no tiene paciente válido.",
-    );
-  }
-  if (
-    tipoPropiedad !== "PACIENTE" &&
+    if (!idPaciente) {
+      throw new HttpsError(
+        "failed-precondition",
+        "La solicitud no tiene paciente válido.",
+      );
+    }
+    if (
+      tipoPropiedad !== "PACIENTE" &&
     tipoPropiedad !== "ALQUILADO" &&
     tipoPropiedad !== "MEDICUC"
-  ) {
-    throw new HttpsError(
-      "failed-precondition",
-      "Tipo de propiedad inválido en la solicitud.",
-    );
-  }
+    ) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Tipo de propiedad inválido en la solicitud.",
+      );
+    }
 
-  const equipoData = equipoSnap.data() as Record<string, unknown>;
-  const equipoOrg = buildOrgContext(equipoData);
-  assertHasOrgAccessOrThrow(
-    callerAccess,
-    equipoOrg,
-    "No puedes usar equipos de otra sede.",
-  );
-  const equipoTipo =
+    const equipoData = equipoSnap.data() as Record<string, unknown>;
+    const equipoOrg = readStoredOrgContextOrThrow(
+      equipoData,
+      `El equipo ${equipoSnap.id}`,
+    );
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      equipoOrg,
+      "No puedes usar equipos de otra sede.",
+    );
+    const equipoTipo =
     typeof equipoData.tipoPropiedad === "string" ?
       equipoData.tipoPropiedad :
       "";
-  if (equipoTipo && equipoTipo !== tipoPropiedad) {
-    throw new HttpsError(
-      "failed-precondition",
-      "La propiedad del equipo no coincide con la solicitud.",
-    );
-  }
+    if (equipoTipo && equipoTipo !== tipoPropiedad) {
+      throw new HttpsError(
+        "failed-precondition",
+        "La propiedad del equipo no coincide con la solicitud.",
+      );
+    }
 
-  const userData = userSnap.data() as Record<string, unknown>;
-  const aprobadoPorNombre =
+    const userData = userSnap.data() as Record<string, unknown>;
+    const aprobadoPorNombre =
     typeof userData.nombre === "string" ? userData.nombre : "Biomedico";
 
-  const auxSnap = await db
-    .collection("users")
-    .where("rol", "==", "AUXILIAR_ADMINISTRATIVA")
-    .where("empresaId", "==", solicitudOrg.empresaId)
-    .where("sedeId", "==", solicitudOrg.sedeId)
-    .limit(1)
-    .get();
-  const auxDoc = auxSnap.empty ? null : auxSnap.docs[0];
-  const auxData = auxDoc ? (auxDoc.data() as Record<string, unknown>) : {};
-  const auxUid = auxDoc ? auxDoc.id : "";
-  const auxNombre =
+    const auxSnap = await db
+      .collection("users")
+      .where("rol", "==", "AUXILIAR_ADMINISTRATIVA")
+      .where("empresaId", "==", solicitudOrg.empresaId)
+      .where("sedeId", "==", solicitudOrg.sedeId)
+      .limit(1)
+      .get();
+    const auxDoc = auxSnap.empty ? null : auxSnap.docs[0];
+    const auxData = auxDoc ? (auxDoc.data() as Record<string, unknown>) : {};
+    const auxUid = auxDoc ? auxDoc.id : "";
+    const auxNombre =
     typeof auxData.nombre === "string" ? auxData.nombre : "";
-  const auxEmail =
+    const auxEmail =
     typeof auxData.email === "string" ? auxData.email : "";
 
-  if (tipoPropiedad === "PACIENTE" || tipoPropiedad === "MEDICUC") {
-    const txResult = await db.runTransaction(async (tx) => {
-      const [solicitudTxSnap, equipoTxSnap] = await Promise.all([
-        tx.get(solicitudRef),
-        tx.get(equipoRef),
-      ]);
+    if (tipoPropiedad === "PACIENTE" || tipoPropiedad === "MEDICUC") {
+      const txResult = await db.runTransaction(async (tx) => {
+        const [solicitudTxSnap, equipoTxSnap] = await Promise.all([
+          tx.get(solicitudRef),
+          tx.get(equipoRef),
+        ]);
 
-      if (!solicitudTxSnap.exists) {
-        throw new HttpsError("not-found", "La solicitud no existe.");
-      }
-      if (!equipoTxSnap.exists) {
-        throw new HttpsError("not-found", "El equipo no existe.");
-      }
+        if (!solicitudTxSnap.exists) {
+          throw new HttpsError("not-found", "La solicitud no existe.");
+        }
+        if (!equipoTxSnap.exists) {
+          throw new HttpsError("not-found", "El equipo no existe.");
+        }
 
-      const solicitudTx = solicitudTxSnap.data() as Record<string, unknown>;
-      const solicitudTxOrg = buildOrgContext(solicitudTx);
-      assertHasOrgAccessOrThrow(
-        callerAccess,
-        solicitudTxOrg,
-        "No puedes aprobar solicitudes de otra sede.",
-      );
-      const estadoTx =
+        const solicitudTx = solicitudTxSnap.data() as Record<string, unknown>;
+        const solicitudTxOrg = readStoredOrgContextOrThrow(
+          solicitudTx,
+          `La solicitud ${solicitudTxSnap.id}`,
+        );
+        assertHasOrgAccessOrThrow(
+          callerAccess,
+          solicitudTxOrg,
+          "No puedes aprobar solicitudes de otra sede.",
+        );
+        const estadoTx =
         typeof solicitudTx.estado === "string" ? solicitudTx.estado : "";
-      const equipoIdTx =
+        const equipoIdTx =
         typeof solicitudTx.equipoId === "string" ? solicitudTx.equipoId : "";
-      const asignacionIdTx =
+        const asignacionIdTx =
         typeof solicitudTx.asignacionId === "string" ?
           solicitudTx.asignacionId :
           "";
 
-      if (estadoTx === "APROBADA") {
-        if (equipoIdTx && equipoIdTx !== equipoId) {
+        if (estadoTx === "APROBADA") {
+          if (equipoIdTx && equipoIdTx !== equipoId) {
+            throw new HttpsError(
+              "failed-precondition",
+              "La solicitud ya fue aprobada con otro equipo.",
+            );
+          }
+          return {asignacionId: asignacionIdTx, alreadyApproved: true};
+        }
+        if (estadoTx !== "PENDIENTE") {
           throw new HttpsError(
             "failed-precondition",
-            "La solicitud ya fue aprobada con otro equipo.",
+            "La solicitud no está en estado PENDIENTE.",
           );
         }
-        return {asignacionId: asignacionIdTx, alreadyApproved: true};
-      }
-      if (estadoTx !== "PENDIENTE") {
-        throw new HttpsError(
-          "failed-precondition",
-          "La solicitud no está en estado PENDIENTE.",
-        );
-      }
 
-      const idPacienteTx =
+        const idPacienteTx =
         typeof solicitudTx.idPaciente === "string" ?
           solicitudTx.idPaciente :
           "";
-      if (!idPacienteTx) {
-        throw new HttpsError(
-          "failed-precondition",
-          "La solicitud no tiene paciente válido.",
-        );
-      }
-      const tipoPropiedadTx =
+        if (!idPacienteTx) {
+          throw new HttpsError(
+            "failed-precondition",
+            "La solicitud no tiene paciente válido.",
+          );
+        }
+        const tipoPropiedadTx =
         typeof solicitudTx.tipoPropiedad === "string" ?
           solicitudTx.tipoPropiedad :
           "";
-      if (
-        tipoPropiedadTx !== "PACIENTE" &&
+        if (
+          tipoPropiedadTx !== "PACIENTE" &&
         tipoPropiedadTx !== "ALQUILADO" &&
         tipoPropiedadTx !== "MEDICUC"
-      ) {
-        throw new HttpsError(
-          "failed-precondition",
-          "Tipo de propiedad inválido en la solicitud.",
-        );
-      }
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "Tipo de propiedad inválido en la solicitud.",
+          );
+        }
 
-      const equipoDataTx = equipoTxSnap.data() as Record<string, unknown>;
-      const equipoTxOrg = buildOrgContext(equipoDataTx);
-      assertHasOrgAccessOrThrow(
-        callerAccess,
-        equipoTxOrg,
-        "No puedes usar equipos de otra sede.",
-      );
-      const equipoTipoTx =
+        const equipoDataTx = equipoTxSnap.data() as Record<string, unknown>;
+        const equipoTxOrg = readStoredOrgContextOrThrow(
+          equipoDataTx,
+          `El equipo ${equipoTxSnap.id}`,
+        );
+        assertHasOrgAccessOrThrow(
+          callerAccess,
+          equipoTxOrg,
+          "No puedes usar equipos de otra sede.",
+        );
+        const equipoTipoTx =
         typeof equipoDataTx.tipoPropiedad === "string" ?
           equipoDataTx.tipoPropiedad :
           "";
-      if (equipoTipoTx && equipoTipoTx !== tipoPropiedadTx) {
-        throw new HttpsError(
-          "failed-precondition",
-          "La propiedad del equipo no coincide con la solicitud.",
-        );
-      }
+        if (equipoTipoTx && equipoTipoTx !== tipoPropiedadTx) {
+          throw new HttpsError(
+            "failed-precondition",
+            "La propiedad del equipo no coincide con la solicitud.",
+          );
+        }
 
-      const [activeSnap, pacienteSnap] = await Promise.all([
-        tx.get(
-          db.collection("asignaciones")
-            .where("empresaId", "==", solicitudTxOrg.empresaId)
-            .where("sedeId", "==", solicitudTxOrg.sedeId)
-            .where("idEquipo", "==", equipoId)
-            .where("estado", "==", "ACTIVA")
-            .limit(1),
-        ),
-        tx.get(
-          db.collection("asignaciones")
-            .where("empresaId", "==", solicitudTxOrg.empresaId)
-            .where("sedeId", "==", solicitudTxOrg.sedeId)
-            .where("idPaciente", "==", idPacienteTx)
-            .where("estado", "==", "ACTIVA")
-            .limit(1),
-        ),
-      ]);
-      if (!activeSnap.empty) {
-        throw new HttpsError(
-          "failed-precondition",
-          "El equipo ya tiene una asignación activa.",
-        );
-      }
-      if (!pacienteSnap.empty) {
-        throw new HttpsError(
-          "failed-precondition",
-          "El paciente ya tiene una asignación activa.",
-        );
-      }
+        const [activeSnap, pacienteSnap] = await Promise.all([
+          tx.get(
+            db.collection("asignaciones")
+              .where("empresaId", "==", solicitudTxOrg.empresaId)
+              .where("sedeId", "==", solicitudTxOrg.sedeId)
+              .where("idEquipo", "==", equipoId)
+              .where("estado", "==", "ACTIVA")
+              .limit(1),
+          ),
+          tx.get(
+            db.collection("asignaciones")
+              .where("empresaId", "==", solicitudTxOrg.empresaId)
+              .where("sedeId", "==", solicitudTxOrg.sedeId)
+              .where("idPaciente", "==", idPacienteTx)
+              .where("estado", "==", "ACTIVA")
+              .limit(1),
+          ),
+        ]);
+        if (!activeSnap.empty) {
+          throw new HttpsError(
+            "failed-precondition",
+            "El equipo ya tiene una asignación activa.",
+          );
+        }
+        if (!pacienteSnap.empty) {
+          throw new HttpsError(
+            "failed-precondition",
+            "El paciente ya tiene una asignación activa.",
+          );
+        }
 
-      const consecutivo = await nextConsecutivoInTx(
-        tx,
-        "asignaciones_consecutivo",
-        "asignaciones",
-      );
-      const nowIso = new Date().toISOString();
-      const asignacionRef = db.collection("asignaciones").doc();
-      tx.set(asignacionRef, {
-        ...solicitudOrg,
-        consecutivo,
-        idPaciente: idPacienteTx,
-        idEquipo: equipoId,
-        fechaAsignacion: nowIso,
-        fechaActualizacionEntrega: nowIso,
-        estado: "ACTIVA",
-        observacionesEntrega: observaciones || "Registro por visitador.",
-        usuarioAsigna: aprobadoPorNombre,
-        auxiliarNombre: auxNombre || undefined,
-        auxiliarUid: auxUid || undefined,
-        createdAt: FieldValue.serverTimestamp(),
+        const consecutivo = await nextConsecutivoInTx(
+          tx,
+          "asignaciones_consecutivo",
+          "asignaciones",
+        );
+        const nowIso = new Date().toISOString();
+        const asignacionRef = db.collection("asignaciones").doc();
+        tx.set(asignacionRef, {
+          ...solicitudOrg,
+          consecutivo,
+          idPaciente: idPacienteTx,
+          idEquipo: equipoId,
+          fechaAsignacion: nowIso,
+          fechaActualizacionEntrega: nowIso,
+          estado: "ACTIVA",
+          observacionesEntrega: observaciones || "Registro por visitador.",
+          usuarioAsigna: aprobadoPorNombre,
+          auxiliarNombre: auxNombre || undefined,
+          auxiliarUid: auxUid || undefined,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+
+        tx.update(solicitudRef, {
+          ...solicitudOrg,
+          estado: "APROBADA",
+          aprobadoAt: nowIso,
+          aprobadoPorUid: callerUid,
+          aprobadoPorNombre,
+          equipoId,
+          asignacionId: asignacionRef.id,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+
+        return {asignacionId: asignacionRef.id, alreadyApproved: false};
       });
 
-      tx.update(solicitudRef, {
+      return {
+        ok: true,
+        asignacionId: txResult.asignacionId || "",
+        actaInternaId: "",
+        alreadyApproved: txResult.alreadyApproved,
+      };
+    }
+
+    let actaInternaId = "";
+    if (tipoPropiedad === "ALQUILADO") {
+      if (!firmaEntrega) {
+        throw new HttpsError(
+          "invalid-argument",
+          "firmaEntrega es requerida para crear el acta interna.",
+        );
+      }
+
+      if (!auxDoc) {
+        throw new HttpsError(
+          "failed-precondition",
+          "No hay auxiliares disponibles para recibir el acta interna.",
+        );
+      }
+      const recibeUid = auxUid;
+      const recibeNombre = auxNombre || "AUXILIAR ADMINISTRATIVA";
+      const recibeEmail = auxEmail;
+
+      const pendiente = equipoData.actaInternaPendienteId;
+      if (typeof pendiente === "string" && pendiente.trim()) {
+        throw new HttpsError(
+          "failed-precondition",
+          "El equipo ya está en un acta interna pendiente.",
+        );
+      }
+
+      const lastSnap = await db
+        .collection("actas_internas")
+        .orderBy("consecutivo", "desc")
+        .limit(1)
+        .get();
+      const last = lastSnap.docs[0]?.data()?.consecutivo;
+      const consecutivo =
+      typeof last === "number" && Number.isFinite(last) ? last + 1 : 1;
+
+      const actaRef = db.collection("actas_internas").doc();
+      actaInternaId = actaRef.id;
+      const actaItems = [
+        {
+          idEquipo: equipoId,
+          codigoInventario: String(equipoData.codigoInventario || ""),
+          numeroSerie: String(equipoData.numeroSerie || ""),
+          nombre: String(equipoData.nombre || ""),
+          marca: String(equipoData.marca || ""),
+          modelo: String(equipoData.modelo || ""),
+          estado:
+            typeof equipoData.estado === "string" ?
+              equipoData.estado :
+              "",
+        },
+      ];
+
+      const batch = db.batch();
+      batch.set(actaRef, {
+        ...solicitudOrg,
+        consecutivo,
+        fecha: new Date().toISOString(),
+        ciudad: "",
+        sede: "",
+        area: "Biomedica",
+        cargoRecibe: "Auxiliar Administrativa",
+        observaciones,
+        entregaUid: callerUid,
+        entregaNombre: aprobadoPorNombre,
+        recibeUid,
+        recibeNombre,
+        ...(recibeEmail ? {recibeEmail} : {}),
+        estado: "ENVIADA",
+        items: actaItems,
+        firmaEntrega,
+        solicitudIds: [solicitudId],
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      batch.update(equipoRef, {
+        disponibleParaEntrega: false,
+        custodioUid: callerUid,
+        actaInternaPendienteId: actaRef.id,
+        actaInternaPendienteRecibeUid: recibeUid,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      batch.update(solicitudRef, {
         ...solicitudOrg,
         estado: "APROBADA",
-        aprobadoAt: nowIso,
+        aprobadoAt: new Date().toISOString(),
         aprobadoPorUid: callerUid,
         aprobadoPorNombre,
         equipoId,
-        asignacionId: asignacionRef.id,
+        actaInternaId: actaRef.id,
+        actaInternaEstado: "ENVIADA",
         updatedAt: FieldValue.serverTimestamp(),
       });
+      await batch.commit();
 
-      return {asignacionId: asignacionRef.id, alreadyApproved: false};
-    });
-
-    return {
-      ok: true,
-      asignacionId: txResult.asignacionId || "",
-      actaInternaId: "",
-      alreadyApproved: txResult.alreadyApproved,
-    };
-  }
-
-  let actaInternaId = "";
-  if (tipoPropiedad === "ALQUILADO") {
-    if (!firmaEntrega) {
-      throw new HttpsError(
-        "invalid-argument",
-        "firmaEntrega es requerida para crear el acta interna.",
-      );
+      return {ok: true, actaInternaId};
     }
-
-    if (!auxDoc) {
-      throw new HttpsError(
-        "failed-precondition",
-        "No hay auxiliares disponibles para recibir el acta interna.",
-      );
-    }
-    const recibeUid = auxUid;
-    const recibeNombre = auxNombre || "AUXILIAR ADMINISTRATIVA";
-    const recibeEmail = auxEmail;
-
-    const pendiente = equipoData.actaInternaPendienteId;
-    if (typeof pendiente === "string" && pendiente.trim()) {
-      throw new HttpsError(
-        "failed-precondition",
-        "El equipo ya está en un acta interna pendiente.",
-      );
-    }
-
-    const lastSnap = await db
-      .collection("actas_internas")
-      .orderBy("consecutivo", "desc")
-      .limit(1)
-      .get();
-    const last = lastSnap.docs[0]?.data()?.consecutivo;
-    const consecutivo =
-      typeof last === "number" && Number.isFinite(last) ? last + 1 : 1;
-
-    const actaRef = db.collection("actas_internas").doc();
-    actaInternaId = actaRef.id;
-    const actaItems = [
-      {
-        idEquipo: equipoId,
-        codigoInventario: String(equipoData.codigoInventario || ""),
-        numeroSerie: String(equipoData.numeroSerie || ""),
-        nombre: String(equipoData.nombre || ""),
-        marca: String(equipoData.marca || ""),
-        modelo: String(equipoData.modelo || ""),
-        estado: typeof equipoData.estado === "string" ? equipoData.estado : "",
-      },
-    ];
-
-    const batch = db.batch();
-    batch.set(actaRef, {
-      ...solicitudOrg,
-      consecutivo,
-      fecha: new Date().toISOString(),
-      ciudad: "",
-      sede: "",
-      area: "Biomedica",
-      cargoRecibe: "Auxiliar Administrativa",
-      observaciones,
-      entregaUid: callerUid,
-      entregaNombre: aprobadoPorNombre,
-      recibeUid,
-      recibeNombre,
-      ...(recibeEmail ? {recibeEmail} : {}),
-      estado: "ENVIADA",
-      items: actaItems,
-      firmaEntrega,
-      solicitudIds: [solicitudId],
-      createdAt: FieldValue.serverTimestamp(),
-    });
-    batch.update(equipoRef, {
-      disponibleParaEntrega: false,
-      custodioUid: callerUid,
-      actaInternaPendienteId: actaRef.id,
-      actaInternaPendienteRecibeUid: recibeUid,
-      updatedAt: FieldValue.serverTimestamp(),
-    });
-    batch.update(solicitudRef, {
-      ...solicitudOrg,
-      estado: "APROBADA",
-      aprobadoAt: new Date().toISOString(),
-      aprobadoPorUid: callerUid,
-      aprobadoPorNombre,
-      equipoId,
-      actaInternaId: actaRef.id,
-      actaInternaEstado: "ENVIADA",
-      updatedAt: FieldValue.serverTimestamp(),
-    });
-    await batch.commit();
-
-    return {ok: true, actaInternaId};
-  }
-  throw new HttpsError("internal", "Tipo de propiedad no soportado.");
-});
+    throw new HttpsError("internal", "Tipo de propiedad no soportado.");
+  },
+);
 
 /**
  * Crea reporte de visita/falla (VISITADOR) con anti-duplicado global por
  * asignación: solo puede existir 1 reporte ABIERTO/EN_PROCESO por idAsignacion.
  */
-export const createReporteEquipo = onCall(async (request) => {
-  if (!request.auth?.uid) {
-    throw new HttpsError(
-      "unauthenticated",
-      "Debes iniciar sesión para usar esta función.",
+export const createReporteEquipo = onCallLogged(
+  {
+    functionName: "createReporteEquipo",
+    module: "VISITAS",
+    action: "CREAR_REPORTE_EQUIPO",
+    omitPayloadKeys: ["fotos"],
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesión para usar esta función.",
+      );
+    }
+    const callerUid = request.auth.uid;
+    await assertCallerHasRole(callerUid, "VISITADOR");
+    const callerAccess = await getUserAccessContext(callerUid);
+
+    const raw = (request.data as {reporte?: unknown})?.reporte;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new HttpsError("invalid-argument", "reporte es requerido.");
+    }
+    const reporte = raw as Record<string, unknown>;
+
+    const reporteId = assertNonEmptyString(
+      reporte.reporteId ?? reporte.id,
+      "reporteId",
     );
-  }
-  const callerUid = request.auth.uid;
-  await assertCallerHasRole(callerUid, "VISITADOR");
-  const callerAccess = await getUserAccessContext(callerUid);
+    const idAsignacion = assertNonEmptyString(
+      reporte.idAsignacion,
+      "idAsignacion",
+    );
+    const idPaciente = assertNonEmptyString(reporte.idPaciente, "idPaciente");
+    const idEquipo = assertNonEmptyString(reporte.idEquipo, "idEquipo");
+    const descripcion = upperTrim(reporte.descripcion);
+    if (!descripcion) {
+      throw new HttpsError("invalid-argument", "descripcion es requerida.");
+    }
 
-  const raw = (request.data as {reporte?: unknown})?.reporte;
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new HttpsError("invalid-argument", "reporte es requerido.");
-  }
-  const reporte = raw as Record<string, unknown>;
-
-  const reporteId = assertNonEmptyString(
-    reporte.reporteId ?? reporte.id,
-    "reporteId",
-  );
-  const idAsignacion = assertNonEmptyString(
-    reporte.idAsignacion,
-    "idAsignacion",
-  );
-  const idPaciente = assertNonEmptyString(reporte.idPaciente, "idPaciente");
-  const idEquipo = assertNonEmptyString(reporte.idEquipo, "idEquipo");
-  const descripcion = upperTrim(reporte.descripcion);
-  if (!descripcion) {
-    throw new HttpsError("invalid-argument", "descripcion es requerida.");
-  }
-
-  const fechaVisita =
+    const fechaVisita =
     typeof reporte.fechaVisita === "string" && reporte.fechaVisita.trim() ?
       reporte.fechaVisita.trim() :
       new Date().toISOString();
-  const pacienteNombre = upperTrim(reporte.pacienteNombre);
-  const pacienteDocumento = upperTrim(reporte.pacienteDocumento);
-  const equipoCodigoInventario = upperTrim(reporte.equipoCodigoInventario);
-  const equipoNombre = upperTrim(reporte.equipoNombre);
-  const equipoSerie = upperTrim(reporte.equipoSerie);
+    const pacienteNombre = upperTrim(reporte.pacienteNombre);
+    const pacienteDocumento = upperTrim(reporte.pacienteDocumento);
+    const equipoCodigoInventario = upperTrim(reporte.equipoCodigoInventario);
+    const equipoNombre = upperTrim(reporte.equipoNombre);
+    const equipoSerie = upperTrim(reporte.equipoSerie);
 
-  if (
-    !pacienteNombre ||
+    if (
+      !pacienteNombre ||
     !pacienteDocumento ||
     !equipoCodigoInventario ||
     !equipoNombre ||
     !equipoSerie
-  ) {
-    throw new HttpsError(
-      "invalid-argument",
-      "Faltan datos de snapshot (paciente/equipo).",
-    );
-  }
-
-  const fotosRaw = Array.isArray(reporte.fotos) ? reporte.fotos : [];
-  if (fotosRaw.length < 1 || fotosRaw.length > 5) {
-    throw new HttpsError(
-      "invalid-argument",
-      "Debes adjuntar entre 1 y 5 fotos.",
-    );
-  }
-  const expectedPrefix = `reportes_equipos/${callerUid}/${reporteId}/`;
-  const fotos = fotosRaw.map((item, idx) => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) {
+    ) {
       throw new HttpsError(
         "invalid-argument",
-        `fotos[${idx}] es inválida.`,
+        "Faltan datos de snapshot (paciente/equipo).",
       );
     }
-    const foto = item as Record<string, unknown>;
-    const path = assertNonEmptyString(foto.path, `fotos[${idx}].path`);
-    const name = assertNonEmptyString(foto.name, `fotos[${idx}].name`);
-    const contentType = assertNonEmptyString(
-      foto.contentType,
-      `fotos[${idx}].contentType`,
-    );
-    const size =
+
+    const fotosRaw = Array.isArray(reporte.fotos) ? reporte.fotos : [];
+    if (fotosRaw.length < 1 || fotosRaw.length > 5) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Debes adjuntar entre 1 y 5 fotos.",
+      );
+    }
+    const expectedPrefix = `reportes_equipos/${callerUid}/${reporteId}/`;
+    const fotos = fotosRaw.map((item, idx) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        throw new HttpsError(
+          "invalid-argument",
+          `fotos[${idx}] es inválida.`,
+        );
+      }
+      const foto = item as Record<string, unknown>;
+      const path = assertNonEmptyString(foto.path, `fotos[${idx}].path`);
+      const name = assertNonEmptyString(foto.name, `fotos[${idx}].name`);
+      const contentType = assertNonEmptyString(
+        foto.contentType,
+        `fotos[${idx}].contentType`,
+      );
+      const size =
       typeof foto.size === "number" && Number.isFinite(foto.size) ?
         foto.size :
         Number.NaN;
 
-    if (!path.startsWith(expectedPrefix)) {
-      throw new HttpsError(
-        "invalid-argument",
-        `fotos[${idx}].path no coincide con el reporte.`,
-      );
-    }
-    if (contentType !== "image/jpeg" && contentType !== "image/png") {
-      throw new HttpsError(
-        "invalid-argument",
-        `fotos[${idx}].contentType inválido.`,
-      );
-    }
-    if (!Number.isFinite(size) || size <= 0 || size > 5 * 1024 * 1024) {
-      throw new HttpsError(
-        "invalid-argument",
-        `fotos[${idx}].size inválido.`,
-      );
-    }
-    return {path, name, size, contentType};
-  });
+      if (!path.startsWith(expectedPrefix)) {
+        throw new HttpsError(
+          "invalid-argument",
+          `fotos[${idx}].path no coincide con el reporte.`,
+        );
+      }
+      if (contentType !== "image/jpeg" && contentType !== "image/png") {
+        throw new HttpsError(
+          "invalid-argument",
+          `fotos[${idx}].contentType inválido.`,
+        );
+      }
+      if (!Number.isFinite(size) || size <= 0 || size > 5 * 1024 * 1024) {
+        throw new HttpsError(
+          "invalid-argument",
+          `fotos[${idx}].size inválido.`,
+        );
+      }
+      return {path, name, size, contentType};
+    });
 
-  const callerSnap = await db.doc(`users/${callerUid}`).get();
-  const callerData = callerSnap.data() as Record<string, unknown> | undefined;
-  const tokenName =
+    const callerSnap = await db.doc(`users/${callerUid}`).get();
+    const callerData = callerSnap.data() as Record<string, unknown> | undefined;
+    const tokenName =
     typeof request.auth.token.name === "string" ?
       request.auth.token.name :
       "";
-  const tokenEmail =
+    const tokenEmail =
     typeof request.auth.token.email === "string" ?
       request.auth.token.email :
       "";
-  const createdByName =
+    const createdByName =
     upperTrim(callerData?.nombre || tokenName || tokenEmail) || "VISITADOR";
 
-  const txResult = await db.runTransaction(async (tx) => {
-    const [asignacionSnap, existingSnap, reportByIdSnap] = await Promise.all([
-      tx.get(db.doc(`asignaciones/${idAsignacion}`)),
-      tx.get(
-        db.collection("reportes_equipos")
-          .where("idAsignacion", "==", idAsignacion),
-      ),
-      tx.get(db.doc(`reportes_equipos/${reporteId}`)),
-    ]);
+    const txResult = await db.runTransaction(async (tx) => {
+      const [asignacionSnap, existingSnap, reportByIdSnap] = await Promise.all([
+        tx.get(db.doc(`asignaciones/${idAsignacion}`)),
+        tx.get(
+          db.collection("reportes_equipos")
+            .where("idAsignacion", "==", idAsignacion),
+        ),
+        tx.get(db.doc(`reportes_equipos/${reporteId}`)),
+      ]);
 
-    if (!asignacionSnap.exists) {
-      throw new HttpsError("not-found", "La asignación no existe.");
-    }
-    const asignacionData = asignacionSnap.data() as Record<string, unknown>;
-    const estadoAsignacion =
+      if (!asignacionSnap.exists) {
+        throw new HttpsError("not-found", "La asignación no existe.");
+      }
+      const asignacionData = asignacionSnap.data() as Record<string, unknown>;
+      const estadoAsignacion =
       typeof asignacionData.estado === "string" ? asignacionData.estado : "";
-    const idPacienteAsignacion =
+      const idPacienteAsignacion =
       typeof asignacionData.idPaciente === "string" ?
         asignacionData.idPaciente :
         "";
-    const idEquipoAsignacion =
+      const idEquipoAsignacion =
       typeof asignacionData.idEquipo === "string" ?
         asignacionData.idEquipo :
         "";
-    if (estadoAsignacion !== "ACTIVA") {
-      throw new HttpsError(
-        "failed-precondition",
-        "La asignación no está activa.",
-      );
-    }
-    if (
-      idPacienteAsignacion !== idPaciente ||
+      if (estadoAsignacion !== "ACTIVA") {
+        throw new HttpsError(
+          "failed-precondition",
+          "La asignación no está activa.",
+        );
+      }
+      if (
+        idPacienteAsignacion !== idPaciente ||
       idEquipoAsignacion !== idEquipo
-    ) {
-      throw new HttpsError(
-        "failed-precondition",
-        "La asignación no coincide con paciente/equipo.",
-      );
-    }
-    const asignacionOrg = buildOrgContext(asignacionData);
-    assertHasOrgAccessOrThrow(
-      callerAccess,
-      asignacionOrg,
-      "No puedes crear reportes sobre asignaciones de otra sede.",
-    );
-
-    let existingOwnId = "";
-    for (const docSnap of existingSnap.docs) {
-      const data = docSnap.data() as Record<string, unknown>;
-      const estado = typeof data.estado === "string" ? data.estado : "";
-      if (estado !== "ABIERTO" && estado !== "EN_PROCESO") {
-        continue;
+      ) {
+        throw new HttpsError(
+          "failed-precondition",
+          "La asignación no coincide con paciente/equipo.",
+        );
       }
-      const creadoPorUid =
+      const asignacionOrg = readStoredOrgContextOrThrow(
+        asignacionData,
+        `La asignacion ${asignacionSnap.id}`,
+      );
+      assertHasOrgAccessOrThrow(
+        callerAccess,
+        asignacionOrg,
+        "No puedes crear reportes sobre asignaciones de otra sede.",
+      );
+
+      let existingOwnId = "";
+      for (const docSnap of existingSnap.docs) {
+        const data = docSnap.data() as Record<string, unknown>;
+        const estado = typeof data.estado === "string" ? data.estado : "";
+        if (estado !== "ABIERTO" && estado !== "EN_PROCESO") {
+          continue;
+        }
+        const creadoPorUid =
         typeof data.creadoPorUid === "string" ? data.creadoPorUid : "";
-      if (creadoPorUid === callerUid) {
-        existingOwnId = docSnap.id;
-        break;
+        if (creadoPorUid === callerUid) {
+          existingOwnId = docSnap.id;
+          break;
+        }
+        throw new HttpsError(
+          "failed-precondition",
+          "Ya existe un reporte activo para esta asignación.",
+        );
       }
-      throw new HttpsError(
-        "failed-precondition",
-        "Ya existe un reporte activo para esta asignación.",
-      );
-    }
-    if (existingOwnId) {
-      return {reporteId: existingOwnId, alreadyExists: true};
-    }
+      if (existingOwnId) {
+        return {reporteId: existingOwnId, alreadyExists: true};
+      }
 
-    if (reportByIdSnap.exists) {
-      const data = reportByIdSnap.data() as Record<string, unknown>;
-      const estado = typeof data.estado === "string" ? data.estado : "";
-      const prevAsignacion =
+      if (reportByIdSnap.exists) {
+        const data = reportByIdSnap.data() as Record<string, unknown>;
+        const estado = typeof data.estado === "string" ? data.estado : "";
+        const prevAsignacion =
         typeof data.idAsignacion === "string" ? data.idAsignacion : "";
-      const prevUid =
+        const prevUid =
         typeof data.creadoPorUid === "string" ? data.creadoPorUid : "";
-      const isSameOpenReport =
+        const isSameOpenReport =
         (estado === "ABIERTO" || estado === "EN_PROCESO") &&
         prevAsignacion === idAsignacion &&
         prevUid === callerUid;
-      if (isSameOpenReport) {
-        return {reporteId, alreadyExists: true};
+        if (isSameOpenReport) {
+          return {reporteId, alreadyExists: true};
+        }
+        throw new HttpsError(
+          "already-exists",
+          "El identificador del reporte ya existe.",
+        );
       }
-      throw new HttpsError(
-        "already-exists",
-        "El identificador del reporte ya existe.",
-      );
-    }
 
-    const nowIso = new Date().toISOString();
-    const historial = [
-      {
-        fecha: nowIso,
+      const nowIso = new Date().toISOString();
+      const historial = [
+        {
+          fecha: nowIso,
+          estado: "ABIERTO",
+          nota: descripcion,
+          porUid: callerUid,
+          porNombre: createdByName,
+        },
+      ];
+      tx.set(db.doc(`reportes_equipos/${reporteId}`), {
+        ...asignacionOrg,
         estado: "ABIERTO",
-        nota: descripcion,
-        porUid: callerUid,
-        porNombre: createdByName,
-      },
-    ];
-    tx.set(db.doc(`reportes_equipos/${reporteId}`), {
-      ...asignacionOrg,
-      estado: "ABIERTO",
-      idAsignacion,
-      idPaciente,
-      idEquipo,
-      fechaVisita,
-      descripcion,
-      fotos,
-      creadoPorUid: callerUid,
-      creadoPorNombre: createdByName,
-      pacienteNombre,
-      pacienteDocumento,
-      equipoCodigoInventario,
-      equipoNombre,
-      equipoSerie,
-      historial,
-      createdAt: FieldValue.serverTimestamp(),
+        idAsignacion,
+        idPaciente,
+        idEquipo,
+        fechaVisita,
+        descripcion,
+        fotos,
+        creadoPorUid: callerUid,
+        creadoPorNombre: createdByName,
+        pacienteNombre,
+        pacienteDocumento,
+        equipoCodigoInventario,
+        equipoNombre,
+        equipoSerie,
+        historial,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+
+      return {reporteId, alreadyExists: false};
     });
 
-    return {reporteId, alreadyExists: false};
-  });
+    return {
+      ok: true,
+      reporteId: txResult.reporteId,
+      alreadyExists: txResult.alreadyExists,
+    };
+  },
+);
 
-  return {
-    ok: true,
-    reporteId: txResult.reporteId,
-    alreadyExists: txResult.alreadyExists,
-  };
-});
+export const iniciarReporteEnProceso = onCallLogged(
+  {
+    functionName: "iniciarReporteEnProceso",
+    module: "VISITAS",
+    action: "INICIAR_REPORTE_EN_PROCESO",
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesión para usar esta función.",
+      );
+    }
+    const callerUid = request.auth.uid;
+    await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
+    const callerAccess = await getUserAccessContext(callerUid);
 
-export const iniciarReporteEnProceso = onCall(async (request) => {
-  if (!request.auth?.uid) {
-    throw new HttpsError(
-      "unauthenticated",
-      "Debes iniciar sesión para usar esta función.",
-    );
-  }
-  const callerUid = request.auth.uid;
-  await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
-  const callerAccess = await getUserAccessContext(callerUid);
-
-  const data = request.data as {
+    const data = request.data as {
     idReporte?: unknown;
     diagnostico?: unknown;
     planReparacion?: unknown;
     porNombre?: unknown;
   };
-  const idReporte = assertNonEmptyString(data.idReporte, "idReporte");
-  const diagnostico = upperTrim(data.diagnostico);
-  const planReparacion = upperTrim(data.planReparacion);
-  const porNombre = upperTrim(data.porNombre);
-  if (!diagnostico || !planReparacion || !porNombre) {
-    throw new HttpsError(
-      "invalid-argument",
-      "diagnostico, planReparacion y porNombre son requeridos.",
+    const idReporte = assertNonEmptyString(data.idReporte, "idReporte");
+    const diagnostico = upperTrim(data.diagnostico);
+    const planReparacion = upperTrim(data.planReparacion);
+    const porNombre = upperTrim(data.porNombre);
+    if (!diagnostico || !planReparacion || !porNombre) {
+      throw new HttpsError(
+        "invalid-argument",
+        "diagnostico, planReparacion y porNombre son requeridos.",
+      );
+    }
+
+    const ref = db.doc(`reportes_equipos/${idReporte}`);
+    const snap = await ref.get();
+    if (!snap.exists) {
+      throw new HttpsError("not-found", "El reporte no existe.");
+    }
+
+    const reporte = snap.data() as Record<string, unknown>;
+    const reporteOrg = readStoredOrgContextOrThrow(
+      reporte,
+      `El reporte ${snap.id}`,
     );
-  }
-
-  const ref = db.doc(`reportes_equipos/${idReporte}`);
-  const snap = await ref.get();
-  if (!snap.exists) {
-    throw new HttpsError("not-found", "El reporte no existe.");
-  }
-
-  const reporte = snap.data() as Record<string, unknown>;
-  const reporteOrg = buildOrgContext(reporte);
-  assertHasOrgAccessOrThrow(
-    callerAccess,
-    reporteOrg,
-    "No puedes operar reportes fuera de tu sede.",
-  );
-  const estado = typeof reporte.estado === "string" ? reporte.estado : "";
-  if (estado !== "ABIERTO") {
-    throw new HttpsError(
-      "failed-precondition",
-      "El reporte no está en estado ABIERTO.",
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      reporteOrg,
+      "No puedes operar reportes fuera de tu sede.",
     );
-  }
+    const estado = typeof reporte.estado === "string" ? reporte.estado : "";
+    if (estado !== "ABIERTO") {
+      throw new HttpsError(
+        "failed-precondition",
+        "El reporte no está en estado ABIERTO.",
+      );
+    }
 
-  const nowIso = new Date().toISOString();
-  await ref.update({
-    estado: "EN_PROCESO",
-    diagnostico,
-    planReparacion,
-    enProcesoAt: nowIso,
-    enProcesoPorUid: callerUid,
-    enProcesoPorNombre: porNombre,
-    historial: FieldValue.arrayUnion({
-      fecha: nowIso,
+    const nowIso = new Date().toISOString();
+    await ref.update({
       estado: "EN_PROCESO",
-      nota: `Inicio de proceso: ${diagnostico}\nPlan: ${planReparacion}`,
-      porUid: callerUid,
-      porNombre,
-    }),
-  });
+      diagnostico,
+      planReparacion,
+      enProcesoAt: nowIso,
+      enProcesoPorUid: callerUid,
+      enProcesoPorNombre: porNombre,
+      historial: FieldValue.arrayUnion({
+        fecha: nowIso,
+        estado: "EN_PROCESO",
+        nota: `Inicio de proceso: ${diagnostico}\nPlan: ${planReparacion}`,
+        porUid: callerUid,
+        porNombre,
+      }),
+    });
 
-  return {ok: true};
-});
+    return {ok: true};
+  },
+);
 
-export const agregarNotaReporte = onCall(async (request) => {
-  if (!request.auth?.uid) {
-    throw new HttpsError(
-      "unauthenticated",
-      "Debes iniciar sesión para usar esta función.",
-    );
-  }
-  const callerUid = request.auth.uid;
-  await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
-  const callerAccess = await getUserAccessContext(callerUid);
+export const agregarNotaReporte = onCallLogged(
+  {
+    functionName: "agregarNotaReporte",
+    module: "VISITAS",
+    action: "AGREGAR_NOTA_REPORTE",
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesión para usar esta función.",
+      );
+    }
+    const callerUid = request.auth.uid;
+    await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
+    const callerAccess = await getUserAccessContext(callerUid);
 
-  const data = request.data as {
+    const data = request.data as {
     idReporte?: unknown;
     nota?: unknown;
     porNombre?: unknown;
   };
-  const idReporte = assertNonEmptyString(data.idReporte, "idReporte");
-  const nota = upperTrim(data.nota);
-  const porNombre = upperTrim(data.porNombre);
-  if (!nota || !porNombre) {
-    throw new HttpsError(
-      "invalid-argument",
-      "nota y porNombre son requeridos.",
+    const idReporte = assertNonEmptyString(data.idReporte, "idReporte");
+    const nota = upperTrim(data.nota);
+    const porNombre = upperTrim(data.porNombre);
+    if (!nota || !porNombre) {
+      throw new HttpsError(
+        "invalid-argument",
+        "nota y porNombre son requeridos.",
+      );
+    }
+
+    const ref = db.doc(`reportes_equipos/${idReporte}`);
+    const snap = await ref.get();
+    if (!snap.exists) {
+      throw new HttpsError("not-found", "El reporte no existe.");
+    }
+
+    const reporte = snap.data() as Record<string, unknown>;
+    const reporteOrg = readStoredOrgContextOrThrow(
+      reporte,
+      `El reporte ${snap.id}`,
     );
-  }
-
-  const ref = db.doc(`reportes_equipos/${idReporte}`);
-  const snap = await ref.get();
-  if (!snap.exists) {
-    throw new HttpsError("not-found", "El reporte no existe.");
-  }
-
-  const reporte = snap.data() as Record<string, unknown>;
-  const reporteOrg = buildOrgContext(reporte);
-  assertHasOrgAccessOrThrow(
-    callerAccess,
-    reporteOrg,
-    "No puedes operar reportes fuera de tu sede.",
-  );
-  const estado = typeof reporte.estado === "string" ? reporte.estado : "";
-  if (estado !== "EN_PROCESO") {
-    throw new HttpsError(
-      "failed-precondition",
-      "El reporte no está en estado EN_PROCESO.",
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      reporteOrg,
+      "No puedes operar reportes fuera de tu sede.",
     );
-  }
+    const estado = typeof reporte.estado === "string" ? reporte.estado : "";
+    if (estado !== "EN_PROCESO") {
+      throw new HttpsError(
+        "failed-precondition",
+        "El reporte no está en estado EN_PROCESO.",
+      );
+    }
 
-  await ref.update({
-    historial: FieldValue.arrayUnion({
-      fecha: new Date().toISOString(),
-      estado: "EN_PROCESO",
-      nota,
-      porUid: callerUid,
-      porNombre,
-    }),
-  });
+    await ref.update({
+      historial: FieldValue.arrayUnion({
+        fecha: new Date().toISOString(),
+        estado: "EN_PROCESO",
+        nota,
+        porUid: callerUid,
+        porNombre,
+      }),
+    });
 
-  return {ok: true};
-});
+    return {ok: true};
+  },
+);
 
-export const cerrarReporteEquipo = onCall(async (request) => {
-  if (!request.auth?.uid) {
-    throw new HttpsError(
-      "unauthenticated",
-      "Debes iniciar sesión para usar esta función.",
-    );
-  }
-  const callerUid = request.auth.uid;
-  await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
-  const callerAccess = await getUserAccessContext(callerUid);
+export const cerrarReporteEquipo = onCallLogged(
+  {
+    functionName: "cerrarReporteEquipo",
+    module: "VISITAS",
+    action: "CERRAR_REPORTE_EQUIPO",
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesión para usar esta función.",
+      );
+    }
+    const callerUid = request.auth.uid;
+    await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
+    const callerAccess = await getUserAccessContext(callerUid);
 
-  const data = request.data as {
+    const data = request.data as {
     idReporte?: unknown;
     cierreNotas?: unknown;
     porNombre?: unknown;
   };
-  const idReporte = assertNonEmptyString(data.idReporte, "idReporte");
-  const cierreNotas = upperTrim(data.cierreNotas);
-  const porNombre = upperTrim(data.porNombre);
-  if (!cierreNotas || !porNombre) {
-    throw new HttpsError(
-      "invalid-argument",
-      "cierreNotas y porNombre son requeridos.",
+    const idReporte = assertNonEmptyString(data.idReporte, "idReporte");
+    const cierreNotas = upperTrim(data.cierreNotas);
+    const porNombre = upperTrim(data.porNombre);
+    if (!cierreNotas || !porNombre) {
+      throw new HttpsError(
+        "invalid-argument",
+        "cierreNotas y porNombre son requeridos.",
+      );
+    }
+
+    const ref = db.doc(`reportes_equipos/${idReporte}`);
+    const snap = await ref.get();
+    if (!snap.exists) {
+      throw new HttpsError("not-found", "El reporte no existe.");
+    }
+
+    const reporte = snap.data() as Record<string, unknown>;
+    const reporteOrg = readStoredOrgContextOrThrow(
+      reporte,
+      `El reporte ${snap.id}`,
     );
-  }
-
-  const ref = db.doc(`reportes_equipos/${idReporte}`);
-  const snap = await ref.get();
-  if (!snap.exists) {
-    throw new HttpsError("not-found", "El reporte no existe.");
-  }
-
-  const reporte = snap.data() as Record<string, unknown>;
-  const reporteOrg = buildOrgContext(reporte);
-  assertHasOrgAccessOrThrow(
-    callerAccess,
-    reporteOrg,
-    "No puedes operar reportes fuera de tu sede.",
-  );
-  const estado = typeof reporte.estado === "string" ? reporte.estado : "";
-  if (estado !== "EN_PROCESO") {
-    throw new HttpsError(
-      "failed-precondition",
-      "El reporte no está en estado EN_PROCESO.",
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      reporteOrg,
+      "No puedes operar reportes fuera de tu sede.",
     );
-  }
+    const estado = typeof reporte.estado === "string" ? reporte.estado : "";
+    if (estado !== "EN_PROCESO") {
+      throw new HttpsError(
+        "failed-precondition",
+        "El reporte no está en estado EN_PROCESO.",
+      );
+    }
 
-  const nowIso = new Date().toISOString();
-  await ref.update({
-    estado: "CERRADO",
-    cierreNotas,
-    cerradoAt: nowIso,
-    cerradoPorUid: callerUid,
-    cerradoPorNombre: porNombre,
-    historial: FieldValue.arrayUnion({
-      fecha: nowIso,
+    const nowIso = new Date().toISOString();
+    await ref.update({
       estado: "CERRADO",
-      nota: cierreNotas,
-      porUid: callerUid,
-      porNombre,
-    }),
-  });
+      cierreNotas,
+      cerradoAt: nowIso,
+      cerradoPorUid: callerUid,
+      cerradoPorNombre: porNombre,
+      historial: FieldValue.arrayUnion({
+        fecha: nowIso,
+        estado: "CERRADO",
+        nota: cierreNotas,
+        porUid: callerUid,
+        porNombre,
+      }),
+    });
 
-  return {ok: true};
-});
+    return {ok: true};
+  },
+);
 
 /**
  * Normaliza a mayúsculas cuando recibe string.
@@ -3302,307 +3680,364 @@ function normalizeMantenimientoPatchRecord(value: Record<string, unknown>) {
   }) as Record<string, unknown>;
 }
 
-export const createMantenimiento = onCall(async (request) => {
-  if (!request.auth?.uid) {
-    throw new HttpsError(
-      "unauthenticated",
-      "Debes iniciar sesión para usar esta función.",
-    );
-  }
-  const callerUid = request.auth.uid;
-  const callerRole = await getUserRole(callerUid);
-  if (
-    callerRole !== "INGENIERO_BIOMEDICO" &&
+export const createMantenimiento = onCallLogged(
+  {
+    functionName: "createMantenimiento",
+    module: "MANTENIMIENTOS",
+    action: "CREAR_MANTENIMIENTO",
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesión para usar esta función.",
+      );
+    }
+    const callerUid = request.auth.uid;
+    const callerRole = await getUserRole(callerUid);
+    if (
+      callerRole !== "INGENIERO_BIOMEDICO" &&
     callerRole !== "AUXILIAR_ADMINISTRATIVA"
-  ) {
-    throw new HttpsError(
-      "permission-denied",
-      "No autorizado para crear mantenimientos.",
-    );
-  }
-  const callerAccess = await getUserAccessContext(callerUid);
+    ) {
+      throw new HttpsError(
+        "permission-denied",
+        "No autorizado para crear mantenimientos.",
+      );
+    }
+    const callerAccess = await getUserAccessContext(callerUid);
 
-  const raw = (request.data as {mantenimiento?: unknown})?.mantenimiento;
-  if (!raw || typeof raw !== "object") {
-    throw new HttpsError("invalid-argument", "mantenimiento es requerido.");
-  }
-  const data = raw as Record<string, unknown>;
-  const requestedOrg = buildOrgContext({
-    empresaId: data.empresaId ?? callerAccess.empresaId,
-    sedeId: data.sedeId ?? callerAccess.sedeId,
-  });
-  assertHasOrgAccessOrThrow(
-    callerAccess,
-    requestedOrg,
-    "No puedes crear mantenimientos fuera de tu sede.",
-  );
-
-  const created = await db.runTransaction(async (tx) => {
-    const consecutivo = await nextConsecutivoInTx(
-      tx,
-      "mantenimientos_consecutivo",
-      "mantenimientos",
-    );
-    const ref = db.collection("mantenimientos").doc();
-    const payload = normalizeMantenimientoPatchRecord({
-      ...data,
-      ...requestedOrg,
-      consecutivo,
+    const raw = (request.data as {mantenimiento?: unknown})?.mantenimiento;
+    if (!raw || typeof raw !== "object") {
+      throw new HttpsError("invalid-argument", "mantenimiento es requerido.");
+    }
+    const data = raw as Record<string, unknown>;
+    const requestedOrg = buildOrgContext({
+      empresaId: data.empresaId ?? callerAccess.empresaId,
+      sedeId: data.sedeId ?? callerAccess.sedeId,
     });
-    tx.set(ref, payload);
-    return {id: ref.id, ...payload};
-  });
-
-  return created;
-});
-
-export const updateMantenimiento = onCall(async (request) => {
-  if (!request.auth?.uid) {
-    throw new HttpsError(
-      "unauthenticated",
-      "Debes iniciar sesión para usar esta función.",
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      requestedOrg,
+      "No puedes crear mantenimientos fuera de tu sede.",
     );
-  }
-  const callerUid = request.auth.uid;
-  const callerRole = await getUserRole(callerUid);
-  if (
-    callerRole !== "INGENIERO_BIOMEDICO" &&
+
+    const created = await db.runTransaction(async (tx) => {
+      const consecutivo = await nextConsecutivoInTx(
+        tx,
+        "mantenimientos_consecutivo",
+        "mantenimientos",
+      );
+      const ref = db.collection("mantenimientos").doc();
+      const payload = normalizeMantenimientoPatchRecord({
+        ...data,
+        ...requestedOrg,
+        consecutivo,
+      });
+      tx.set(ref, payload);
+      return {id: ref.id, ...payload};
+    });
+
+    return created;
+  },
+);
+
+export const updateMantenimiento = onCallLogged(
+  {
+    functionName: "updateMantenimiento",
+    module: "MANTENIMIENTOS",
+    action: "ACTUALIZAR_MANTENIMIENTO",
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesión para usar esta función.",
+      );
+    }
+    const callerUid = request.auth.uid;
+    const callerRole = await getUserRole(callerUid);
+    if (
+      callerRole !== "INGENIERO_BIOMEDICO" &&
     callerRole !== "AUXILIAR_ADMINISTRATIVA"
-  ) {
-    throw new HttpsError(
-      "permission-denied",
-      "No autorizado para actualizar mantenimientos.",
+    ) {
+      throw new HttpsError(
+        "permission-denied",
+        "No autorizado para actualizar mantenimientos.",
+      );
+    }
+    const callerAccess = await getUserAccessContext(callerUid);
+
+    const data = request.data as {id?: unknown; patch?: unknown};
+    const id = assertNonEmptyString(data.id, "id");
+    if (!data.patch || typeof data.patch !== "object") {
+      throw new HttpsError("invalid-argument", "patch es requerido.");
+    }
+
+    const ref = db.doc(`mantenimientos/${id}`);
+    const snap = await ref.get();
+    if (!snap.exists) {
+      throw new HttpsError("not-found", "El mantenimiento no existe.");
+    }
+    const mantenimiento = snap.data() as Record<string, unknown>;
+    const mantenimientoOrg = readStoredOrgContextOrThrow(
+      mantenimiento,
+      `El mantenimiento ${snap.id}`,
     );
-  }
-  const callerAccess = await getUserAccessContext(callerUid);
-
-  const data = request.data as {id?: unknown; patch?: unknown};
-  const id = assertNonEmptyString(data.id, "id");
-  if (!data.patch || typeof data.patch !== "object") {
-    throw new HttpsError("invalid-argument", "patch es requerido.");
-  }
-
-  const ref = db.doc(`mantenimientos/${id}`);
-  const snap = await ref.get();
-  if (!snap.exists) {
-    throw new HttpsError("not-found", "El mantenimiento no existe.");
-  }
-  const mantenimiento = snap.data() as Record<string, unknown>;
-  const mantenimientoOrg = buildOrgContext(mantenimiento);
-  assertHasOrgAccessOrThrow(
-    callerAccess,
-    mantenimientoOrg,
-    "No puedes actualizar mantenimientos fuera de tu sede.",
-  );
-
-  await ref.update(
-    normalizeMantenimientoPatchRecord(data.patch as Record<string, unknown>),
-  );
-  return {ok: true};
-});
-
-export const addMantenimientoHistorial = onCall(async (request) => {
-  if (!request.auth?.uid) {
-    throw new HttpsError(
-      "unauthenticated",
-      "Debes iniciar sesión para usar esta función.",
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      mantenimientoOrg,
+      "No puedes actualizar mantenimientos fuera de tu sede.",
     );
-  }
-  const callerUid = request.auth.uid;
-  const callerRole = await getUserRole(callerUid);
-  if (
-    callerRole !== "INGENIERO_BIOMEDICO" &&
+
+    await ref.update(
+      normalizeMantenimientoPatchRecord(data.patch as Record<string, unknown>),
+    );
+    return {ok: true};
+  },
+);
+
+export const addMantenimientoHistorial = onCallLogged(
+  {
+    functionName: "addMantenimientoHistorial",
+    module: "MANTENIMIENTOS",
+    action: "AGREGAR_HISTORIAL_MANTENIMIENTO",
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesión para usar esta función.",
+      );
+    }
+    const callerUid = request.auth.uid;
+    const callerRole = await getUserRole(callerUid);
+    if (
+      callerRole !== "INGENIERO_BIOMEDICO" &&
     callerRole !== "AUXILIAR_ADMINISTRATIVA"
-  ) {
-    throw new HttpsError(
-      "permission-denied",
-      "No autorizado para registrar historial de mantenimiento.",
+    ) {
+      throw new HttpsError(
+        "permission-denied",
+        "No autorizado para registrar historial de mantenimiento.",
+      );
+    }
+    const callerAccess = await getUserAccessContext(callerUid);
+
+    const data = request.data as {id?: unknown; entry?: unknown};
+    const id = assertNonEmptyString(data.id, "id");
+    if (!data.entry || typeof data.entry !== "object") {
+      throw new HttpsError("invalid-argument", "entry es requerido.");
+    }
+
+    const ref = db.doc(`mantenimientos/${id}`);
+    const snap = await ref.get();
+    if (!snap.exists) {
+      throw new HttpsError("not-found", "El mantenimiento no existe.");
+    }
+    const mantenimiento = snap.data() as Record<string, unknown>;
+    const mantenimientoOrg = readStoredOrgContextOrThrow(
+      mantenimiento,
+      `El mantenimiento ${snap.id}`,
     );
-  }
-  const callerAccess = await getUserAccessContext(callerUid);
-
-  const data = request.data as {id?: unknown; entry?: unknown};
-  const id = assertNonEmptyString(data.id, "id");
-  if (!data.entry || typeof data.entry !== "object") {
-    throw new HttpsError("invalid-argument", "entry es requerido.");
-  }
-
-  const ref = db.doc(`mantenimientos/${id}`);
-  const snap = await ref.get();
-  if (!snap.exists) {
-    throw new HttpsError("not-found", "El mantenimiento no existe.");
-  }
-  const mantenimiento = snap.data() as Record<string, unknown>;
-  const mantenimientoOrg = buildOrgContext(mantenimiento);
-  assertHasOrgAccessOrThrow(
-    callerAccess,
-    mantenimientoOrg,
-    "No puedes registrar historial fuera de tu sede.",
-  );
-
-  const entry = data.entry as Record<string, unknown>;
-  await ref.update({
-    historial: FieldValue.arrayUnion({
-      ...entry,
-      nota: upperMaybe(entry.nota),
-      porNombre: upperMaybe(entry.porNombre),
-    }),
-  });
-  return {ok: true};
-});
-
-export const addCalibracionEquipo = onCall(async (request) => {
-  if (!request.auth?.uid) {
-    throw new HttpsError(
-      "unauthenticated",
-      "Debes iniciar sesión para usar esta función.",
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      mantenimientoOrg,
+      "No puedes registrar historial fuera de tu sede.",
     );
-  }
-  const callerUid = request.auth.uid;
-  await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
-  const callerAccess = await getUserAccessContext(callerUid);
 
-  const raw = (request.data as {calibracion?: unknown})?.calibracion;
-  if (!raw || typeof raw !== "object") {
-    throw new HttpsError("invalid-argument", "calibracion es requerida.");
-  }
-  const data = raw as Record<string, unknown>;
-  const equipoId = assertNonEmptyString(data.equipoId, "equipoId");
-  const equipoRef = db.doc(`equipos/${equipoId}`);
-  const equipoSnap = await equipoRef.get();
-  if (!equipoSnap.exists) {
-    throw new HttpsError("not-found", "El equipo no existe.");
-  }
-  const equipo = equipoSnap.data() as Record<string, unknown>;
-  const equipoOrg = buildOrgContext(equipo);
-  assertHasOrgAccessOrThrow(
-    callerAccess,
-    equipoOrg,
-    "No puedes registrar calibraciones fuera de tu sede.",
-  );
+    const entry = data.entry as Record<string, unknown>;
+    await ref.update({
+      historial: FieldValue.arrayUnion({
+        ...entry,
+        nota: upperMaybe(entry.nota),
+        porNombre: upperMaybe(entry.porNombre),
+      }),
+    });
+    return {ok: true};
+  },
+);
 
-  const payload = stripUndefined({
-    ...data,
-    ...equipoOrg,
-    periodicidad: upperMaybe(data.periodicidad),
-    costo: upperMaybe(data.costo),
-    observaciones: upperMaybe(data.observaciones),
-    creadoPorNombre: upperTrim(data.creadoPorNombre),
-    createdAt:
+export const addCalibracionEquipo = onCallLogged(
+  {
+    functionName: "addCalibracionEquipo",
+    module: "CALIBRACIONES",
+    action: "AGREGAR_CALIBRACION",
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesión para usar esta función.",
+      );
+    }
+    const callerUid = request.auth.uid;
+    await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
+    const callerAccess = await getUserAccessContext(callerUid);
+
+    const raw = (request.data as {calibracion?: unknown})?.calibracion;
+    if (!raw || typeof raw !== "object") {
+      throw new HttpsError("invalid-argument", "calibracion es requerida.");
+    }
+    const data = raw as Record<string, unknown>;
+    const equipoId = assertNonEmptyString(data.equipoId, "equipoId");
+    const equipoRef = db.doc(`equipos/${equipoId}`);
+    const equipoSnap = await equipoRef.get();
+    if (!equipoSnap.exists) {
+      throw new HttpsError("not-found", "El equipo no existe.");
+    }
+    const equipo = equipoSnap.data() as Record<string, unknown>;
+    const equipoOrg = readStoredOrgContextOrThrow(
+      equipo,
+      `El equipo ${equipoSnap.id}`,
+    );
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      equipoOrg,
+      "No puedes registrar calibraciones fuera de tu sede.",
+    );
+
+    const payload = stripUndefined({
+      ...data,
+      ...equipoOrg,
+      periodicidad: upperMaybe(data.periodicidad),
+      costo: upperMaybe(data.costo),
+      observaciones: upperMaybe(data.observaciones),
+      creadoPorNombre: upperTrim(data.creadoPorNombre),
+      createdAt:
       typeof data.createdAt === "string" ?
         data.createdAt :
         new Date().toISOString(),
-  }) as Record<string, unknown>;
+    }) as Record<string, unknown>;
 
-  const ref = db.collection(`equipos/${equipoId}/calibraciones`).doc();
-  await ref.set(payload);
-  await equipoRef.update(stripUndefined({
-    calibracionUltima: data.fecha,
-    calibracionProxima: data.proximaFecha,
-    calibracionPeriodicidad: upperMaybe(data.periodicidad),
-    calibracionCertificado: data.certificado,
-    updatedAt: FieldValue.serverTimestamp(),
-  }) as Record<string, unknown>);
-  return {ok: true, id: ref.id};
-});
+    const ref = db.collection(`equipos/${equipoId}/calibraciones`).doc();
+    await ref.set(payload);
+    await equipoRef.update(stripUndefined({
+      calibracionUltima: data.fecha,
+      calibracionProxima: data.proximaFecha,
+      calibracionPeriodicidad: upperMaybe(data.periodicidad),
+      calibracionCertificado: data.certificado,
+      updatedAt: FieldValue.serverTimestamp(),
+    }) as Record<string, unknown>);
+    return {ok: true, id: ref.id};
+  },
+);
 
-export const updateCalibracionCertificado = onCall(async (request) => {
-  if (!request.auth?.uid) {
-    throw new HttpsError(
-      "unauthenticated",
-      "Debes iniciar sesión para usar esta función.",
-    );
-  }
-  const callerUid = request.auth.uid;
-  await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
-  const callerAccess = await getUserAccessContext(callerUid);
+export const updateCalibracionCertificado = onCallLogged(
+  {
+    functionName: "updateCalibracionCertificado",
+    module: "CALIBRACIONES",
+    action: "ACTUALIZAR_CERTIFICADO_CALIBRACION",
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesión para usar esta función.",
+      );
+    }
+    const callerUid = request.auth.uid;
+    await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
+    const callerAccess = await getUserAccessContext(callerUid);
 
-  const data = request.data as {
+    const data = request.data as {
     equipoId?: unknown;
     calibracionId?: unknown;
     certificado?: unknown;
     syncEquipo?: unknown;
   };
-  const equipoId = assertNonEmptyString(data.equipoId, "equipoId");
-  const calibracionId = assertNonEmptyString(
-    data.calibracionId,
-    "calibracionId",
-  );
-  if (!data.certificado || typeof data.certificado !== "object") {
-    throw new HttpsError("invalid-argument", "certificado es requerido.");
-  }
-
-  const equipoRef = db.doc(`equipos/${equipoId}`);
-  const equipoSnap = await equipoRef.get();
-  if (!equipoSnap.exists) {
-    throw new HttpsError("not-found", "El equipo no existe.");
-  }
-  const equipo = equipoSnap.data() as Record<string, unknown>;
-  const equipoOrg = buildOrgContext(equipo);
-  assertHasOrgAccessOrThrow(
-    callerAccess,
-    equipoOrg,
-    "No puedes actualizar calibraciones fuera de tu sede.",
-  );
-
-  const ref = db.doc(`equipos/${equipoId}/calibraciones/${calibracionId}`);
-  await ref.update({
-    certificado: data.certificado,
-    updatedAt: new Date().toISOString(),
-  });
-  if (data.syncEquipo === true) {
-    await equipoRef.update({
-      calibracionCertificado: data.certificado,
-      updatedAt: FieldValue.serverTimestamp(),
-    });
-  }
-  return {ok: true};
-});
-
-export const updateCalibracionFields = onCall(async (request) => {
-  if (!request.auth?.uid) {
-    throw new HttpsError(
-      "unauthenticated",
-      "Debes iniciar sesión para usar esta función.",
+    const equipoId = assertNonEmptyString(data.equipoId, "equipoId");
+    const calibracionId = assertNonEmptyString(
+      data.calibracionId,
+      "calibracionId",
     );
-  }
-  const callerUid = request.auth.uid;
-  await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
-  const callerAccess = await getUserAccessContext(callerUid);
+    if (!data.certificado || typeof data.certificado !== "object") {
+      throw new HttpsError("invalid-argument", "certificado es requerido.");
+    }
 
-  const data = request.data as {
+    const equipoRef = db.doc(`equipos/${equipoId}`);
+    const equipoSnap = await equipoRef.get();
+    if (!equipoSnap.exists) {
+      throw new HttpsError("not-found", "El equipo no existe.");
+    }
+    const equipo = equipoSnap.data() as Record<string, unknown>;
+    const equipoOrg = readStoredOrgContextOrThrow(
+      equipo,
+      `El equipo ${equipoSnap.id}`,
+    );
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      equipoOrg,
+      "No puedes actualizar calibraciones fuera de tu sede.",
+    );
+
+    const ref = db.doc(`equipos/${equipoId}/calibraciones/${calibracionId}`);
+    await ref.update({
+      certificado: data.certificado,
+      updatedAt: new Date().toISOString(),
+    });
+    if (data.syncEquipo === true) {
+      await equipoRef.update({
+        calibracionCertificado: data.certificado,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    }
+    return {ok: true};
+  },
+);
+
+export const updateCalibracionFields = onCallLogged(
+  {
+    functionName: "updateCalibracionFields",
+    module: "CALIBRACIONES",
+    action: "ACTUALIZAR_DATOS_CALIBRACION",
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesión para usar esta función.",
+      );
+    }
+    const callerUid = request.auth.uid;
+    await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
+    const callerAccess = await getUserAccessContext(callerUid);
+
+    const data = request.data as {
     equipoId?: unknown;
     calibracionId?: unknown;
     costo?: unknown;
     observaciones?: unknown;
   };
-  const equipoId = assertNonEmptyString(data.equipoId, "equipoId");
-  const calibracionId = assertNonEmptyString(
-    data.calibracionId,
-    "calibracionId",
-  );
+    const equipoId = assertNonEmptyString(data.equipoId, "equipoId");
+    const calibracionId = assertNonEmptyString(
+      data.calibracionId,
+      "calibracionId",
+    );
 
-  const equipoRef = db.doc(`equipos/${equipoId}`);
-  const equipoSnap = await equipoRef.get();
-  if (!equipoSnap.exists) {
-    throw new HttpsError("not-found", "El equipo no existe.");
-  }
-  const equipo = equipoSnap.data() as Record<string, unknown>;
-  const equipoOrg = buildOrgContext(equipo);
-  assertHasOrgAccessOrThrow(
-    callerAccess,
-    equipoOrg,
-    "No puedes actualizar calibraciones fuera de tu sede.",
-  );
+    const equipoRef = db.doc(`equipos/${equipoId}`);
+    const equipoSnap = await equipoRef.get();
+    if (!equipoSnap.exists) {
+      throw new HttpsError("not-found", "El equipo no existe.");
+    }
+    const equipo = equipoSnap.data() as Record<string, unknown>;
+    const equipoOrg = readStoredOrgContextOrThrow(
+      equipo,
+      `El equipo ${equipoSnap.id}`,
+    );
+    assertHasOrgAccessOrThrow(
+      callerAccess,
+      equipoOrg,
+      "No puedes actualizar calibraciones fuera de tu sede.",
+    );
 
-  const ref = db.doc(`equipos/${equipoId}/calibraciones/${calibracionId}`);
-  await ref.update(stripUndefined({
-    costo: upperMaybe(data.costo),
-    observaciones: upperMaybe(data.observaciones),
-    updatedAt: new Date().toISOString(),
-  }) as Record<string, unknown>);
-  return {ok: true};
-});
+    const ref = db.doc(`equipos/${equipoId}/calibraciones/${calibracionId}`);
+    await ref.update(stripUndefined({
+      costo: upperMaybe(data.costo),
+      observaciones: upperMaybe(data.observaciones),
+      updatedAt: new Date().toISOString(),
+    }) as Record<string, unknown>);
+    return {ok: true};
+  },
+);
 
 /**
  * Reportes de visita/falla (VISITADOR -> Biomedico)
@@ -3629,7 +4064,10 @@ export const onReporteEquipoCreatedNotify = onDocumentCreated(
       typeof d.descripcion === "string" ? d.descripcion : "";
     const fechaVisita =
       typeof d.fechaVisita === "string" ? d.fechaVisita : "";
-    const org = buildOrgContext(d);
+    const org = readStoredOrgContextOrThrow(
+      d,
+      `El reporte ${snap.id}`,
+    );
 
     // Buscar biomédicos para notificar
     const usersSnap = await db
@@ -3699,7 +4137,10 @@ export const onSolicitudEquipoPacienteCreatedNotify = onDocumentCreated(
       typeof d.empresaAlquiler === "string" ? d.empresaAlquiler : "";
     const observaciones =
       typeof d.observaciones === "string" ? d.observaciones : "";
-    const org = buildOrgContext(d);
+    const org = readStoredOrgContextOrThrow(
+      d,
+      `La solicitud ${snap.id}`,
+    );
 
     const usersSnap = await db
       .collection("users")

@@ -80,9 +80,8 @@ Colecciones clave:
 
 Contexto organizacional (fase 1):
 - Se agregan campos `empresaId` y `sedeId` en entidades operativas nuevas.
-- Default actual para legacy/altas sin contexto explícito:
-  - `empresaId = MEDICUC`
-  - `sedeId = BUCARAMANGA`
+- Ya no se debe asumir `MEDICUC/BUCARAMANGA` como default silencioso para
+  nuevos perfiles o correcciones legacy.
 
 Contexto organizacional (fase 2, marzo 2026):
 - Frontend filtra consultas operativas por `empresaId/sedeId`.
@@ -97,6 +96,17 @@ Contexto organizacional (fase 2.1, marzo 2026):
   tiene más de una sede en su `scope`.
 - Functions y reglas validan acceso por pertenencia a `scope` (no solo por
   `empresaId/sedeId` principal).
+
+Endurecimiento legacy/org (junio 2026):
+- `AuthContext` intenta recuperar el perfil una vez si falta contexto
+  organizacional y luego bloquea el acceso con error claro.
+- `syncUserProfile` ya no crea `empresaId/sedeId/scope` por defecto.
+- `adminCreateUser` y `adminSetUserRole` ahora exigen `scope` válido o
+  `empresaId/sedeId` válidos.
+- `backfillOrgContextPhase1` dejó de inventar contexto para documentos sin
+  org explícita; esos casos deben corregirse desde Admin.
+- `#/admin` incluye panel "Corrección de documentos legacy" con sugerencia
+  automática y guardado manual por documento.
 
 Contexto inventario multisede (fase 3.1, marzo 2026):
 - `equipos` soporta `tipoActivo` (`BIOMEDICO`, `NO_BIOMEDICO`, `MOBILIARIO`)
@@ -167,8 +177,11 @@ Exports en `functions/src/index.ts`:
 - `adminCreateUser`
 - `adminSetUserRole`
 - `listAuxiliares`
+- `listLegacyOrgDocs`
+- `fixLegacyOrgDoc`
 - `seedOrgCatalogPhase1` (admin; crea/actualiza catálogo inicial)
-- `backfillOrgContextPhase1` (admin; completa `empresaId/sedeId` legacy)
+- `backfillOrgContextPhase1` (admin; solo normaliza docs con org confiable;
+  los faltantes deben corregirse desde Admin)
 - `createPaciente` (transaccional)
 - `createEquipo` (transaccional)
 - `createAsignacionPaciente` (transaccional)
@@ -258,6 +271,19 @@ Si quieres todo junto:
 - Se aplicó code-splitting en `App.tsx` con `React.lazy`/`Suspense` para:
   - `Patients`
   - `Professionals`
+
+### Estado junio 2026 - seguridad/soporte
+- Se endureció el manejo de contexto organizacional en Functions:
+  documentos operativos existentes sin `empresaId/sedeId` ahora fallan con
+  error explícito en lugar de asumir `MEDICUC/BUCARAMANGA`.
+- Se ajustaron `firestore.rules` y `storage.rules` para reforzar aislamiento
+  por sede/empresa, manteniendo lectura global para `GERENCIA` y lectura
+  técnica global para `INGENIERO_BIOMEDICO`.
+- Se añadió panel inicial de incidentes para admin:
+  - colección `admin_incidentes`
+  - callables `listAdminIncidentes` y `resolveAdminIncidente`
+  - registro automático de incidentes en varias Cloud Functions críticas
+  - visualización y resolución desde `#/admin`
   - `Inventory`
   - `Admin`
   - `Reports`

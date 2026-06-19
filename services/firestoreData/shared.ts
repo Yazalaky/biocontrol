@@ -1,7 +1,7 @@
 import { collection, documentId, where, type QueryConstraint } from 'firebase/firestore';
 
 import { db } from '../firebase';
-import { getStoredAccessProfile, getStoredOrgContext, withOrgContext } from '../orgContext';
+import { getStoredAccessProfile, getStoredOrgContextStrict, withOrgContext } from '../orgContext';
 import type { OrgContext } from '../../types';
 
 export const tiposEquipoCol = collection(db, 'tipos_equipo');
@@ -28,7 +28,13 @@ export const withContext = <T extends object>(payload: T, context?: Partial<OrgC
 export const orgScopeConstraints = (): QueryConstraint[] => {
   const { isGlobalRead } = getStoredAccessProfile();
   if (isGlobalRead) return [];
-  const context = getStoredOrgContext();
+  const context = getStoredOrgContextStrict();
+  if (!context) {
+    return [
+      where('empresaId', '==', '__INVALID_ORG__'),
+      where('sedeId', '==', '__INVALID_ORG__'),
+    ];
+  }
   return [
     where('empresaId', '==', context.empresaId),
     where('sedeId', '==', context.sedeId),
@@ -38,14 +44,21 @@ export const orgScopeConstraints = (): QueryConstraint[] => {
 export const empresasScopeConstraints = (): QueryConstraint[] => {
   const { isGlobalRead } = getStoredAccessProfile();
   if (isGlobalRead) return [];
-  const context = getStoredOrgContext();
+  const context = getStoredOrgContextStrict();
+  if (!context) return [where(documentId(), '==', '__INVALID_ORG__')];
   return [where(documentId(), '==', context.empresaId)];
 };
 
 export const sedesScopeConstraints = (): QueryConstraint[] => {
   const { isGlobalRead } = getStoredAccessProfile();
   if (isGlobalRead) return [];
-  const context = getStoredOrgContext();
+  const context = getStoredOrgContextStrict();
+  if (!context) {
+    return [
+      where('empresaId', '==', '__INVALID_ORG__'),
+      where(documentId(), '==', '__INVALID_ORG__'),
+    ];
+  }
   return [
     where('empresaId', '==', context.empresaId),
     where(documentId(), '==', context.sedeId),
