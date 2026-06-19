@@ -1320,6 +1320,123 @@ export const createAsignacionPaciente = onCall(async (request) => {
 });
 
 /**
+ * Finaliza una asignación activa registrando la devolución del equipo.
+ */
+export const finalizarDevolucionAsignacion = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
+  }
+  const callerUid = request.auth.uid;
+  await assertCallerHasRole(callerUid, "AUXILIAR_ADMINISTRATIVA");
+  const callerAccess = await getUserAccessContext(callerUid);
+
+  const data = request.data as {
+    idAsignacion?: unknown;
+    observacionesDevolucion?: unknown;
+    estadoFinalEquipo?: unknown;
+  };
+  const idAsignacion = assertNonEmptyString(data.idAsignacion, "idAsignacion");
+  const observacionesDevolucion = upperTrim(data.observacionesDevolucion);
+  const estadoFinalEquipo = upperTrim(data.estadoFinalEquipo);
+  if (
+    !(ESTADO_EQUIPO_VALUES as readonly string[]).includes(estadoFinalEquipo)
+  ) {
+    throw new HttpsError(
+      "invalid-argument",
+      "estadoFinalEquipo inválido. Valores permitidos: " +
+        ESTADO_EQUIPO_VALUES.join(", "),
+    );
+  }
+
+  const asignacionRef = db.doc(`asignaciones/${idAsignacion}`);
+  const asignacionSnap = await asignacionRef.get();
+  if (!asignacionSnap.exists) {
+    throw new HttpsError("not-found", "La asignación no existe.");
+  }
+
+  const asignacionData = asignacionSnap.data() as Record<string, unknown>;
+  const asignacionOrg = buildOrgContext(asignacionData);
+  assertHasOrgAccessOrThrow(
+    callerAccess,
+    asignacionOrg,
+    "No puedes devolver equipos fuera de tu sede.",
+  );
+  const estado =
+    typeof asignacionData.estado === "string" ? asignacionData.estado : "";
+  if (estado !== "ACTIVA") {
+    throw new HttpsError(
+      "failed-precondition",
+      "La asignación no está en estado ACTIVA.",
+    );
+  }
+
+  await asignacionRef.update({
+    fechaDevolucion: new Date().toISOString(),
+    estado: "FINALIZADA",
+    observacionesDevolucion,
+    estadoFinalEquipo,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+
+  return {ok: true};
+});
+
+/**
+ * Egreso de paciente cuando no tiene asignaciones activas.
+ */
+export const egresarPaciente = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
+  }
+  const callerUid = request.auth.uid;
+  await assertCallerHasRole(callerUid, "AUXILIAR_ADMINISTRATIVA");
+  const callerAccess = await getUserAccessContext(callerUid);
+
+  const data = request.data as {idPaciente?: unknown};
+  const idPaciente = assertNonEmptyString(data.idPaciente, "idPaciente");
+
+  const pacienteRef = db.doc(`pacientes/${idPaciente}`);
+  const pacienteSnap = await pacienteRef.get();
+  if (!pacienteSnap.exists) {
+    throw new HttpsError("not-found", "El paciente no existe.");
+  }
+
+  const pacienteData = pacienteSnap.data() as Record<string, unknown>;
+  const pacienteOrg = buildOrgContext(pacienteData);
+  assertHasOrgAccessOrThrow(
+    callerAccess,
+    pacienteOrg,
+    "No puedes egresar pacientes fuera de tu sede.",
+  );
+
+  const activasSnap = await db
+    .collection("asignaciones")
+    .where("empresaId", "==", pacienteOrg.empresaId)
+    .where("sedeId", "==", pacienteOrg.sedeId)
+    .where("idPaciente", "==", idPaciente)
+    .where("estado", "==", "ACTIVA")
+    .limit(1)
+    .get();
+  if (!activasSnap.empty) {
+    return {ok: true, egresado: false};
+  }
+
+  await pacienteRef.update({
+    estado: "EGRESADO",
+    fechaSalida: new Date().toISOString(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+
+  return {ok: true, egresado: true};
+});
+
+/**
  * 3.5) LISTAR PACIENTES SIN ASIGNACION ACTIVA (VISITADOR).
  * Retorna id, nombreCompleto y numeroDocumento.
  *

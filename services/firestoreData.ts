@@ -1438,39 +1438,19 @@ export async function devolverEquipo(params: {
 }) {
   const { idAsignacion, observacionesDevolucion, estadoFinalEquipo } = params;
   assertRoleString(estadoFinalEquipo, Object.values(EstadoEquipo), 'estadoFinalEquipo');
-
-  const ref = doc(asignacionesCol, idAsignacion);
-  await updateDoc(
-    ref,
-    stripUndefinedDeep({
-      fechaDevolucion: new Date().toISOString(),
-      estado: EstadoAsignacion.FINALIZADA,
-      observacionesDevolucion: upper(observacionesDevolucion),
-      estadoFinalEquipo,
-    }) as any,
-  );
+  const fn = httpsCallable(firebaseFunctions, 'finalizarDevolucionAsignacion');
+  await fn({
+    idAsignacion,
+    observacionesDevolucion,
+    estadoFinalEquipo,
+  });
 }
 
 export async function validarSalidaPaciente(idPaciente: string): Promise<boolean> {
-  const activasQ = query(
-    asignacionesCol,
-    ...orgScopeConstraints(),
-    where('idPaciente', '==', idPaciente),
-    where('estado', '==', EstadoAsignacion.ACTIVA),
-    limit(1),
-  );
-  const activasSnap = await getDocs(activasQ);
-  if (!activasSnap.empty) return false;
-
-  const ref = doc(pacientesCol, idPaciente);
-  await updateDoc(
-    ref,
-    stripUndefinedDeep({
-      estado: EstadoPaciente.EGRESADO,
-      fechaSalida: new Date().toISOString(),
-    }) as any,
-  );
-  return true;
+  const fn = httpsCallable(firebaseFunctions, 'egresarPaciente');
+  const res = await fn({ idPaciente });
+  const data = res.data as { egresado?: unknown };
+  return data.egresado === true;
 }
 
 export async function guardarFirmaPaciente(params: {
