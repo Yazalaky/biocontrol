@@ -837,23 +837,13 @@ export async function iniciarReporteEnProceso(params: {
   porUid: string;
   porNombre: string;
 }) {
-  const nowIso = new Date().toISOString();
-  const ref = doc(reportesEquiposCol, params.idReporte);
-  await updateDoc(ref, {
-    estado: EstadoReporteEquipo.EN_PROCESO,
-    diagnostico: upper(params.diagnostico),
-    planReparacion: upper(params.planReparacion),
-    enProcesoAt: nowIso,
-    enProcesoPorUid: params.porUid,
-    enProcesoPorNombre: upper(params.porNombre),
-    historial: arrayUnion({
-      fecha: nowIso,
-      estado: EstadoReporteEquipo.EN_PROCESO,
-      nota: `Inicio de proceso: ${upper(params.diagnostico)}\nPlan: ${upper(params.planReparacion)}`,
-      porUid: params.porUid,
-      porNombre: upper(params.porNombre),
-    }),
-  } as any);
+  const fn = httpsCallable(firebaseFunctions, 'iniciarReporteEnProceso');
+  await fn({
+    idReporte: params.idReporte,
+    diagnostico: params.diagnostico,
+    planReparacion: params.planReparacion,
+    porNombre: params.porNombre,
+  });
 }
 
 export async function agregarNotaReporte(params: {
@@ -862,17 +852,12 @@ export async function agregarNotaReporte(params: {
   porUid: string;
   porNombre: string;
 }) {
-  const nowIso = new Date().toISOString();
-  const ref = doc(reportesEquiposCol, params.idReporte);
-  await updateDoc(ref, {
-    historial: arrayUnion({
-      fecha: nowIso,
-      estado: EstadoReporteEquipo.EN_PROCESO,
-      nota: upper(params.nota),
-      porUid: params.porUid,
-      porNombre: upper(params.porNombre),
-    }),
-  } as any);
+  const fn = httpsCallable(firebaseFunctions, 'agregarNotaReporte');
+  await fn({
+    idReporte: params.idReporte,
+    nota: params.nota,
+    porNombre: params.porNombre,
+  });
 }
 
 export async function cerrarReporteEquipo(params: {
@@ -881,22 +866,12 @@ export async function cerrarReporteEquipo(params: {
   cerradoPorUid: string;
   cerradoPorNombre: string;
 }) {
-  const nowIso = new Date().toISOString();
-  const ref = doc(reportesEquiposCol, params.idReporte);
-  await updateDoc(ref, {
-    estado: EstadoReporteEquipo.CERRADO,
-    cierreNotas: upper(params.cierreNotas),
-    cerradoAt: nowIso,
-    cerradoPorUid: params.cerradoPorUid,
-    cerradoPorNombre: upper(params.cerradoPorNombre),
-    historial: arrayUnion({
-      fecha: nowIso,
-      estado: EstadoReporteEquipo.CERRADO,
-      nota: upper(params.cierreNotas),
-      porUid: params.cerradoPorUid,
-      porNombre: upper(params.cerradoPorNombre),
-    }),
-  } as any);
+  const fn = httpsCallable(firebaseFunctions, 'cerrarReporteEquipo');
+  await fn({
+    idReporte: params.idReporte,
+    cierreNotas: params.cierreNotas,
+    porNombre: params.cerradoPorNombre,
+  });
 }
 
 const normalizeMantenimientoPayload = (value: Omit<Mantenimiento, 'id'>): Omit<Mantenimiento, 'id'> => {

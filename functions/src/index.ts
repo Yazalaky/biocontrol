@@ -3047,6 +3047,201 @@ export const createReporteEquipo = onCall(async (request) => {
   };
 });
 
+export const iniciarReporteEnProceso = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
+  }
+  const callerUid = request.auth.uid;
+  await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
+  const callerAccess = await getUserAccessContext(callerUid);
+
+  const data = request.data as {
+    idReporte?: unknown;
+    diagnostico?: unknown;
+    planReparacion?: unknown;
+    porNombre?: unknown;
+  };
+  const idReporte = assertNonEmptyString(data.idReporte, "idReporte");
+  const diagnostico = upperTrim(data.diagnostico);
+  const planReparacion = upperTrim(data.planReparacion);
+  const porNombre = upperTrim(data.porNombre);
+  if (!diagnostico || !planReparacion || !porNombre) {
+    throw new HttpsError(
+      "invalid-argument",
+      "diagnostico, planReparacion y porNombre son requeridos.",
+    );
+  }
+
+  const ref = db.doc(`reportes_equipos/${idReporte}`);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    throw new HttpsError("not-found", "El reporte no existe.");
+  }
+
+  const reporte = snap.data() as Record<string, unknown>;
+  const reporteOrg = buildOrgContext(reporte);
+  assertHasOrgAccessOrThrow(
+    callerAccess,
+    reporteOrg,
+    "No puedes operar reportes fuera de tu sede.",
+  );
+  const estado = typeof reporte.estado === "string" ? reporte.estado : "";
+  if (estado !== "ABIERTO") {
+    throw new HttpsError(
+      "failed-precondition",
+      "El reporte no está en estado ABIERTO.",
+    );
+  }
+
+  const nowIso = new Date().toISOString();
+  await ref.update({
+    estado: "EN_PROCESO",
+    diagnostico,
+    planReparacion,
+    enProcesoAt: nowIso,
+    enProcesoPorUid: callerUid,
+    enProcesoPorNombre: porNombre,
+    historial: FieldValue.arrayUnion({
+      fecha: nowIso,
+      estado: "EN_PROCESO",
+      nota: `Inicio de proceso: ${diagnostico}\nPlan: ${planReparacion}`,
+      porUid: callerUid,
+      porNombre,
+    }),
+  });
+
+  return {ok: true};
+});
+
+export const agregarNotaReporte = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
+  }
+  const callerUid = request.auth.uid;
+  await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
+  const callerAccess = await getUserAccessContext(callerUid);
+
+  const data = request.data as {
+    idReporte?: unknown;
+    nota?: unknown;
+    porNombre?: unknown;
+  };
+  const idReporte = assertNonEmptyString(data.idReporte, "idReporte");
+  const nota = upperTrim(data.nota);
+  const porNombre = upperTrim(data.porNombre);
+  if (!nota || !porNombre) {
+    throw new HttpsError(
+      "invalid-argument",
+      "nota y porNombre son requeridos.",
+    );
+  }
+
+  const ref = db.doc(`reportes_equipos/${idReporte}`);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    throw new HttpsError("not-found", "El reporte no existe.");
+  }
+
+  const reporte = snap.data() as Record<string, unknown>;
+  const reporteOrg = buildOrgContext(reporte);
+  assertHasOrgAccessOrThrow(
+    callerAccess,
+    reporteOrg,
+    "No puedes operar reportes fuera de tu sede.",
+  );
+  const estado = typeof reporte.estado === "string" ? reporte.estado : "";
+  if (estado !== "EN_PROCESO") {
+    throw new HttpsError(
+      "failed-precondition",
+      "El reporte no está en estado EN_PROCESO.",
+    );
+  }
+
+  await ref.update({
+    historial: FieldValue.arrayUnion({
+      fecha: new Date().toISOString(),
+      estado: "EN_PROCESO",
+      nota,
+      porUid: callerUid,
+      porNombre,
+    }),
+  });
+
+  return {ok: true};
+});
+
+export const cerrarReporteEquipo = onCall(async (request) => {
+  if (!request.auth?.uid) {
+    throw new HttpsError(
+      "unauthenticated",
+      "Debes iniciar sesión para usar esta función.",
+    );
+  }
+  const callerUid = request.auth.uid;
+  await assertCallerHasRole(callerUid, "INGENIERO_BIOMEDICO");
+  const callerAccess = await getUserAccessContext(callerUid);
+
+  const data = request.data as {
+    idReporte?: unknown;
+    cierreNotas?: unknown;
+    porNombre?: unknown;
+  };
+  const idReporte = assertNonEmptyString(data.idReporte, "idReporte");
+  const cierreNotas = upperTrim(data.cierreNotas);
+  const porNombre = upperTrim(data.porNombre);
+  if (!cierreNotas || !porNombre) {
+    throw new HttpsError(
+      "invalid-argument",
+      "cierreNotas y porNombre son requeridos.",
+    );
+  }
+
+  const ref = db.doc(`reportes_equipos/${idReporte}`);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    throw new HttpsError("not-found", "El reporte no existe.");
+  }
+
+  const reporte = snap.data() as Record<string, unknown>;
+  const reporteOrg = buildOrgContext(reporte);
+  assertHasOrgAccessOrThrow(
+    callerAccess,
+    reporteOrg,
+    "No puedes operar reportes fuera de tu sede.",
+  );
+  const estado = typeof reporte.estado === "string" ? reporte.estado : "";
+  if (estado !== "EN_PROCESO") {
+    throw new HttpsError(
+      "failed-precondition",
+      "El reporte no está en estado EN_PROCESO.",
+    );
+  }
+
+  const nowIso = new Date().toISOString();
+  await ref.update({
+    estado: "CERRADO",
+    cierreNotas,
+    cerradoAt: nowIso,
+    cerradoPorUid: callerUid,
+    cerradoPorNombre: porNombre,
+    historial: FieldValue.arrayUnion({
+      fecha: nowIso,
+      estado: "CERRADO",
+      nota: cierreNotas,
+      porUid: callerUid,
+      porNombre,
+    }),
+  });
+
+  return {ok: true};
+});
+
 /**
  * Reportes de visita/falla (VISITADOR -> Biomedico)
  * Al crear un reporte, insertamos un doc en /mail (Trigger Email Extension).
