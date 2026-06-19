@@ -273,6 +273,12 @@ Si quieres todo junto:
 - Siguiente foco recomendado de rendimiento:
   - revisar dependencias compartidas del chunk principal
   - auditar listeners y carga de datos en `Inventory`
+- Se migraron a Cloud Functions los siguientes bloques de integridad operativa:
+  - devolución de equipo
+  - egreso de paciente
+  - transiciones de reportes (`EN_PROCESO`, nota, cierre)
+  - mantenimientos (crear, actualizar, historial)
+  - calibraciones (crear, actualizar certificado, actualizar campos)
 
 ## 14) Prompt recomendado para retomar con Codex
 Usar este prompt al abrir el proyecto en el nuevo equipo:

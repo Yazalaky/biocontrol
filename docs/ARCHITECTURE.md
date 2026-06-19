@@ -111,6 +111,17 @@ Callables y triggers confirmados en `functions/src/index.ts`:
 - `listPacientesSinAsignacion`
 - `listFirmasCapturadasVisitador`
 - `rebuildVisitadorFlags`
+- `finalizarDevolucionAsignacion`
+- `egresarPaciente`
+- `iniciarReporteEnProceso`
+- `agregarNotaReporte`
+- `cerrarReporteEquipo`
+- `createMantenimiento`
+- `updateMantenimiento`
+- `addMantenimientoHistorial`
+- `addCalibracionEquipo`
+- `updateCalibracionCertificado`
+- `updateCalibracionFields`
 - `guardarFirmaEntregaVisitador`
 - `defaultEquipoDisponibilidad`
 - `onAsignacionCreatedUpdateFlags`
@@ -261,12 +272,8 @@ Archivos relevantes observados:
 - `savePaciente` cuando edita un paciente existente.
 - `saveEquipo` cuando edita un equipo existente.
 - `updateEquipoFoto` / `clearEquipoFoto`.
-- `createMantenimiento` / `updateMantenimiento` / `addMantenimientoHistorial`.
 - `createSolicitudEquipoPaciente`.
-- `iniciarReporteEnProceso` / `agregarNotaReporte` / `cerrarReporteEquipo` / `marcarReporteVistoPorVisitador`.
-- `addCalibracionEquipo` / `updateCalibracionCertificado` / `updateCalibracionFields`.
-- `devolverEquipo`.
-- `validarSalidaPaciente`.
+- `marcarReporteVistoPorVisitador`.
 - `guardarFirmaPaciente`.
 - `guardarFirmaAuxiliar`.
 - `guardarFirmaProfesionalActa`.
@@ -281,26 +288,23 @@ Archivos relevantes observados:
 
 ### Clasificación para P6.2
 
-Prioridad alta:
-- `devolverEquipo`
-- `validarSalidaPaciente`
-- `iniciarReporteEnProceso`
-- `agregarNotaReporte`
-- `cerrarReporteEquipo`
-- `createMantenimiento` y `updateMantenimiento`
-- `addCalibracionEquipo` y updates de calibración
-
 Prioridad media:
 - `savePaciente` edición
 - `saveEquipo` edición
 - `saveProfesional`
+- `createSolicitudEquipoPaciente`
+- `marcarReporteVistoPorVisitador`
 - firmas auxiliares/paciente/profesional que hoy escriben directo en documentos
+- `createActaProfesional`
+- `asignarEquipoProfesional`
+- `vincularAsignacionProfesionalActa`
+- `devolverEquipoProfesional`
 
 Prioridad baja:
 - operaciones administrativas o de apoyo cuya integridad ya está bastante acotada por rules y contexto.
 
 ### Conclusión técnica
 
-- Las altas críticas y varios flujos sensibles ya están bien encaminados hacia backend.
-- Aún persisten mutaciones importantes en cliente directo para mantenimientos, calibraciones, devoluciones, firmas y transiciones de reportes.
-- El siguiente paso recomendado es mover primero las operaciones con más impacto de integridad de negocio y más side effects cruzados.
+- Las altas críticas y el bloque principal de integridad operativa ya están en backend.
+- Quedan mutaciones directas sobre edición, firmas auxiliares/paciente/profesional y algunos flujos profesionales/solicitudes.
+- El siguiente paso recomendado es priorizar edición de entidades operativas y firmas directas en documentos.
