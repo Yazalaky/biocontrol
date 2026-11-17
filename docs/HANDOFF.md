@@ -208,17 +208,23 @@ Exports en `functions/src/index.ts`:
    - `npm install`
 3. Instalar dependencias functions:
    - `cd functions && npm install && cd ..`
-4. Crear `.env.local` desde `.env.example`:
-   - Completar `VITE_FIREBASE_*` reales.
-5. Login Firebase CLI:
-   - `npx firebase-tools login`
-   - `npx firebase-tools use biocontrol-43676`
-6. Ejecutar local:
-   - `npm run dev`
-7. (Opcional) Build:
-   - `npm run build`
+4. Desarrollo local aislado, sin `.env.local` ni login de Firebase CLI:
+   - Terminal 1: `npm run emulators:local`
+   - Terminal 2: `npm run dev`
+   - Crear usuarios sintéticos en Emulator Suite (`http://127.0.0.1:4000`).
+5. Para un build remoto, crear `.env.production.local` desde `.env.example`
+   y completar la configuración del proyecto destino.
+6. Para build local con emuladores: `npm run build:local`.
+7. `.firebaserc` sigue teniendo `biocontrol-43676` como proyecto predeterminado
+   de la CLI; un `firebase deploy` sin proyecto explícito sigue apuntando a
+   producción. Los scripts de esta fase no despliegan recursos.
 
 ## 10) Deploy recomendado
+
+Los comandos siguientes usan el proyecto Firebase predeterminado
+`biocontrol-43676` (producción). Los comandos de la fase de aislamiento local
+no despliegan recursos.
+
 Orden sugerido:
 1. `npm run build`
 2. `npx firebase-tools deploy --only firestore:rules,firestore:indexes,storage`
@@ -320,7 +326,7 @@ Entrégame:
 ```
 
 ## 15) Checklist antes de subir a GitHub
-- No subir secretos (`.env.local` fuera de git).
+- No subir secretos (`.env.*.local` fuera de git).
 - Confirmar que `firestore.rules`, `storage.rules`, `firestore.indexes.json` estén actualizados.
 - Confirmar build local (`npm run build`).
 - Commit de `docs/HANDOFF.md`.

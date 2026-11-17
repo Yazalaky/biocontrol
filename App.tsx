@@ -7,6 +7,7 @@ import Visits from './pages/Visits';
 import Rutero from './pages/Rutero';
 import FeedbackHost from './components/FeedbackHost';
 import { RolUsuario } from './types';
+import { isLocalFirebaseEnvironment } from './services/firebase';
 
 const Patients = lazy(() => import('./pages/Patients'));
 const Professionals = lazy(() => import('./pages/Professionals'));
@@ -131,12 +132,28 @@ const Router = () => {
 
 const App: React.FC = () => {
   return (
-    <ThemeProvider>
-      <AuthProvider>
-        <Router />
-        <FeedbackHost />
-      </AuthProvider>
-    </ThemeProvider>
+    <>
+      {isLocalFirebaseEnvironment && (
+        <div
+          role="status"
+          style={{
+            backgroundColor: '#7c2d12',
+            color: '#fff',
+            fontWeight: 700,
+            padding: '0.5rem 1rem',
+            textAlign: 'center',
+          }}
+        >
+          ENTORNO LOCAL · DATOS DE PRUEBA · demo-biocontrol-local
+        </div>
+      )}
+      <ThemeProvider>
+        <AuthProvider>
+          <Router />
+          <FeedbackHost />
+        </AuthProvider>
+      </ThemeProvider>
+    </>
   );
 };
 

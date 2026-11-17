@@ -72,45 +72,52 @@ npm install
 npm --prefix functions install
 ```
 
-4. Crear archivo local de variables de entorno:
-
-```bash
-cp .env.example .env.local
-```
-
-5. Completar `.env.local` con valores reales de Firebase.
-6. Iniciar sesión en Firebase CLI y seleccionar el proyecto:
-
-```bash
-npx firebase-tools login
-npx firebase-tools use biocontrol-43676
-```
+4. Para desarrollo local no se requieren variables Firebase ni login en la CLI:
+   el frontend usa configuración `demo-*` y emuladores.
+5. Para un build remoto, crea `.env.production.local` a partir de
+   `.env.example` y configura los valores del proyecto destino. No uses esa
+   configuración en desarrollo local.
 
 ## Ejecución local
 
-Frontend:
+Abre dos terminales. En la primera, compila Functions e inicia los emuladores
+locales de Auth, Firestore, Functions y Storage:
+
+```bash
+npm run emulators:local
+```
+
+En la segunda, inicia el frontend conectado a esos emuladores:
 
 ```bash
 npm run dev
 ```
 
-Vista previa de producción:
+La interfaz de Emulator Suite queda en `http://127.0.0.1:4000`; Vite muestra la
+URL de BioControl, normalmente `http://localhost:5173`. Crea usuarios
+sintéticos en el emulador de Authentication. La aplicación muestra una franja
+“ENTORNO LOCAL” y no usa la configuración Firebase de `.env.local`.
+
+La app dirige las llamadas de Functions a `127.0.0.1:5001`, sin fallback a
+producción. El comando local compila Functions antes de iniciar el emulador.
+
+Los comandos de emuladores no despliegan recursos. `.firebaserc` conserva
+`biocontrol-43676` como proyecto predeterminado de la CLI; por eso, cualquier
+comando `firebase deploy` sin un proyecto explícito seguiría apuntando a
+producción. La protección y el flujo de deploy se tratarán en una fase aparte.
+
+Vista previa compilada con el proyecto local `demo-*`:
 
 ```bash
-npm run build
-npm run preview
+npm run preview:local
 ```
 
-Pruebas de reglas Firestore:
+Mantén `npm run emulators:local` activo durante la vista previa.
+
+Pruebas existentes de reglas Firestore:
 
 ```bash
 npm run test:rules
-```
-
-Cloud Functions en local:
-
-```bash
-npm --prefix functions run serve
 ```
 
 ## Scripts disponibles
@@ -118,8 +125,12 @@ npm --prefix functions run serve
 Raíz del proyecto:
 
 - `npm run dev`
+- `npm run dev:local`
+- `npm run emulators:local`
 - `npm run build`
+- `npm run build:local`
 - `npm run preview`
+- `npm run preview:local`
 - `npm run test:rules`
 
 Carpeta `functions/`:
@@ -132,7 +143,9 @@ Carpeta `functions/`:
 
 ## Variables de entorno esperadas
 
-El frontend utiliza variables `VITE_` para inicializar Firebase.
+Los builds remotos utilizan variables `VITE_` para inicializar Firebase. Los
+modos `dev` y `local` usan configuración fija `demo-*` y no usan esas variables
+para inicializar Firebase.
 
 Obligatorias:
 
@@ -160,6 +173,10 @@ Pendiente por confirmar:
 - Los documentos legacy deben seguir siendo compatibles.
 
 ## Despliegue
+
+Los comandos actuales usan `biocontrol-43676` como proyecto predeterminado, que
+corresponde a producción. Esta fase de aislamiento local no configura staging
+ni habilita despliegues.
 
 Flujo recomendado por etapas:
 

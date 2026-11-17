@@ -107,6 +107,21 @@ export function normalizeOrgId(value: unknown, fallback: string): string {
   return normalized || fallback;
 }
 
+export function readStoredOrgContextOrThrow(
+  data: Record<string, unknown> | null | undefined,
+  label: string,
+): OrgContext {
+  const empresaId = normalizeOrgId(data?.empresaId, "");
+  const sedeId = normalizeOrgId(data?.sedeId, "");
+  if (!empresaId || !sedeId) {
+    throw new HttpsError(
+      "failed-precondition",
+      `${label} no tiene un contexto organizacional válido (empresaId/sedeId).`,
+    );
+  }
+  return {empresaId, sedeId};
+}
+
 export function buildOrgContext(data?: Record<string, unknown>): OrgContext {
   return {
     empresaId: normalizeOrgId(data?.empresaId, DEFAULT_EMPRESA_ID),

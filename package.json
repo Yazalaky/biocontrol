@@ -5,9 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:local": "vite --mode local",
     "build": "vite build",
+    "build:local": "vite build --mode local",
     "preview": "vite preview",
-    "test:rules": "firebase emulators:exec --only firestore \"node --test tests/firestore.rules.test.mjs\""
+    "preview:local": "npm run build:local && vite preview",
+    "emulators:local": "npm --prefix functions run build && firebase emulators:start --project demo-biocontrol-local --only auth,firestore,functions,storage",
+    "test:rules": "firebase emulators:exec --config firebase.test.json --project demo-biocontrol-test --only firestore \"node --test tests/firestore.rules.test.mjs\""
   },
   "dependencies": {
     "firebase": "^12.9.0",
