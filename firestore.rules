@@ -18,26 +18,6 @@ service cloud.firestore {
       return isSignedIn() && exists(userPath()) ? get(userPath()).data.rol : null;
     }
 
-    function userEmpresaId() {
-      return isSignedIn() && exists(userPath())
-        ? get(userPath()).data.empresaId
-        : null;
-    }
-
-    function userSedeId() {
-      return isSignedIn() && exists(userPath())
-        ? get(userPath()).data.sedeId
-        : null;
-    }
-
-    function userScope() {
-      return isSignedIn()
-        && exists(userPath())
-        && get(userPath()).data.scope is list
-        ? get(userPath()).data.scope
-        : [];
-    }
-
     function isGlobalReader() {
       return isGerencia()
         || (
@@ -95,30 +75,34 @@ service cloud.firestore {
 
     // Firestore Rules no maneja de forma fiable la comparación de objetos dentro
     // de listas para este caso; evaluamos un número acotado de sedes por scope.
-    function isInUserScope(data) {
+    function isInUserScope(data, scope) {
       return hasOrgContext(data)
         && (
-          (userScope().size() > 0 && scopeEntryMatches(userScope()[0], data))
-          || (userScope().size() > 1 && scopeEntryMatches(userScope()[1], data))
-          || (userScope().size() > 2 && scopeEntryMatches(userScope()[2], data))
-          || (userScope().size() > 3 && scopeEntryMatches(userScope()[3], data))
-          || (userScope().size() > 4 && scopeEntryMatches(userScope()[4], data))
-          || (userScope().size() > 5 && scopeEntryMatches(userScope()[5], data))
-          || (userScope().size() > 6 && scopeEntryMatches(userScope()[6], data))
-          || (userScope().size() > 7 && scopeEntryMatches(userScope()[7], data))
+          (scope.size() > 0 && scopeEntryMatches(scope[0], data))
+          || (scope.size() > 1 && scopeEntryMatches(scope[1], data))
+          || (scope.size() > 2 && scopeEntryMatches(scope[2], data))
+          || (scope.size() > 3 && scopeEntryMatches(scope[3], data))
+          || (scope.size() > 4 && scopeEntryMatches(scope[4], data))
+          || (scope.size() > 5 && scopeEntryMatches(scope[5], data))
+          || (scope.size() > 6 && scopeEntryMatches(scope[6], data))
+          || (scope.size() > 7 && scopeEntryMatches(scope[7], data))
         );
     }
 
     function isSameUserOrg(data) {
+      let profile = isSignedIn() && exists(userPath()) ? get(userPath()).data : {};
+      let empresa = profile.get("empresaId", null);
+      let sede = profile.get("sedeId", null);
+      let scope = profile.get("scope", []);
       return hasOrgContext(data)
         && (
           (
-            userEmpresaId() is string
-            && userSedeId() is string
-            && data.empresaId == userEmpresaId()
-            && data.sedeId == userSedeId()
+            empresa is string
+            && sede is string
+            && data.empresaId == empresa
+            && data.sedeId == sede
           )
-          || isInUserScope(data)
+          || (scope is list && isInUserScope(data, scope))
         );
     }
 
@@ -152,6 +136,21 @@ service cloud.firestore {
       return !(key in data)
         || data[key] == null
         || (data[key] is string && data[key] == "");
+    }
+
+    // Conserva el historial en orden; permite añadir entradas y datos legacy.
+    function preservesExistingHistory() {
+      return !("historial" in resource.data)
+        ? (!("historial" in request.resource.data)
+          || request.resource.data.historial is list)
+        : ("historial" in request.resource.data
+          && (resource.data.historial is list
+            ? (request.resource.data.historial is list
+              && request.resource.data.historial.size() >= resource.data.historial.size()
+              && (resource.data.historial.size() == 0
+                || request.resource.data.historial[0:resource.data.historial.size()]
+                  == resource.data.historial))
+            : request.resource.data.historial == resource.data.historial));
     }
 
     function equipoPathById(equipoId) {
@@ -247,27 +246,26 @@ service cloud.firestore {
 
       allow create: if isAuxiliar() && canCreateInOwnOrg();
       allow delete: if isAuxiliar() && canDeleteInOwnOrg();
-      allow update: if (
-        isAuxiliar() && canUpdateInOwnOrg()
-      ) || (
-        isVisitador()
-        && canUpdateInOwnOrg()
-        && resource.data.estado == "ACTIVO"
-        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
-          "zona",
-          "direccion",
-          "telefono",
-          "barrio"
-        ])
-        && (
-          !(request.resource.data.zona is string)
-          || request.resource.data.zona in [
-            "GIRON",
-            "BGA1",
-            "BGA2",
-            "PIEDECUESTA",
-            "FLORIDABLANCA"
-          ]
+      allow update: if canUpdateInOwnOrg() && (
+        isAuxiliar() || (
+          isVisitador()
+          && resource.data.estado == "ACTIVO"
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            "zona",
+            "direccion",
+            "telefono",
+            "barrio"
+          ])
+          && (
+            !(request.resource.data.zona is string)
+            || request.resource.data.zona in [
+              "GIRON",
+              "BGA1",
+              "BGA2",
+              "PIEDECUESTA",
+              "FLORIDABLANCA"
+            ]
+          )
         )
       );
     }
@@ -322,7 +320,7 @@ service cloud.firestore {
             || isSameUserOrg(parentEquipoData())
           )
           && parentEquipoEsBiomedico()
-          && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             "certificado",
             "costo",
             "observaciones",
@@ -341,23 +339,22 @@ service cloud.firestore {
       allow create: if isAuxiliar() && canCreateInOwnOrg();
 
       // actualizar: auxiliar completo, visitador solo para capturar firma.
-      allow update: if (
-        isAuxiliar() && canUpdateInOwnOrg()
-      ) || (
-        isVisitador()
-        && canUpdateInOwnOrg()
-        && resource.data.estado == "ACTIVA"
-        && isMissingOrEmptyString(resource.data, "firmaPacienteEntrega")
-        && request.resource.data.firmaPacienteEntrega is string
-        && request.resource.data.firmaPacienteEntregaCapturadaAt is string
-        && request.resource.data.firmaPacienteEntregaCapturadaPorUid == request.auth.uid
-        && request.resource.data.firmaPacienteEntregaCapturadaPorNombre is string
-        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
-          "firmaPacienteEntrega",
-          "firmaPacienteEntregaCapturadaAt",
-          "firmaPacienteEntregaCapturadaPorUid",
-          "firmaPacienteEntregaCapturadaPorNombre"
-        ])
+      allow update: if canUpdateInOwnOrg() && (
+        isAuxiliar() || (
+          isVisitador()
+          && resource.data.estado == "ACTIVA"
+          && isMissingOrEmptyString(resource.data, "firmaPacienteEntrega")
+          && request.resource.data.firmaPacienteEntrega is string
+          && request.resource.data.firmaPacienteEntregaCapturadaAt is string
+          && request.resource.data.firmaPacienteEntregaCapturadaPorUid == request.auth.uid
+          && request.resource.data.firmaPacienteEntregaCapturadaPorNombre is string
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            "firmaPacienteEntrega",
+            "firmaPacienteEntregaCapturadaAt",
+            "firmaPacienteEntregaCapturadaPorUid",
+            "firmaPacienteEntregaCapturadaPorNombre"
+          ])
+        )
       );
       allow delete: if false;
     }
@@ -410,7 +407,8 @@ service cloud.firestore {
           isBiomedico()
           && resource.data.estado == "ABIERTO"
           && request.resource.data.estado == "EN_PROCESO"
-          && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          && preservesExistingHistory()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             "estado",
             "diagnostico",
             "planReparacion",
@@ -424,7 +422,8 @@ service cloud.firestore {
           isBiomedico()
           && resource.data.estado == "EN_PROCESO"
           && request.resource.data.estado == "EN_PROCESO"
-          && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          && preservesExistingHistory()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             "diagnostico",
             "planReparacion",
             "historial"
@@ -434,7 +433,8 @@ service cloud.firestore {
           isBiomedico()
           && resource.data.estado == "EN_PROCESO"
           && request.resource.data.estado == "CERRADO"
-          && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          && preservesExistingHistory()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             "estado",
             "cerradoAt",
             "cerradoPorUid",
@@ -451,7 +451,7 @@ service cloud.firestore {
           && request.resource.data.creadoPorUid == resource.data.creadoPorUid
           && resource.data.vistoPorVisitadorAt == null
           && request.resource.data.vistoPorVisitadorAt is string
-          && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             "vistoPorVisitadorAt"
           ])
         )
@@ -500,7 +500,7 @@ service cloud.firestore {
         && request.resource.data.creadoPorUid == resource.data.creadoPorUid
         && request.resource.data.idPaciente == resource.data.idPaciente
         && request.resource.data.tipoPropiedad == resource.data.tipoPropiedad
-        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           "estado",
           "aprobadoAt",
           "aprobadoPorUid",

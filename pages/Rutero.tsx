@@ -4,6 +4,7 @@ import Layout from '../components/Layout';
 import { toast } from '../services/feedback';
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../services/firebase';
+import { importarRuteroCsv, type ResultadoImportacionRutero } from './ruteroCsvImport';
 import {
   subscribeAsignacionesActivas,
   subscribeEquiposAsignadosActivos,
@@ -25,6 +26,8 @@ const Rutero: React.FC = () => {
   const { usuario } = useAuth();
   const [pacientes, setPacientes] = useState<Paciente[]>([]);
   const [missingDocs, setMissingDocs] = useState<string[]>([]);
+  const [resultadoImportacion, setResultadoImportacion] = useState<ResultadoImportacionRutero | null>(null);
+  const [importando, setImportando] = useState(false);
   const [equipos, setEquipos] = useState<EquipoBiomedico[]>([]);
   const [asignaciones, setAsignaciones] = useState<Asignacion[]>([]);
   const [firestoreError, setFirestoreError] = useState<string | null>(null);
@@ -114,7 +117,7 @@ const Rutero: React.FC = () => {
         ? `${equipo.codigoInventario} ${equipo.nombre} ${equipo.numeroSerie}`.toLowerCase()
         : '';
       return (
-        paciente.nombreCompleto.toLowerCase().includes(term) ||
+        (paciente.nombreCompleto || '').toLowerCase().includes(term) ||
         paciente.numeroDocumento.toLowerCase().includes(term) ||
         (paciente.direccion || '').toLowerCase().includes(term) ||
         (paciente.telefono || '').toLowerCase().includes(term) ||
@@ -224,91 +227,32 @@ const Rutero: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
-  const normalizeZona = (value: string) => {
-    const raw = value.replace(/\s+/g, '').toUpperCase();
-    if (raw === 'GIRON') return 'GIRON';
-    if (raw === 'BGA1') return 'BGA1';
-    if (raw === 'BGA2') return 'BGA2';
-    if (raw === 'PIEDECUESTA') return 'PIEDECUESTA';
-    if (raw === 'FLORIDABLANCA') return 'FLORIDABLANCA';
-    return '';
-  };
-
-  const normalizeDocumento = (value: string) => {
-    const raw = (value || '').trim();
-    if (!raw) return '';
-    if (/^\d+(\.\d+)?e\+\d+$/i.test(raw)) {
-      const num = Number(raw);
-      if (Number.isFinite(num)) return Math.trunc(num).toString();
-    }
-    return raw.replace(/[^0-9A-Za-z]/g, '').toUpperCase();
-  };
-
   const importCsv = async (file: File) => {
     const text = await file.text();
-    const lines = text.split(/\r?\n/).filter((l) => l.trim());
-    if (lines.length < 2) {
-      toast({ tone: 'warning', message: 'El archivo no tiene datos para importar.' });
-      return;
-    }
-    const delimiter = lines[0].includes(';') ? ';' : ',';
-    const header = lines[0].split(delimiter).map((h) => h.trim().toLowerCase());
-    const idx = (name: string) => header.indexOf(name);
-    const idxDoc = idx('documento');
-    const idxNombre = idx('nombre');
-    const idxBarrio = idx('barriomunicipio');
-    const idxDireccion = idx('direccion');
-    const idxTelefono = idx('telefono');
-    const idxZona = idx('zona');
-
-    if (idxDoc === -1) {
-      toast({ tone: 'error', message: 'No se encontró la columna Documento en el CSV.' });
-      return;
-    }
-
-    const pacientesByDoc = new Map(pacientesActivos.map((p) => [p.numeroDocumento.toUpperCase(), p]));
-    let updated = 0;
-    let missing = 0;
-    const missingList: string[] = [];
-    for (const line of lines.slice(1)) {
-      const cols = line.split(delimiter).map((c) => c.trim());
-      const docNumber = normalizeDocumento(cols[idxDoc] || '');
-      if (!docNumber) continue;
-      const paciente = pacientesByDoc.get(docNumber);
-      if (!paciente) {
-        missing++;
-        missingList.push(docNumber);
-        continue;
-      }
-      const payload: any = {};
-      if (idxNombre !== -1 && cols[idxNombre]) payload.nombreCompleto = cols[idxNombre].toUpperCase();
-      if (idxBarrio !== -1) payload.barrio = (cols[idxBarrio] || '').toUpperCase();
-      if (idxDireccion !== -1) payload.direccion = (cols[idxDireccion] || '').toUpperCase();
-      if (idxTelefono !== -1) payload.telefono = (cols[idxTelefono] || '').toUpperCase();
-      if (idxZona !== -1) {
-        const zona = normalizeZona(cols[idxZona] || '');
-        payload.zona = zona || null;
-      }
-      await updateDoc(doc(db, 'pacientes', paciente.id), payload);
-      updated++;
-    }
-
-    setMissingDocs(missingList);
+    const resultado = await importarRuteroCsv(text, pacientesActivos, (id, cambios) =>
+      updateDoc(doc(db, 'pacientes', id), cambios),
+    );
+    setResultadoImportacion(resultado);
+    setMissingDocs(resultado.noEncontrados.map((item) => item.documento));
     toast({
-      tone: 'success',
-      message: `Importación completa. Actualizados: ${updated}. No encontrados: ${missing}.`,
+      tone: resultado.fallidos.length || resultado.noEncontrados.length ? 'warning' : 'success',
+      message: `Importación completa. Actualizados: ${resultado.actualizados.length}. No encontrados: ${resultado.noEncontrados.length}. Fallidos: ${resultado.fallidos.length}.`,
     });
   };
 
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || importando) return;
+    setImportando(true);
+    setResultadoImportacion(null);
+    setMissingDocs([]);
     try {
       await importCsv(file);
     } catch (err: any) {
       console.error('importCsv error:', err);
       toast({ tone: 'error', message: err?.message || 'No se pudo importar el rutero.' });
     } finally {
+      setImportando(false);
       if (importInputRef.current) importInputRef.current.value = '';
     }
   };
@@ -332,8 +276,8 @@ const Rutero: React.FC = () => {
               Plantilla CSV
             </button>
             <label className="md-btn md-btn-outlined cursor-pointer">
-              Importar CSV
-              <input ref={importInputRef} type="file" accept=".csv" onChange={handleImport} className="hidden" />
+              {importando ? 'Importando...' : 'Importar CSV'}
+              <input ref={importInputRef} type="file" accept=".csv" onChange={handleImport} disabled={importando} className="hidden" />
             </label>
             <button className="md-btn md-btn-filled" onClick={exportCsv} type="button">
               Exportar Excel (CSV)
@@ -379,6 +323,35 @@ const Rutero: React.FC = () => {
         </div>
       </div>
 
+      {resultadoImportacion && (
+        <div className="md-card p-4 mb-4" aria-live="polite">
+          <div className="text-sm font-semibold">Resultado de la importación</div>
+          <div className="text-xs mt-1">
+            Actualizados: {resultadoImportacion.actualizados.length} · No encontrados: {resultadoImportacion.noEncontrados.length} · Fallidos: {resultadoImportacion.fallidos.length}
+          </div>
+          {resultadoImportacion.actualizados.length > 0 && (
+            <details className="mt-2 text-sm">
+              <summary className="cursor-pointer">Ver registros actualizados</summary>
+              <ul className="mt-1 max-h-48 overflow-auto text-xs">
+                {resultadoImportacion.actualizados.map((item) => (
+                  <li key={item.fila}>Fila {item.fila}: {item.documento}</li>
+                ))}
+              </ul>
+            </details>
+          )}
+          {resultadoImportacion.fallidos.length > 0 && (
+            <details open className="mt-2 text-sm text-red-800">
+              <summary className="cursor-pointer">Ver filas que no se actualizaron</summary>
+              <ul className="mt-1 max-h-48 overflow-auto text-xs">
+                {resultadoImportacion.fallidos.map((item) => (
+                  <li key={item.fila}>Fila {item.fila} · {item.documento || 'SIN DOCUMENTO'}: {item.motivo}</li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
+      )}
+
       {missingDocs.length > 0 && (
         <div className="md-card p-4 mb-4 border border-amber-200 bg-amber-50">
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -388,8 +361,8 @@ const Rutero: React.FC = () => {
                 Estos documentos no existen en la base de pacientes activos. Crea el paciente y vuelve a importar si aplica.
               </div>
               <div className="mt-2 flex flex-wrap gap-2 text-xs text-amber-900">
-                {missingDocs.slice(0, 20).map((doc) => (
-                  <span key={doc} className="px-2 py-1 rounded-full border border-amber-200 bg-white">
+                {missingDocs.slice(0, 20).map((doc, index) => (
+                  <span key={`${doc}-${index}`} className="px-2 py-1 rounded-full border border-amber-200 bg-white">
                     {doc}
                   </span>
                 ))}

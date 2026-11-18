@@ -51,6 +51,24 @@ Registrar problemas confirmados, limitaciones actuales y observaciones operativa
   revisar chunking adicional de dependencias compartidas y optimizar primero
   `Inventory`, que sigue siendo el módulo lazy más pesado.
 
+### 5. Importación de Rutero para pacientes legacy sin zona
+
+- Estado: Abierto
+- Impacto: Medio
+- Descripción:
+  algunos pacientes legacy no tienen el campo `zona` en Firestore. Si el CSV
+  de Rutero omite la columna `Zona`, la actualización de esos pacientes puede
+  ser rechazada con `permission-denied`.
+- Impacto operativo:
+  el importador informa las filas afectadas y continúa procesando las demás;
+  los registros rechazados no se actualizan.
+- Solución temporal:
+  incluir siempre la columna `Zona` en la plantilla CSV, incluso cuando su
+  valor esté vacío. Para pacientes que ya tienen una zona asignada, conservar
+  su valor en el CSV: dejarlo vacío cambia la zona a `null` (sin zona).
+- Referencias:
+  `pages/ruteroCsvImport.ts`, `tests/ruteroCsv.test.mjs` y `firestore.rules`.
+
 ## Problemas operativos frecuentes
 
 - `Missing or insufficient permissions` por rol inválido, perfil faltante o reglas no desplegadas.
